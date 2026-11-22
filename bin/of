@@ -2750,6 +2750,23 @@ def cmd_owner(args):
         folder = os.path.realpath(os.path.expanduser(args.value))
         if not os.path.isfile(os.path.join(folder, "bin", "bench.py")):
             raise OfError(f"{args.value}: no bin/bench.py there; give a checkout of organic-framework/bench")
+        import of_events
+        import tempfile
+        writable = [of_events.STATE_DIR, tempfile.gettempdir(), "/tmp", "/private/tmp"]
+        try:
+            with open(ORGS_FILE) as fh:
+                for o in (yaml.safe_load(fh) or {}).get("orgs") or []:
+                    if isinstance(o, dict):
+                        writable += [str(x) for x in [o.get("path"), o.get("work_clone"), o.get("work_root")]
+                                     + list(o.get("paths") or []) if x]
+        except OSError:
+            pass
+        base = os.path.dirname(os.path.abspath(ORGS_FILE))
+        for w in writable:
+            w = os.path.realpath(os.path.join(base, os.path.expanduser(w)))
+            if folder == w or folder.startswith(w + os.sep):
+                # a folder sessions write, or one an organization's sessions work in (of_secrets-review on PR 575)
+                raise OfError(f"{args.value}: it lies in {w}, which sessions write; give a checkout of its own")
         import of_guard
         if of_guard.gated(folder):
             # a development clone runs the release gate as its pre-commit hook, and positions write it; OF imports from
@@ -2915,7 +2932,8 @@ def cmd_bench(args):
         path = (_org_paths_entry(org) or {}).get("path")
         if not path:
             raise OfError(f"orgs.yaml gives no path for {org}")
-        rest += ["--project", os.path.expanduser(str(path))]
+        # a relative path is orgs.yaml's, as the registry loader reads it (of_secrets-review on PR 575)
+        rest += ["--project", os.path.join(os.path.dirname(os.path.abspath(ORGS_FILE)), os.path.expanduser(str(path)))]
     try:
         import of_benchpath
         of_benchpath.ensure()   # says where it looked and how to name the folder, when Bench is not there

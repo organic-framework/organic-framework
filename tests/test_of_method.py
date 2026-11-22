@@ -391,6 +391,48 @@ class HookTest(_Project):
 
 
 
+class HookContainmentTest(_Project):
+    """of_secrets-review on PR 575: a hook file from the lock stays under extensions/<package>/, is read with no link
+    and no wait, and its digest is the checked text's."""
+
+    HOOK = 'before "file" { written_for = "demo-asks 1", run = function(card) return "pass" end }\n'
+
+    def test_a_lock_path_outside_the_folder_stops(self):
+        write(self.org, {"extensions/demo-asks/h.lua": self.HOOK})
+        self.install()
+        lock = bench.read_lock(self.org)
+        for bad in ("../outside.lua", "/etc/hosts", "extensions/other/h.lua", "extensions/demo-asks/../h.lua"):
+            with self.subTest(bad=bad):
+                lock["demo-asks"]["hooks"][0]["file"] = bad
+                bench.write_lock(self.org, lock)
+                d = of_method.before(self.org, "demo-asks", "file", {"tags": []})
+                self.assertEqual(d["decision"], "stop")
+
+    def test_a_pipe_at_the_hook_never_waits(self):
+        import time
+        write(self.org, {"extensions/demo-asks/h.lua": self.HOOK})
+        self.install()
+        p = os.path.join(self.org, "extensions", "demo-asks", "h.lua")
+        os.remove(p)
+        os.mkfifo(p)
+        t0 = time.monotonic()
+        d = of_method.before(self.org, "demo-asks", "file", {"tags": []})
+        self.assertEqual(d["decision"], "stop")
+        self.assertLess(time.monotonic() - t0, 5)
+
+    def test_a_link_at_the_extensions_folder_is_refused_at_install(self):
+        outside = os.path.join(self.tmp, "outside")
+        write(outside, {"h.lua": self.HOOK})
+        os.makedirs(os.path.join(self.org, "extensions"))
+        os.symlink(outside, os.path.join(self.org, "extensions", "demo-asks"))
+        with self.assertRaisesRegex(bench.BenchError, "not a link"):
+            self.install()
+
+    def test_bench_is_the_checked_file(self):
+        self.assertEqual(os.path.realpath(sys.modules["bench"].__file__),
+                         os.path.realpath(os.path.join(BENCH, "bin", "bench.py")))
+
+
 class OfBenchCommandTest(_Project):
     """`of bench` runs Bench's commands with OF as the framework, and --org takes the organization's folder from
     orgs.yaml (bin/of cmd_bench)."""
