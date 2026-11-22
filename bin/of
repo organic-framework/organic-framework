@@ -1196,27 +1196,43 @@ def _loop_of(w, org, orgs_file=None):
     return None
 
 
-def _loop_works(orgs_file=None):
+class _Works(list):
+    """_loop_works' list, with `unread`: the (org, work id or None for the whole organization) it could not read."""
+    unread = ()
+
+
+def _loop_works(orgs_file=None, log=print):
     """[(org, work id, its registry entry, its loop or None)] of every listed organization: one read of each registry.
     A registry or a loop.yaml that does not parse, or has the wrong shape, drops only its organization or its work: the
     pulse reads them whether or not `of registry check` passed, and one organization's file must not stop another's
-    notes (of_review on PR 504)."""
-    out = []
+    notes (of_review on PR 504). What was dropped is printed, one line each, and listed in the result's `unread`, so a
+    reader keeps its state for it: "could not be read" is not "has no stall" (of_review on PR 504, second round)."""
+    out, unread = _Works(), []
+
+    def skip(org, wid, what, e):
+        unread.append((org, wid))
+        log(f"works: {org}{'/' + wid if wid else ''}: {what} not read ({type(e).__name__}: "
+            f"{(str(e).splitlines() or [''])[0]}); left as it was")
     for org, path, _ in org_registries(orgs_file or ORGS_FILE):
         try:
             with open(path) as fh:
                 doc = yaml.safe_load(fh) or {}
-        except (OSError, ValueError, yaml.YAMLError):
+            if not isinstance(doc, dict):
+                raise ValueError(f"the registry is a {type(doc).__name__}, not a mapping")
+        except (OSError, ValueError, yaml.YAMLError) as e:
+            skip(org, None, "registry", e)
             continue
-        works = doc.get("works") if isinstance(doc, dict) else None
+        works = doc.get("works")
         for wid, w in works.items() if isinstance(works, dict) else ():
             if not isinstance(w, dict):
                 continue
             try:
                 loop = _loop_of(w, org, orgs_file)
-            except (OSError, ValueError, AttributeError, TypeError, yaml.YAMLError):
+            except (OSError, ValueError, AttributeError, TypeError, yaml.YAMLError) as e:
+                skip(org, str(wid), "loop", e)
                 continue
             out.append((org, str(wid), w, loop))
+    out.unread = unread
     return out
 
 

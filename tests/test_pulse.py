@@ -221,6 +221,53 @@ class LoopStallTest(unittest.TestCase):
             self.assertIn("its wait on runner job-7 expected by", typed[-1][1])
             conn.close()
 
+    def test_a_work_that_could_not_be_read_keeps_its_episode(self):
+        """of_review on PR 504: a file half written for one pulse is not a stall that ended; nobody is told twice."""
+        import of_store
+        from unittest import mock
+
+        class Works(list):
+            unread = ()
+        with tempfile.TemporaryDirectory() as d:
+            conn = of_store.connect(os.path.join(d, "of.db"))
+            t0 = 1_800_000_000
+            for name, payload, at in (
+                    ("loop_hypothesis", {"id": "h1", "hypothesis": "h1", "change": "c", "status": "open"}, t0),
+                    ("loop_hypothesis", {"id": "h1", "hypothesis": "h1", "status": "testing",
+                                         "status_at": of_pulse._iso(t0 + 600)}, t0 + 600)):
+                rec = of_events.record(name, dict(payload, work="w1"), position="of_doer", session="SD")
+                rec["timestamp"] = of_pulse._iso(at)
+                of_store.add_event(conn, rec)
+            positions = [{"name": n, "_org": "ofb"} for n in ("of_own", "of_doer")]
+            agents = [{"name": p["name"], "pane_id": "p-" + p["name"], "agent_status": "idle"} for p in positions]
+            bind = lambda ps, ags: ([(p, a) for p in ps for a in ags if a["name"] == p["name"]], [], [])  # noqa: E731
+            good = ("ofb", "w1", {"owner": "of_own", "doers": ["of_doer"]}, {"target": {}})
+            odd = ("acme", "w9", {"owner": {"x": 1}, "doers": 3}, {"target": {}})   # another organization's bad shape
+            typed, mem = [], {}
+
+            def run(at, works):
+                with mock.patch.object(of_pulse.of_events, "emit", lambda *a, **k: None):
+                    return of_pulse.loop_stalls(positions, agents, bind, mem, at, conn, works,
+                                                prompt=lambda pane, text, sender: typed.append(pane) or (True, None),
+                                                log=lambda m: None)
+
+            def unread(*keys):
+                w = Works()
+                w.unread = list(keys)
+                return w
+            self.assertEqual(run(t0 + 600 + 5 * 3600, [odd, good]), 2)          # told, beside the bad shape
+            self.assertEqual(run(t0 + 600 + 5 * 3600 + 300, unread(("ofb", "w1"))), 0)
+            self.assertIn("ofb/w1", mem["loop_stalls"])                          # its loop.yaml: kept
+            self.assertEqual(run(t0 + 600 + 5 * 3600 + 600, unread(("ofb", None))), 0)
+            self.assertIn("ofb/w1", mem["loop_stalls"])                          # its registry: kept
+            with mock.patch("of_loops.project", side_effect=TypeError("bad")):
+                self.assertEqual(run(t0 + 600 + 5 * 3600 + 900, [good]), 0)
+            self.assertIn("ofb/w1", mem["loop_stalls"])                          # its card failed: kept
+            self.assertEqual(run(t0 + 600 + 5 * 3600 + 1200, [good, odd]), 0)  # repaired: not told again
+            self.assertEqual(typed, ["p-of_own", "p-of_doer"])
+            self.assertEqual(run(t0 + 600 + 5 * 3600 + 1500, []), 0)
+            self.assertNotIn("ofb/w1", mem["loop_stalls"])                       # gone from a list read whole: ended
+            conn.close()
 
 class AskWaitTest(unittest.TestCase):
     def test_a_wait_on_an_ask_ends_when_the_ask_is_answered(self):
