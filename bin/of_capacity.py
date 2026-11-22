@@ -1273,6 +1273,36 @@ def spawn_folder(p):
         return None
 
 
+def folder_org(path):
+    """The organization whose orgs.yaml paths hold `path` (the deepest path wins), or None."""
+    try:
+        import yaml
+        with open(of_events.config_path("orgs.yaml")) as fh:
+            doc = yaml.safe_load(fh) or {}
+    except Exception:  # noqa: BLE001 - no orgs.yaml: no organization's folder
+        return None
+    real, best = os.path.realpath(os.path.expanduser(str(path))), (0, None)
+    for o in doc.get("orgs") or []:
+        for d in (o.get("paths") or []) if isinstance(o, dict) else []:
+            d = os.path.realpath(os.path.expanduser(str(d)))
+            if (real == d or real.startswith(d + os.sep)) and len(d) > best[0]:
+                best = (len(d), o.get("name"))
+    return best[1]
+
+
+def _not_another_orgs(name, cur, want, p):
+    """Refuse to resume a position in another organization's folder when its start folder cannot be had: two
+    organizations' sessions in one folder leave that folder with neither's rules file (of_context.write_rules), and
+    the other's sessions start without their binding rules. 2026-11-22: a position moved from one organization to
+    another was restarted with its new start folder trusted nowhere, fell back to the old organization's root, and
+    that organization's root rules file was removed."""
+    org = folder_org(cur)
+    if p and p.get("_org") and org and org != p.get("_org"):
+        raise MoveError(f"{name}: its start folder {want} cannot be used, and the folder it runs in, {cur}, is {org}'s; "
+                        f"a {p['_org']} session there would leave {org} without its rules file in that folder. The owner "
+                        f"trusts {want} first, or the move names a folder of {p['_org']}'s")
+
+
 def start_folder(name, cur, cwd=None, policy=None, p=None, folder_of=None):
     """The folder a moved or restarted session resumes in: `cwd`, else, for a position capacity.yaml lists in
     `start_in`, the folder `of spawn` would start it in (from the registry), else the one it runs in (`cur`, returned
@@ -1303,7 +1333,8 @@ def resume_folder(name, cur, src, target, cwd=None, policy=None, log=print, trus
         return start_folder(name, cur, cwd, policy)
     try:
         want = start_folder(name, cur, None, policy, p=p, folder_of=folder_of)
-    except MoveError as e:  # a start folder that is gone never stops a move either (of_review, PR 330)
+    except MoveError as e:  # a start folder that is gone never stops a move either (of_review, PR 330) ...
+        _not_another_orgs(name, cur, "(none)", p)  # ... unless where it runs is another organization's folder
         log(f"  {e}: resuming in {cur}")
         return cur
     if want == cur:
@@ -1311,6 +1342,7 @@ def resume_folder(name, cur, src, target, cwd=None, policy=None, log=print, trus
     try:
         (trust or ensure_trust)(src, target, want, dry_run=True)
     except MoveError:
+        _not_another_orgs(name, cur, want, p)
         log(f"  start folder {want} is trusted in no config: resuming in {cur}; the owner decides the trust (the tool "
             f"never presses the trust dialog)")
         return cur

@@ -3857,6 +3857,32 @@ class StartFolder(unittest.TestCase):
                                                        folder_of=gone), ra)
             self.assertIn("does not exist", logs[-1])
 
+    def test_no_fallback_into_another_organizations_folder(self):
+        """2026-11-22: a position moved to another organization was restarted with its start folder trusted nowhere and
+        fell back to the old organization's root, which then lost its rules file (of_context.write_rules)."""
+        def untrusted(src, dst, cwd, dry_run=False):
+            raise of_capacity.MoveError(f"folder {cwd} is trusted in no config", untrusted=cwd)
+        with tempfile.TemporaryDirectory() as root, mock.patch.object(of_capacity.of_events, "CONFIG_DIR", root):
+            theirs, ours = os.path.join(root, "theirs"), os.path.join(root, "ours")
+            for d in (theirs, ours, os.path.join(theirs, "sub")):
+                os.makedirs(d, exist_ok=True)
+            with open(os.path.join(root, "orgs.yaml"), "w") as fh:
+                fh.write(f"orgs:\n  - name: beta\n    paths: [{theirs}]\n  - name: alpha\n    paths: [{ours}]\n")
+            self.assertEqual(of_capacity.folder_org(os.path.join(theirs, "sub")), "beta")
+            self.assertIsNone(of_capacity.folder_org(os.path.join(root, "elsewhere")))
+            pol, spawn = {"start_in": ["k"]}, (lambda p: ours)
+            p = {"name": "k", "_org": "alpha"}
+            with self.assertRaisesRegex(of_capacity.MoveError, "is beta's"):
+                of_capacity.resume_folder("k", os.path.join(theirs, "sub"), "/s", "/t", policy=pol, trust=untrusted,
+                                          folder_of=spawn, p=p, log=lambda *_: None)
+            # its own organization's folder, or one no organization names: as before, it resumes where it ran
+            self.assertEqual(of_capacity.resume_folder("k", ours, "/s", "/t", policy=pol, trust=untrusted,
+                                                       folder_of=lambda p: theirs, p=p, log=lambda *_: None), ours)
+            self.assertEqual(of_capacity.resume_folder("k", os.path.join(theirs, "sub"), "/s", "/t", policy=pol,
+                                                       trust=untrusted, folder_of=spawn,
+                                                       p={"name": "k", "_org": "beta"}, log=lambda *_: None),
+                             os.path.join(theirs, "sub"))
+
     def test_the_session_moves_under_the_new_key_and_one_copy_stays(self):
         import of_carry
         self.assertEqual(of_capacity.folder_key("/Users/alex/.claude/w_y"), of_carry.key_of("/Users/alex/.claude/w_y"))
