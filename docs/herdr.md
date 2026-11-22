@@ -240,6 +240,30 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
     write the same file: one writer of one unit text (`of_architect`, msg `01a1fab3-ecf5`).
   - **`Restart=on-failure`, except on exit status 1.** herdr exits with 1 when another server holds its socket, and
     a restart could only fail again.
+  - **`Slice=session.slice` and `OOMPolicy=continue`, so that one out-of-memory event does not end every agent of
+    the user** (`of_agent-server`, hand-over `e8a57731`). The unit is one cgroup, and it holds every pane and agent
+    of that herdr. There are two ways to lose all of them at once:
+    - systemd-oomd kills a whole cgroup (`systemd-oomd.service(8)`). A desktop distribution may mark `app.slice`,
+      the default slice of a user's services, for it (`ManagedOOMMemoryPressure=kill`, `ManagedOOMSwap=kill`), as
+      the agent host's does. On a host that marks only `app.slice`, `session.slice` takes the unit out of oomd's
+      candidates. It does not where `session.slice` or one of its ancestors is marked, as Fedora's and Debian's
+      oomd defaults do (`of_review`, PR 534): under a marked ancestor, a unit left at `auto` "can still be a
+      candidate" (`systemd.resource-control(5)`). `oomctl` lists what a host monitors. The slice applies at the
+      unit's next start. Until then `of herdr service status` names the restart and exits 1.
+    - The kernel's OOM killer takes one process. Under the default `OOMPolicy=stop`, systemd then stops the unit,
+      and every other pane with it (`systemd.service(5)`). `continue` logs the kill and keeps the unit, unless that
+      process is herdr's server. The server is the unit's main process, so its end is the service's end, and the
+      default `KillMode=control-group` ends every pane (`systemd.kill(5)`).
+
+    The cost, on a host that marks only `app.slice`: oomd no longer has an agent to take. When an agent runs away
+    with memory, oomd may take OF's other services in `app.slice` instead (of-server, of-clickhouse, of-relay,
+    of-listen), and the agent meets only the kernel's killer. With swap on zram, which is memory too, that comes
+    late. The unit sets no memory bound, because its size depends on the host's memory and on how many contours
+    share it. A host's admin sets one per contour user with `systemctl --user set-property of-herdr.service
+    MemoryMax=<size> MemorySwapMax=<size>`. At the bound, the kernel takes the largest process in the unit, and the
+    unit stays unless that is herdr's server. `MemorySwapMax` matters because, with `MemoryMax` alone, a cgroup at
+    its bound keeps growing into swap. `set-property` keeps its values beside the unit, under
+    `~/.config/systemd/user.control/`, and `of herdr service install` never writes there.
 - **Upgrades restart it.** A live handoff (`herdr update --handoff`) does not survive under the unit. It starts the
   new server as a child and ends the old one (`src/server/handoff.rs`). systemd takes that exit for the end of the
   service and stops what is left in its cgroup. After herdr's package is upgraded, `systemctl --user restart
@@ -249,7 +273,7 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
 - **Checked on 2026-11-21 on the agent host, as `of`,** with the unit text the install writes there, under another
   name and with its own XDG folders, so the live server was not touched:
   - the text was the same from a plain and from a login shell;
-  - the server started in `user@1001.service/app.slice/<unit>`;
+  - the server started in `user@1001.service/app.slice/<unit>` (the slice before hand-over `e8a57731`);
   - a pane had `OF_AUTOMATION=1`, `SSH_AUTH_SOCK` empty, no `SSH_CONNECTION`, `LANG`, and `PATH` with
     `~/.local/bin`, where it found `of` and `claude`;
   - `systemctl --user stop` ended it through `ExecStop`.
