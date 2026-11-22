@@ -3859,28 +3859,37 @@ class StartFolder(unittest.TestCase):
 
     def test_no_fallback_into_another_organizations_folder(self):
         """2026-11-22: a position moved to another organization was restarted with its start folder trusted nowhere and
-        fell back to the old organization's root, which then lost its rules file (of_context.write_rules)."""
+        fell back to the old organization's root, which then lost its rules file (of_context.write_rules). The
+        organizations are read as OF reads them: `path` and `paths`, an unnamed entry by its folder, and every
+        organization of a folder two list (of_review on PR 565)."""
         def untrusted(src, dst, cwd, dry_run=False):
             raise of_capacity.MoveError(f"folder {cwd} is trusted in no config", untrusted=cwd)
         with tempfile.TemporaryDirectory() as root, mock.patch.object(of_capacity.of_events, "CONFIG_DIR", root):
-            theirs, ours = os.path.join(root, "theirs"), os.path.join(root, "ours")
-            for d in (theirs, ours, os.path.join(theirs, "sub")):
+            theirs, ours, both, beta = (os.path.join(root, x) for x in ("theirs", "ours", "both", "beta"))
+            for d in (theirs, ours, both, beta, os.path.join(theirs, "sub")):
                 os.makedirs(d, exist_ok=True)
             with open(os.path.join(root, "orgs.yaml"), "w") as fh:
-                fh.write(f"orgs:\n  - name: beta\n    paths: [{theirs}]\n  - name: alpha\n    paths: [{ours}]\n")
-            self.assertEqual(of_capacity.folder_org(os.path.join(theirs, "sub")), "beta")
-            self.assertIsNone(of_capacity.folder_org(os.path.join(root, "elsewhere")))
+                fh.write(f"orgs:\n  - name: gamma\n    path: {theirs}\n"          # its own repository, by path alone
+                         f"  - path: {beta}\n"                                     # no name: named by its folder
+                         f"  - name: alpha\n    paths: [{ours}, {both}]\n"
+                         f"  - name: delta\n    paths: [{both}]\n")
+            self.assertEqual(of_capacity.folder_orgs(os.path.join(theirs, "sub")), {"gamma"})
+            self.assertEqual(of_capacity.folder_orgs(beta), {"beta"})
+            self.assertEqual(of_capacity.folder_orgs(both), {"alpha", "delta"})
+            self.assertEqual(of_capacity.folder_orgs(os.path.join(root, "elsewhere")), set())
             pol, spawn = {"start_in": ["k"]}, (lambda p: ours)
             p = {"name": "k", "_org": "alpha"}
-            with self.assertRaisesRegex(of_capacity.MoveError, "is beta's"):
-                of_capacity.resume_folder("k", os.path.join(theirs, "sub"), "/s", "/t", policy=pol, trust=untrusted,
-                                          folder_of=spawn, p=p, log=lambda *_: None)
-            # its own organization's folder, or one no organization names: as before, it resumes where it ran
-            self.assertEqual(of_capacity.resume_folder("k", ours, "/s", "/t", policy=pol, trust=untrusted,
-                                                       folder_of=lambda p: theirs, p=p, log=lambda *_: None), ours)
-            self.assertEqual(of_capacity.resume_folder("k", os.path.join(theirs, "sub"), "/s", "/t", policy=pol,
-                                                       trust=untrusted, folder_of=spawn,
-                                                       p={"name": "k", "_org": "beta"}, log=lambda *_: None),
+            kw = dict(policy=pol, trust=untrusted, folder_of=spawn, log=lambda *_: None)
+            for cur, org in ((os.path.join(theirs, "sub"), "gamma"), (beta, "beta")):
+                with self.assertRaisesRegex(of_capacity.MoveError, f"is {org}'s"):
+                    of_capacity.resume_folder("k", cur, "/s", "/t", p=p, **kw)
+            # its own organization's folder, shared with another or not, or one no organization names: kept
+            self.assertEqual(of_capacity.resume_folder("k", ours, "/s", "/t", p=p, **dict(kw, folder_of=lambda p: theirs)),
+                             ours)
+            self.assertEqual(of_capacity.resume_folder("k", both, "/s", "/t", p={"name": "k", "_org": "delta"}, **kw),
+                             both)
+            self.assertEqual(of_capacity.resume_folder("k", os.path.join(theirs, "sub"), "/s", "/t",
+                                                       p={"name": "k", "_org": "gamma"}, **kw),
                              os.path.join(theirs, "sub"))
 
     def test_the_session_moves_under_the_new_key_and_one_copy_stays(self):

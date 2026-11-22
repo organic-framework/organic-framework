@@ -1273,21 +1273,31 @@ def spawn_folder(p):
         return None
 
 
-def folder_org(path):
-    """The organization whose orgs.yaml paths hold `path` (the deepest path wins), or None."""
+def folder_orgs(path):
+    """The organizations whose orgs.yaml folders hold `path`, as OF reads an entry: its `path` (its own repository)
+    and its `paths`, its name as the registry loader gives it (of_init.org_entry_name). Every organization of the
+    deepest folder that holds it, an empty set for none (of_review on PR 565: `path` was not read, an entry with no
+    name protected nothing, and a folder two organizations list went to the first)."""
     try:
         import yaml
+        import of_init
         with open(of_events.config_path("orgs.yaml")) as fh:
             doc = yaml.safe_load(fh) or {}
     except Exception:  # noqa: BLE001 - no orgs.yaml: no organization's folder
-        return None
-    real, best = os.path.realpath(os.path.expanduser(str(path))), (0, None)
+        return set()
+    real, depth, out = os.path.realpath(os.path.expanduser(str(path))), -1, set()
     for o in doc.get("orgs") or []:
-        for d in (o.get("paths") or []) if isinstance(o, dict) else []:
+        if not isinstance(o, dict):
+            continue
+        name = of_init.org_entry_name(o)
+        for d in ([o["path"]] if o.get("path") else []) + list(o.get("paths") or []):
             d = os.path.realpath(os.path.expanduser(str(d)))
-            if (real == d or real.startswith(d + os.sep)) and len(d) > best[0]:
-                best = (len(d), o.get("name"))
-    return best[1]
+            if name and (real == d or real.startswith(d + os.sep)):
+                if len(d) > depth:
+                    depth, out = len(d), {name}
+                elif len(d) == depth:
+                    out.add(name)
+    return out
 
 
 def _not_another_orgs(name, cur, want, p):
@@ -1296,11 +1306,12 @@ def _not_another_orgs(name, cur, want, p):
     the other's sessions start without their binding rules. 2026-11-22: a position moved from one organization to
     another was restarted with its new start folder trusted nowhere, fell back to the old organization's root, and
     that organization's root rules file was removed."""
-    org = folder_org(cur)
-    if p and p.get("_org") and org and org != p.get("_org"):
-        raise MoveError(f"{name}: its start folder {want} cannot be used, and the folder it runs in, {cur}, is {org}'s; "
-                        f"a {p['_org']} session there would leave {org} without its rules file in that folder. The owner "
-                        f"trusts {want} first, or the move names a folder of {p['_org']}'s")
+    orgs = folder_orgs(cur)
+    if p and p.get("_org") and orgs and p["_org"] not in orgs:  # its own organization's folder is kept, shared or not
+        other = ", ".join(sorted(orgs))
+        raise MoveError(f"{name}: its start folder {want} cannot be used, and the folder it runs in, {cur}, is "
+                        f"{other}'s; a {p['_org']} session there would leave {other} without its rules file in that "
+                        f"folder. The owner trusts {want} first, or the move names a folder of {p['_org']}'s")
 
 
 def start_folder(name, cur, cwd=None, policy=None, p=None, folder_of=None):
