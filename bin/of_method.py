@@ -167,9 +167,67 @@ def read_settings(project, package, method):
 
 # ---- the organization's hooks ----
 
+def hook_rel(package, name):
+    """A hook file's path in the organization's folder: extensions/<package>/<name>.lua, a plain relative path."""
+    return "/".join((EXTENSIONS_DIR, package, name))
+
+
+def _hook_text(project, package, rel):
+    """The text of the hook file REL (extensions/<package>/<name>.lua and nothing else), read as a regular file
+    reached with no link and no wait (of_context.read_in); None when it is not one (of_secrets-review on PR 575: a lock
+    path left the project, and a pipe there held the caller)."""
+    parts = rel.split("/") if isinstance(rel, str) else []
+    if (len(parts) != 3 or parts[0] != EXTENSIONS_DIR or parts[1] != package or not parts[2].endswith(".lua")
+            or parts[2] in (".lua",) or "\\" in rel or any(x in ("", ".", "..") for x in parts)):
+        return None
+    return _read_regular(project, parts, bench.FILE_MAX)
+
+
+def _read_regular(base, parts, limit):
+    """BASE/PARTS... as text: each folder opened from the one above with no link followed and no wait, the file a
+    regular one; None otherwise."""
+    import stat
+    nf, nb, dr = getattr(os, "O_NOFOLLOW", 0), getattr(os, "O_NONBLOCK", 0), getattr(os, "O_DIRECTORY", 0)
+    try:
+        fd = os.open(os.path.realpath(base), os.O_RDONLY | dr | nf | nb)
+    except OSError:
+        return None
+    try:
+        for part in parts[:-1]:
+            nxt = os.open(part, os.O_RDONLY | dr | nf | nb, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+        f = os.open(parts[-1], os.O_RDONLY | nf | nb, dir_fd=fd)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    try:
+        if not stat.S_ISREG(os.fstat(f).st_mode):
+            return None
+        with os.fdopen(f, "rb") as fh:
+            data = fh.read(limit + 1)
+        f = None
+    finally:
+        if f is not None:
+            os.close(f)
+    if len(data) > limit:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _digest(text):
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def hook_files(project, package):
     _need()
     d = os.path.join(project, EXTENSIONS_DIR, package)
+    if os.path.islink(d) or os.path.islink(os.path.join(project, EXTENSIONS_DIR)):
+        raise BenchError(f"{EXTENSIONS_DIR}/{package}: a folder of the organization's own, not a link")
     if not os.path.isdir(d):
         return []
     out = []
@@ -191,8 +249,11 @@ def read_hooks(project, package, method, version):
     out = []
     for p in hook_files(project, package):
         rel = os.path.relpath(p, project).replace(os.sep, "/")
-        r = bench.evaluate({"hook.lua": bench._read_text(p)}, "hook.lua", HOOK_WORDS, name=rel)
-        digest = bench.file_digest(p)
+        text = _hook_text(project, package, rel)
+        if text is None:
+            raise BenchError(f"{rel}: not a regular file of the organization's, reached with no link")
+        r = bench.evaluate({"hook.lua": text}, "hook.lua", HOOK_WORDS, name=rel)
+        digest = _digest(text)   # the text checked is the text recorded (of_secrets-review on PR 575)
         for i, d in enumerate(r["decls"], 1):
             when, module, body = d.get("word"), d.get("name"), d.get("body") or {}
             if not module:
@@ -326,16 +387,13 @@ def _run_hooks(project, package, when, module, value, ctx):
     ctx.setdefault("package", package)
     ctx.setdefault("settings", (e.get("settings") or {}).get("values") or {})
     for h in hooks:
-        p = os.path.join(project, h["file"])
         by = f"{h['file']}: {when} \"{module}\""
-        # read once: the text whose digest is checked is the text evaluated (of_bench on PR 575)
-        try:
-            text = bench._read_text(p)
-        except (OSError, BenchError):
-            text = None
-        if text is None or "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest() != h["digest"]:
-            return {"decision": "stop", "by": by, "reason": f"{h['file']} changed since the install; run of bench "
-                                                            f"install, which checks it"}
+        # read once, as a regular file under extensions/<package>/ with no link and no wait: the text whose digest is
+        # checked is the text evaluated (of_bench and of_secrets-review on PR 575)
+        text = _hook_text(project, package, h.get("file"))
+        if text is None or _digest(text) != h["digest"]:
+            return {"decision": "stop", "by": by, "reason": f"{h['file']} changed since the install, or is not a "
+                                                            f"hook file of the organization's; run of bench install"}
         try:
             r = bench.evaluate({"hook.lua": text}, "hook.lua", HOOK_WORDS, mode="call",
                                path=h["at"], args=(value, ctx), name=h["file"])

@@ -395,11 +395,16 @@ class BenchOwnerSetTest(unittest.TestCase):
                 mark = of_guard.GATE_MARK
                 fh.write((mark if isinstance(mark, bytes) else mark.encode()) + b"\n")
             saved = of_init.owner_settings().get("bench")
+            import tempfile as _tf
             try:
-                with mock.patch.object(of_asks_answer, "not_the_owner", lambda: False):
+                with mock.patch.object(of_asks_answer, "not_the_owner", lambda: False), \
+                        mock.patch.object(_tf, "gettempdir", lambda: "/nonexistent-tmp"):
                     self.assertNotEqual(of.main(["owner", "set", "bench", os.path.join(d, "dev")]), 0)
                     self.assertEqual(of.main(["owner", "set", "bench", os.path.join(d, "plain")]), 0)
                 with mock.patch.object(of_asks_answer, "not_the_owner", lambda: True):
+                    self.assertNotEqual(of.main(["owner", "set", "bench", os.path.join(d, "plain")]), 0)
+                # a folder sessions write is refused too: the temporary folders, OF's state folder
+                with mock.patch.object(of_asks_answer, "not_the_owner", lambda: False):
                     self.assertNotEqual(of.main(["owner", "set", "bench", os.path.join(d, "plain")]), 0)
             finally:
                 of_init.write_owner_setting("bench", saved)
