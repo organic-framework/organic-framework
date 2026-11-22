@@ -2643,7 +2643,7 @@ class EscalationsFromCacheTest(unittest.TestCase):
         emitted = []
         args = types.SimpleNamespace(org="acme", write=True, json=False, fresh=False, at=None)
         with mock.patch.object(of_studio_cli, "_org", return_value={"name": "acme", "repo": "/nonexistent"}), \
-                mock.patch.object(of_studio_cli, "_escalations_done", return_value={("del-1", "issue.severity >= high", ("i-0",))}), \
+                mock.patch.object(of_studio_cli, "_escalations_told", return_value={("del-1", "issue.severity >= high"): {"i-0"}}), \
                 mock.patch.object(of_studio_cli, "_rows", side_effect=AssertionError("the log is not read")), \
                 mock.patch("of_events.emit", side_effect=lambda *a, **k: emitted.append((a, k))), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
@@ -2670,7 +2670,7 @@ class EscalationsFromCacheTest(unittest.TestCase):
         self.assertIn("of model escalations --org acme --fresh --write", tell.call_args.args[1])
         # a render wrote them again: the episode ends, and the next stale read is told again
         with mock.patch.object(of_studio_cli, "_org", return_value={"name": "acme", "repo": "/nonexistent"}), \
-                mock.patch.object(of_studio_cli, "_escalations_done", return_value=set()), \
+                mock.patch.object(of_studio_cli, "_escalations_told", return_value={}), \
                 mock.patch("of_events.emit"), contextlib.redirect_stdout(io.StringIO()):
             of_studio_cli.cmd_escalations(args)
             with mock.patch.object(of_studio, "read_escalations", return_value=(None, None)), \
@@ -2784,27 +2784,50 @@ class AsksViewTest(unittest.TestCase):
                       of_studio.asks_note(types.SimpleNamespace(asks_view={"late": True, "age_s": 720})))
         self.assertEqual(of_studio.asks_note(types.SimpleNamespace(asks_view=None)), "")
 
-    def test_an_escalation_is_recorded_once_by_its_fixed_id(self):
+    def test_an_issue_is_escalated_once(self):
+        """A record names only issues no earlier record of its delegation and condition named, and a budget once a
+        month: a set that only shrank, or kept an escalated issue, files nothing (of_field-analyst's replay, msg
+        01a20395-2ead: one unit's 9 records and 6 founder copies in two days around one issue)."""
         import json, tempfile, of_store
         import of_studio_cli
         from unittest import mock
-        x = {"delegation": "del-1", "condition": "issue.severity >= high", "evidence": ["i-1"]}
-        old = dict(x, evidence=["i-0"])
+        hi, bud = "issue.severity >= high", "budget_used > 80%"
+        x = lambda ev, d="del-1", c=hi: {"delegation": d, "condition": c, "status": "fired", "evidence": ev}
         with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"OF_DB": os.path.join(d, "of.db")}):
             conn = of_store.connect()
-            put = lambda i, ts, pl: conn.execute(
+            put = lambda i, ts, pl, org="acme": conn.execute(
                 "INSERT INTO event (event_id, ts, name, org, source, payload, record) VALUES (?,?,?,?,?,?,?)",
-                (i, ts, "of.escalation_due", "acme", "of", json.dumps(pl), "{}"))
-            now = of_model.epoch("2026-11-14T12:00Z")
-            put(of_studio_cli.escalation_id("acme", x), "2026-11-14T11:00:00.000Z", x)   # by its fixed id
-            put("legacy-1", "2026-11-13T21:10:00.000Z", old)                         # an own id, before the fix
-            put("legacy-2", "2026-08-01T00:00:00.000Z", dict(x, evidence=["i-9"]))    # past the window
+                (i, ts, "of.escalation_due", org, "of", json.dumps(pl), "{}"))
+            put("e1", "2026-11-18T14:11:00.000Z", x(["a", "b", "c", "d"]))
+            put("e2", "2026-11-11T13:11:00.000Z", x(["80.0% of 100,000,000 tokens this month"], c=bud))
+            put("e3", "2026-08-01T00:00:00.000Z", x(["z"]))                          # past ESCALATION_KEEP_S
+            put("e4", "2026-11-18T14:11:00.000Z", x(["e"]), org="beta")              # another organization's
             conn.commit()
             conn.close()
-            done = of_studio_cli._escalations_done("acme", [x, old, dict(x, evidence=["i-9"])], now)
-        self.assertEqual(done, {("del-1", "issue.severity >= high", ("i-1",)), ("del-1", "issue.severity >= high", ("i-0",))})
-        self.assertEqual(of_studio_cli.escalation_id("acme", x), of_studio_cli.escalation_id("acme", dict(x)))
-        self.assertNotEqual(of_studio_cli.escalation_id("acme", x), of_studio_cli.escalation_id("beta", x))
+            told = of_studio_cli._escalations_told("acme", of_model.epoch("2026-11-22T12:00Z"))
+        self.assertEqual(told, {("del-1", hi): {"a", "b", "c", "d"}, ("del-1", bud): {"month:2026-11"}})
+        at = "2026-11-22T12:00:00Z"
+        esc = lambda ev, **kw: of_studio_cli._to_escalate(x(ev, **kw), told, at)
+        self.assertIsNone(esc(["a", "b", "d"]))                                     # only smaller
+        self.assertIsNone(esc(["a"]))
+        self.assertEqual(esc(["a", "d", "f"]), ["f"])                               # the new one alone
+        self.assertEqual(esc(["e", "z"]), ["e", "z"])                               # another org's, or past the window
+        self.assertEqual(esc(["a"], d="del-2"), ["a"])                              # another delegation
+        self.assertIsNone(esc(["86.0% of 100,000,000 tokens this month"], c=bud))   # the budget, the same month
+        self.assertEqual(of_studio_cli._to_escalate(x(["5.0% of 100,000,000 tokens this month"], c=bud), told,
+                                                    "2026-12-01T00:05:00Z"), ["5.0% of 100,000,000 tokens this month"])
+        self.assertIsNone(of_studio_cli._to_escalate(dict(x(["f"]), status="quiet"), told, at))
+        # the replayed unit's sets, one after the other: 3 records where 9 were written
+        sets = [["g"], ["a", "b", "c", "d"], ["a", "c", "d"], ["a", "d"], ["a"], ["a", "f", "d"], ["a", "f"]]
+        records, written = [], []
+        for ev in sets:
+            new = of_studio_cli._to_escalate(x(ev), of_studio_cli._told(records, "acme"), at)
+            if new:
+                written.append(new)
+                records.append((at, x(new), "acme"))
+        self.assertEqual(written, [["g"], ["a", "b", "c", "d"], ["f"]])
+        self.assertEqual(of_studio_cli.escalation_id("acme", x(["f"])), of_studio_cli.escalation_id("acme", x(["f"])))
+        self.assertNotEqual(of_studio_cli.escalation_id("acme", x(["f"])), of_studio_cli.escalation_id("beta", x(["f"])))
 
 
 class HealthTabTest(unittest.TestCase):

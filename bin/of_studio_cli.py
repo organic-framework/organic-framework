@@ -655,39 +655,64 @@ def _tell(to, text):
         print(f"of model escalations: could not tell {to}: {exc}", file=sys.stderr)
 
 
-ESCALATION_KEEP_S = 90 * 86400   # records written before their ids were fixed are matched by content this far back
+ESCALATION_KEEP_S = 90 * 86400   # an issue escalated for a delegation's condition is not escalated again this long
 
 
 def escalation_id(org, x):
-    """The fixed id of one escalation's record (of_events.stable_id): the same on every machine and every run."""
+    """The fixed id of one escalation's record (of_events.stable_id): the same on every machine and every run. X's
+    evidence is what the record names, the issues it escalates for the first time (_to_escalate)."""
     import of_events
     return of_events.stable_id("escalation_due", org, x["delegation"], x["condition"], *x["evidence"])
 
 
-def _escalations_done(org, esc=(), now=None):
-    """{(delegation, condition, evidence)} already recorded as of.escalation_due for the organization, among the
-    escalations `esc`: looked up by their fixed ids, and, for records written before 2026-11-14 with an id of their own,
-    by content over the last ESCALATION_KEEP_S. Never the whole log."""
+def _budget(condition):
+    return str(condition or "").startswith("budget_used")
+
+
+def _told(records, org):
+    """{(delegation, condition): what the organization's of.escalation_due records told}, from (ts, payload, org)
+    tuples: the issue ids each named, and for a budget condition the month (its evidence, a share of this month's
+    budget, changes with every response: ten records in one day for a user organization, 2026-11-11)."""
+    out = {}
+    for ts, p, o in records:
+        if o in (None, "", org):
+            told = {"month:" + str(ts)[:7]} if _budget(p.get("condition")) else set(p.get("evidence") or ())
+            out.setdefault((p.get("delegation"), p.get("condition")), set()).update(told)
+    return out
+
+
+def _escalations_told(org, now=None):
+    """_told over the organization's of.escalation_due records of the last ESCALATION_KEEP_S. Never the whole log."""
     try:
         import of_store
         conn = of_store.connect()
-        ids = {escalation_id(org, x): (x["delegation"], x["condition"], tuple(x["evidence"])) for x in esc}
-        found = {e for (e,) in conn.execute(f"SELECT event_id FROM event WHERE event_id IN ({','.join('?' * len(ids))})",
-                                            list(ids))} if ids else set()
         since = of_model.iso((now or time.time()) - ESCALATION_KEEP_S)
-        rows = conn.execute("SELECT payload, org FROM event WHERE name = 'of.escalation_due' AND ts >= ?", (since,)).fetchall()
+        rows = conn.execute("SELECT ts, payload, org FROM event WHERE name = 'of.escalation_due' AND ts >= ?",
+                            (since,)).fetchall()
         conn.close()
     except Exception:  # noqa: BLE001 — no store: nothing recorded
-        return set()
-    out = {ids[e] for e in found}
-    for pl, o in rows:
+        return {}
+    recs = []
+    for ts, pl, o in rows:
         try:
-            p = json.loads(pl) if pl else {}
+            recs.append((ts, json.loads(pl) if pl else {}, o))
         except ValueError:
             continue
-        if o in (None, "", org):
-            out.add((p.get("delegation"), p.get("condition"), tuple(p.get("evidence") or ())))
-    return out
+    return _told(recs, org)
+
+
+def _to_escalate(x, told, ts):
+    """The evidence a fired escalation records at TS, or None when it tells nothing new: the issue ids no earlier
+    record of its delegation and condition named, or a budget's shares once a month. Until 2026-11-22 a record was
+    written for every new set of ids, so one issue, unanswered, came back to the founder with each set that differed
+    (of_field-analyst's replay, msg 01a20395-2ead: one unit's 9 records and 6 founder copies in two days, all around
+    one issue, most sets only smaller)."""
+    if x.get("status") != "fired":
+        return None
+    before = told.get((x["delegation"], x["condition"])) or set()
+    if _budget(x["condition"]):
+        return None if "month:" + str(ts)[:7] in before else list(x["evidence"])
+    return [e for e in x["evidence"] if e not in before] or None
 
 
 def cmd_coupling(args):
@@ -835,8 +860,8 @@ def cmd_polls(args):
 
 def cmd_escalations(args):
     """The escalate_when conditions of delegated units that Studio evaluates (docs/handover.md §4); --write records
-    each newly fired one as of.escalation_due, once per (delegation, condition, evidence). of pulse runs it every 5
-    minutes: it reads what the page cache's render computed (of_studio.write_escalations), never the log itself
+    each fired one as of.escalation_due when it names an issue not escalated before (_to_escalate). of pulse runs it
+    every 5 minutes: it reads what the page cache's render computed (of_studio.write_escalations), never the log itself
     (2026-11-14: over the whole 9-day log it was killed at the pulse's 60 s for a user organization every time). --fresh
     computes from the log instead, by hand."""
     import of_diagnose
@@ -853,22 +878,23 @@ def cmd_escalations(args):
                 _escalations_stale(org["name"], age, b)
             return 0
         _escalations_stale(org["name"], age, b, fresh=True)   # the episode, if any, is over
-        done = _escalations_done(org["name"], esc, b)
+        told = _escalations_told(org["name"], b)
     else:
         _, m, rows = _model(args, _rows(of_model.iso(b - 9 * 86400), names=of_studio.kinds()))
         diag = of_diagnose.diagnose(m, rows, b - 7 * 86400, b,
                                     context={"keeper_since": lambda sysid, k: of_model.keeper_since(org["repo"], sysid, k)})
         esc = of_diagnose.escalations(m, diag, of_studio.budget_used(m, rows, b, refresh_usage=True))
-        done = {((r.get("payload") or {}).get("delegation"), (r.get("payload") or {}).get("condition"),
-                 tuple((r.get("payload") or {}).get("evidence") or ())) for r in rows if r["name"] == "of.escalation_due"}
+        told = _told([(r["ts"], r.get("payload") or {}, r.get("org")) for r in rows
+                      if r["name"] == "of.escalation_due"], org["name"])
     written = 0
     for x in esc:
-        key = (x["delegation"], x["condition"], tuple(x["evidence"]))
-        if args.write and x["status"] == "fired" and key not in done:
+        evidence = _to_escalate(x, told, args.at) if args.write else None
+        if evidence:
             import of_events
+            rec = dict(x, evidence=evidence)
             of_events.emit("escalation_due", {"delegation": x["delegation"], "unit": x["unit"], "condition": x["condition"],
-                                              "from_owner": x["to_owner"], "to": x["from_owner"], "evidence": x["evidence"]},
-                           event_id=escalation_id(org["name"], x), position=x["to_owner"], org=org["name"])
+                                              "from_owner": x["to_owner"], "to": x["from_owner"], "evidence": evidence},
+                           event_id=escalation_id(org["name"], rec), position=x["to_owner"], org=org["name"])
             written += 1
     if args.json:
         print(json.dumps(esc, indent=1, ensure_ascii=False))
