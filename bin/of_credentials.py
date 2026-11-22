@@ -27,6 +27,7 @@ sys.path.insert(0, HERE)
 
 ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 CACHE = "guard-credentials.json"
+CACHE_MAX = 16 * 1024 * 1024
 CACHE_VERSION = 5  # 2: keychain items, protected_code (G20, G21); 3: tools_excluded plugins (G22); 4: connectors too;
 # 5: the owner's protected_code lists in orgs.yaml too
 KEYCHAIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@:-]{0,127}\*?$")  # a service name, or a prefix with a trailing *
@@ -129,15 +130,36 @@ def protection(cat):
     return keychain, code
 
 
+def _read_cache(state_dir):
+    """The guard's cache file as JSON, or None: read as the other state files are, with no link, a regular file of this
+    user, no second name and no wait on open (docs/guard.md, Gaps; PR 541). A count of 0 is a file replaced after it
+    was opened, and stays readable."""
+    import stat
+    try:
+        fd = os.open(os.path.join(state_dir, CACHE),
+                     os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_nlink > 1 or st.st_size > CACHE_MAX:
+            return None
+        fh, fd = os.fdopen(fd), None
+        with fh:
+            c = json.load(fh)
+        return c if isinstance(c, dict) else None
+    except (OSError, ValueError):
+        return None
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def cached_protection(state_dir):
     """protection() from the guard's cache file alone, with no YAML, or None when the file is missing, unreadable or
     of an older version."""
-    try:
-        with open(os.path.join(state_dir, CACHE)) as fh:
-            c = json.load(fh)
-    except (OSError, ValueError):
-        return None
-    if c.get("version") != CACHE_VERSION or not isinstance(c.get("orgs"), dict):
+    c = _read_cache(state_dir)
+    if c is None or c.get("version") != CACHE_VERSION or not isinstance(c.get("orgs"), dict):
         return None
     return protection(c["orgs"])
 
@@ -146,12 +168,8 @@ def plugins_excluded(org, state_dir, orgs_file=None, key="plugins_excluded"):
     """[{plugin, basis}] that ORG's registry lists under `tools_excluded` (docs/guard.md G22), from the guard's cache:
     no YAML in the common case; a missing or old cache is rebuilt first, as for G20 and G21. `key`
     "connectors_excluded": the entries with a url ([{url, connector, basis}])."""
-    try:
-        with open(os.path.join(state_dir, CACHE)) as fh:
-            c = json.load(fh)
-        cat = c["orgs"] if c.get("version") == CACHE_VERSION and isinstance(c.get("orgs"), dict) else None
-    except (OSError, ValueError, KeyError, TypeError):
-        cat = None
+    c = _read_cache(state_dir) or {}
+    cat = c["orgs"] if c.get("version") == CACHE_VERSION and isinstance(c.get("orgs"), dict) else None
     if cat is None:
         cat = cached(state_dir, orgs_file)
     return list(((cat or {}).get(org) or {}).get(key) or [])
@@ -197,11 +215,7 @@ def cached(state_dir, orgs_file=None):
         except OSError:
             return None
     path = os.path.join(state_dir, CACHE)
-    try:
-        with open(path) as fh:
-            c = json.load(fh)
-    except (OSError, ValueError):
-        c = {}
+    c = _read_cache(state_dir) or {}
     stamp = [mt(_orgs_file(orgs_file))]
     regs = c.get("registries") or []
     stamp += [mt(r) for r in regs]
@@ -213,8 +227,13 @@ def cached(state_dir, orgs_file=None):
          "version": CACHE_VERSION}
     try:
         os.makedirs(state_dir, exist_ok=True)
-        tmp = f"{path}.{os.getpid()}"
-        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+        import threading
+        tmp = f"{path}.{os.getpid()}.{threading.get_ident()}"
+        try:
+            os.unlink(tmp)   # whatever lies at the name, a link included, is removed, never followed
+        except FileNotFoundError:
+            pass
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600), "w") as fh:
             json.dump(c, fh)
         os.replace(tmp, path)
     except OSError:

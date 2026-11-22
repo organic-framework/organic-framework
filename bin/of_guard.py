@@ -4238,7 +4238,9 @@ _PATH_TOKEN = re.compile(r"[^\s'\"`;|&()<>{}]*/[^\s'\"`;|&()<>{}]*")
 _SEC_ARG_OPTS = set("acCdDGjlpPrst")  # security find-*-password options that take a value
 # The caches these rules and the passkey check read: an agent that removed or rewrote one would lift them
 # (of_review's probe on organic-framework PR 65: rm, an overwrite, and a forged version-2 cache that is never rebuilt).
-_GUARD_STATE_FILES = re.compile(r"(?:^|/)\.local/state/of/(?:guard-credentials|passkey-revoked)\.json(?:\.\d+)?$")
+# the files and their writers' temporary names: guard-credentials.json.<pid>.<thread> since the cache's writer names its
+# temporary file per process and thread (of_review, 2026-11-22: the rule kept up with the old name only)
+_GUARD_STATE_FILES = re.compile(r"(?:^|/)\.local/state/of/(?:guard-credentials|passkey-revoked)\.json(?:\.\d+)*$")
 GUARD_STATE_DENY = ("the guard's own cache of what organizations protect, which only OF writes (docs/guard.md G20, "
                     "G21)")
 
@@ -4568,9 +4570,9 @@ def _guard_state_file(path, cwd=None):
     if any(ch in p for ch in "*?["):
         import fnmatch
         rp = _real_pattern(p)
-        return any(fnmatch.fnmatchcase(t, rp) or fnmatch.fnmatchcase(t + ".0", rp) for t in targets)
+        return any(fnmatch.fnmatchcase(t + x, rp) for t in targets for x in ("", ".0", ".0.0"))
     real = os.path.realpath(p)
-    return real in targets or bool(re.match(re.escape(state) + r"/(?:guard-credentials|passkey-revoked)\.json\.\d+$",
+    return real in targets or bool(re.match(re.escape(state) + r"/(?:guard-credentials|passkey-revoked)\.json(?:\.\d+)+$",
                                             real))
 
 

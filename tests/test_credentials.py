@@ -248,5 +248,31 @@ class HookTest(CatalogueBase):
         self.assertEqual([c["decision"] for c in self.checks()], ["deny"])
 
 
+class CacheReadTest(unittest.TestCase):
+    """The guard's cache is read as the other state files are: no link, a regular file of this user, no second name,
+    no wait on open."""
+
+    def test_a_planted_fifo_or_link_is_never_read(self):
+        import of_credentials as C
+        with tempfile.TemporaryDirectory() as d:
+            orgs = os.path.join(d, "orgs.yaml")
+            with open(orgs, "w") as fh:
+                fh.write("orgs: []\n")
+            path = os.path.join(d, C.CACHE)
+            os.mkfifo(path)                                           # not a regular file
+            self.assertIsNone(C.cached_protection(d))
+            self.assertEqual(C.guard_protection(d, orgs), ([], []))   # rebuilt over it
+            self.assertFalse(os.path.islink(path))
+            victim = os.path.join(d, "victim.json")
+            with open(victim, "w") as fh:
+                json.dump({"version": C.CACHE_VERSION, "orgs": {"x": {"protected_code": ["/planted"]}}}, fh)
+            os.unlink(path)
+            os.symlink(victim, path)
+            self.assertIsNone(C.cached_protection(d))                 # a link: not read
+            os.unlink(path)
+            os.link(victim, path)
+            self.assertIsNone(C.cached_protection(d))                 # a second name: not read
+
+
 if __name__ == "__main__":
     unittest.main()
