@@ -3004,8 +3004,28 @@ def _render_cache(orgs_file=None, log=None):
     return f"{written} pages for {len(parts)} organizations in {time.time() - t0:.1f} s ({cpu:.1f} s of CPU)"
 
 
-ESCALATIONS_FRESH_S = 3600   # `of model escalations` (the pulse) reads the render's file while it is this recent:
-# a periodic render every PERIODIC_RENDER_S, plus the render's own time
+LISTENER_TICK_S = 600   # the listener asks for a render every 10 minutes (bin/of_listen.py, StudioCacheProcessor)
+RENDERS_DUE_S = PERIODIC_RENDER_S + LISTENER_TICK_S + REFRESH_MAX_S + REFRESH_STUCK_S
+# a render ends within REFRESH_MAX_S, or a minute later by the alarm, and the next starts within PERIODIC_RENDER_S
+# and one tick of the last one's end: past this long since a render last ended, renders have stopped ending
+
+
+def not_latest(computed_at, now=None):
+    """Why a file the render writes for an organization (escalations.json, issues.json) computed at COMPUTED_AT is not
+    the render's latest, or None while it is: the render that ended last began after it, so it failed for this
+    organization; or no render has ended for RENDERS_DUE_S, so renders time out, stop or do not start. Not the file's
+    age alone: under load a render takes up to an hour and the next starts up to 40 minutes after it ends, so an
+    hour-old file is often the latest (2026-11-22: three stale notes at 61 to 65 min on the founder's Mac, each ended
+    by the next render, with no fault; renders took 727 to 1657 s). A file carries its render's start (the render's
+    `now`), and .rendered that start to within a second."""
+    now = now or time.time()
+    end, began = last_render(), last_render(started=True)
+    if end is not None and began is not None and began > computed_at + 1:
+        return f"the last render, ended {of_model.iso(end)}, did not write them"
+    since = now - max(end or 0, computed_at)
+    if since > RENDERS_DUE_S:
+        return f"no render has ended for {since / 60:.0f} min"
+    return None
 
 
 def escalations_path(org):
@@ -3028,16 +3048,17 @@ def write_escalations(d):
 
 
 def read_escalations(org, now=None):
-    """(escalations, age in seconds) from the render's file, or (None, age or None) when it is missing or older than
-    ESCALATIONS_FRESH_S."""
+    """(escalations, age in seconds, None) from the render's file while it is the render's latest (not_latest), else
+    (None, age or None, why)."""
     import json
     try:
         with open(escalations_path(org)) as fh:
             doc = json.load(fh)
     except (OSError, ValueError):
-        return None, None
-    age = (now or time.time()) - float(doc.get("computed_at") or 0)
-    return (doc.get("escalations") if age <= ESCALATIONS_FRESH_S else None), age
+        return None, None, "none written yet"
+    at = float(doc.get("computed_at") or 0)
+    why = not_latest(at, now)
+    return (None if why else doc.get("escalations")), (now or time.time()) - at, why
 
 
 def issues_path(org):
@@ -3057,8 +3078,8 @@ def write_issues(d):
 
 
 def read_issues(names, now=None):
-    """[open issue] of the organizations NAMES from the render's files, or None when one is missing or older than
-    ESCALATIONS_FRESH_S (a render every PERIODIC_RENDER_S, plus its own time)."""
+    """[open issue] of the organizations NAMES from the render's files, or None when one is missing or is not the
+    render's latest (not_latest)."""
     import json
     out = []
     for n in names:
@@ -3067,7 +3088,7 @@ def read_issues(names, now=None):
                 doc = json.load(fh)
         except (OSError, ValueError):
             return None
-        if (now or time.time()) - float(doc.get("computed_at") or 0) > ESCALATIONS_FRESH_S:
+        if not_latest(float(doc.get("computed_at") or 0), now):
             return None
         out += doc.get("issues") or []
     return out

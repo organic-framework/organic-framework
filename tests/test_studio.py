@@ -2642,6 +2642,9 @@ class EscalationsFromCacheTest(unittest.TestCase):
         self.assertEqual(of_studio.write_escalations(types.SimpleNamespace(org="x", full={"org_units": {}})), 0)
         emitted = []
         args = types.SimpleNamespace(org="acme", write=True, json=False, fresh=False, at=None)
+        no_render = mock.patch.object(of_studio, "last_render", return_value=None)   # no other test's .rendered
+        no_render.start()
+        self.addCleanup(no_render.stop)
         with mock.patch.object(of_studio_cli, "_org", return_value={"name": "acme", "repo": "/nonexistent"}), \
                 mock.patch.object(of_studio_cli, "_escalations_told", return_value={("del-1", "issue.severity >= high"): {"i-0"}}), \
                 mock.patch.object(of_studio_cli, "_rows", side_effect=AssertionError("the log is not read")), \
@@ -2650,33 +2653,60 @@ class EscalationsFromCacheTest(unittest.TestCase):
             of_studio_cli.cmd_escalations(args)
         self.assertEqual([(a[1]["condition"], a[1]["evidence"]) for a, _ in emitted], [("issue.severity >= high", ["i-1"])])
         self.assertIn("written: 1", out.getvalue())
-        # an old file: nothing is done, and the log is still not read
+        # a file the renders no longer replace: nothing is done, and the log is still not read
         with mock.patch.object(of_studio_cli, "_org", return_value={"name": "acme", "repo": "/nonexistent"}), \
                 mock.patch.object(of_studio_cli, "_rows", side_effect=AssertionError("the log is not read")), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
-            esc, age = of_studio.read_escalations("acme", time.time() + of_studio.ESCALATIONS_FRESH_S + 60)
+            esc, age, why = of_studio.read_escalations("acme", time.time() + of_studio.RENDERS_DUE_S + 60)
             self.assertIsNone(esc)
-            self.assertGreater(age, of_studio.ESCALATIONS_FRESH_S)
-            with mock.patch.object(of_studio, "read_escalations", return_value=(None, 3600.0)), \
+            self.assertGreater(age, of_studio.RENDERS_DUE_S)
+            self.assertIn("no render has ended for 102 min", why)
+            stale = (None, 6200.0, "no render has ended for 103 min")
+            with mock.patch.object(of_studio, "read_escalations", return_value=stale), \
                     mock.patch("of_events.emit") as emit, mock.patch.object(of_studio_cli, "_tell") as tell:
                 of_studio_cli.cmd_escalations(args)
                 of_studio_cli.cmd_escalations(args)                               # the same episode: said once
-        self.assertIn("the last is 60 min old); nothing done", out.getvalue())
+        self.assertIn("(no render has ended for 103 min; the file is 103 min old); nothing done", out.getvalue())
         self.assertEqual([c.args[0] for c in emit.call_args_list], ["escalations_stale"])
-        self.assertEqual(emit.call_args.args[1]["age_s"], 3600)
+        self.assertEqual(emit.call_args.args[1]["age_s"], 6200)
+        self.assertEqual(emit.call_args.args[1]["why"], "no render has ended for 103 min")
         self.assertEqual(tell.call_count, 1)
         self.assertEqual(tell.call_args.args[0], "of_studio")
-        self.assertIn("acme are 60 min old", tell.call_args.args[1])
+        self.assertIn("acme are 103 min old: no render has ended for 103 min, so", tell.call_args.args[1])
         self.assertIn("of model escalations --org acme --fresh --write", tell.call_args.args[1])
         # a render wrote them again: the episode ends, and the next stale read is told again
         with mock.patch.object(of_studio_cli, "_org", return_value={"name": "acme", "repo": "/nonexistent"}), \
                 mock.patch.object(of_studio_cli, "_escalations_told", return_value={}), \
                 mock.patch("of_events.emit"), contextlib.redirect_stdout(io.StringIO()):
             of_studio_cli.cmd_escalations(args)
-            with mock.patch.object(of_studio, "read_escalations", return_value=(None, None)), \
+            with mock.patch.object(of_studio, "read_escalations", return_value=(None, None, "none written yet")), \
                     mock.patch.object(of_studio_cli, "_tell") as tell:
                 of_studio_cli.cmd_escalations(args)
         self.assertIn("acme are missing", tell.call_args.args[1])
+
+    def test_an_old_file_is_stale_only_when_the_renders_did_not_replace_it(self):
+        """not_latest: an hour-old file is the latest while renders run slow (2026-11-22: notes at 61 to 65 min with
+        no fault, renders of 727 to 1657 s); it is stale when the last render began after it and did not write it, or
+        when no render has ended for RENDERS_DUE_S (renders time out, stop or do not start)."""
+        from unittest import mock
+        t = 1795000000.0
+        rendered = lambda end, wall: (lambda started=False: end - wall if started else end)
+        cases = [  # (file computed at, last render's end and wall, now) -> why, or None
+            (t, (t + 1500, 1520), t + 1500 + 2400 + 1200, None),                 # a slow cadence, 85 min old: latest
+            (t, (t - 100, 1600), t + 3700, None),                                # a render running long, no fault yet
+            (t, (t + 900, 800), t + 1000, "the last render, ended"),              # began after the file, did not write
+            (t, (t - 60, 1200), t + of_studio.RENDERS_DUE_S + 60, "no render has ended for 102 min"),
+            (t, None, t + of_studio.RENDERS_DUE_S + 60, "no render has ended for 102 min"),   # never a .rendered
+        ]
+        for at, render, now, want in cases:
+            last = rendered(*render) if render else (lambda started=False: None)
+            with mock.patch.object(of_studio, "last_render", side_effect=last):
+                why = of_studio.not_latest(at, now)
+            if want is None:
+                self.assertIsNone(why, (render, now - at))
+            else:
+                self.assertIn(want, why or "", (render, now - at))
+        self.assertEqual(of_studio.RENDERS_DUE_S, 1800 + 600 + 3600 + 60)
 
     def test_fresh_reads_what_was_told_and_an_unreadable_store_records_nothing(self):
         """--fresh reads what was escalated over ESCALATION_KEEP_S, as the pulse's pass does, not its 9 days of rows;
@@ -2701,7 +2731,7 @@ class EscalationsFromCacheTest(unittest.TestCase):
                     mock.patch.object(of_studio_cli.of_diagnose, "diagnose", return_value={"issues": []}), \
                     mock.patch.object(of_studio_cli.of_diagnose, "escalations", return_value=[fired]), \
                     mock.patch.object(of_studio, "budget_used", return_value={}), \
-                    mock.patch.object(of_studio, "read_escalations", return_value=([fired], 60.0)), \
+                    mock.patch.object(of_studio, "read_escalations", return_value=([fired], 60.0, None)), \
                     mock.patch.object(of_studio_cli, "_escalations_stale"), \
                     mock.patch("of_events.emit", side_effect=lambda *a, **k: emitted.append(a[1]["evidence"])), \
                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
@@ -3924,7 +3954,8 @@ class IssuesAcrossOrgsTest(unittest.TestCase):
             self.assertEqual(of_studio.write_issues(D()), 1)
             self.assertEqual([i["issue_id"] for i in of_studio.read_issues(["team"])], ["43b590d385f6"])
             self.assertIsNone(of_studio.read_issues(["team", "acme"]))           # one organization has no file
-            self.assertIsNone(of_studio.read_issues(["team"], now=D.now + of_studio.ESCALATIONS_FRESH_S + 1))
+            self.assertIsNone(of_studio.read_issues(["team"], now=D.now + of_studio.RENDERS_DUE_S + 1))
+            self.assertIsNotNone(of_studio.read_issues(["team"], now=D.now + 90 * 60))   # 90 min old, still the latest
             ran = []
             with mock.patch.object(of_studio_cli, "_rows", lambda since: []), \
                     mock.patch.object(of_studio_cli, "_open_issues", lambda a, n, rows, b: ran.append(n) or (n, [], {})):
