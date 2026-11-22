@@ -857,12 +857,14 @@ def ask_blocking(ask):
 
 def escalations(positions, asks, now, already=()):
     """Asks routed to a delegated unit's owner that go up to the founder now, per the delegation's
-    reporting.escalate_when: `ask.blocking` (at once), `ask_unanswered > 2h` (after that long), `ask_due < 7d` (its own
-    --due less than that away, at filing or later as the date nears).
+    reporting.escalate_when: `ask.blocking` (at once), `ask_unanswered > 2h` (after that long), `ask_unanswered` alone
+    (after the organization's of-asks setting escalate_after, 2h by default: bin/of_asks_package.py; organic-framework-
+    build reports/framework/metamethod/11-first-slice.md, part 4), `ask_due < 7d` (its own --due less than that away,
+    at filing or later as the date nears).
     Returns [(ask, rule, delegation id)]; `already` = ask ids escalated before."""
     import re
     by_name = {p["name"]: p for p in positions}
-    out = []
+    out, cache = [], {}
     for a in asks:
         if a["state"] != "open" or a.get("to") in ("founder", "owner", None) or a["event_id"] in already:
             continue
@@ -871,12 +873,22 @@ def escalations(positions, asks, now, already=()):
         age = now - (_ts(a["ts"]) or now)
         for rule in rules:
             m = re.match(r"^ask_unanswered\s*>\s*(\d+)\s*([mh])$", rule)
-            if (rule == "ask.blocking" and ask_blocking(a)) or \
-                    (m and age >= int(m.group(1)) * (3600 if m.group(2) == "h" else 60)) or \
+            after = int(m.group(1)) * (3600 if m.group(2) == "h" else 60) if m else \
+                _escalate_after(by_name.get(a.get("position")), cache) if rule == "ask_unanswered" else None
+            if (rule == "ask.blocking" and ask_blocking(a)) or (after is not None and age >= after) or \
                     due_soon(rule, a.get("due"), now) or tag_match(rule, effective_tags(a)):
                 out.append((a, rule, d.get("id")))
                 break
     return out
+
+
+def _escalate_after(position, cache):
+    """A bare `ask_unanswered`'s time for POSITION's organization, read once per pass and organization."""
+    root = (position or {}).get("_root")
+    if root not in cache:
+        import of_asks_package
+        cache[root] = of_asks_package.escalate_after(root)
+    return cache[root]
 
 
 def run_escalations(positions, asks, now, conn, log=print, elsewhere=None):
