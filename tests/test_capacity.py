@@ -1952,7 +1952,16 @@ class Resume(unittest.TestCase):
                                  "toolUseResult": {"id": "deadbeef"}}) + "\n")
         notes = os.path.join(self.home.name, "capacity", "moves", "*", "note.md")
 
+        settings = os.path.join(of_capacity.of_events.STATE_DIR, "spawn", "s1.settings.json")
+        os.makedirs(os.path.dirname(settings), exist_ok=True)
+        with open(settings, "w") as fh:
+            fh.write('{"launched": "before"}')
+
         def exit_session(*args, **kwargs):
+            with open(settings) as fh:   # of_review on PR 516: not written before the exit
+                self.assertEqual(fh.read(), '{"launched": "before"}')
+            with open(settings, "w") as fh:
+                fh.write('{"written": "while exiting"}')
             path, = glob.glob(notes)
             self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
             with open(path) as fh:
@@ -1963,6 +1972,8 @@ class Resume(unittest.TestCase):
                                      "content": "Stopped scheduled task: Check the report…"}) + "\n")
 
         def start_session(*args, **kwargs):
+            with open(settings) as fh:   # it starts on what the move wrote right before, not on the exit's write
+                self.assertNotIn("while exiting", fh.read())
             path, = glob.glob(notes)
             self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
             with open(path) as fh:
@@ -1989,6 +2000,37 @@ class Resume(unittest.TestCase):
         self.assertTrue(any("1 stopped scheduled task" in msg for msg in logs))
         rec = [c[2] for c in self.calls if c[:2] == ("emit", "session_settings")]
         self.assertEqual([(r["session"], r["by"]) for r in rec], [("s1", "of capacity move")])  # msg 01a20340-445c
+        with open(settings, "rb") as fh:
+            self.assertEqual(rec[0]["sha256"], hashlib.sha256(fh.read()).hexdigest())
+        self.assertNotIn("disk_sha256", rec[0])                              # what it wrote is what lies there
+
+    def test_a_move_stopped_at_the_exit_leaves_the_settings_file_and_records_nothing(self):
+        """of_review on PR 516: the move wrote the live session's settings file before the exit, so a move stopped
+        there left it changed against the record of the session's launch."""
+        target = os.path.join(self.home.name, ".claude-b")
+        os.makedirs(target)
+        shutil.copy2(os.path.join(self.cfg, ".claude.json"), target)
+        settings = os.path.join(of_capacity.of_events.STATE_DIR, "spawn", "s1.settings.json")
+        os.makedirs(os.path.dirname(settings), exist_ok=True)
+        with open(settings, "w") as fh:
+            fh.write('{"launched": "before"}')
+
+        def exit_session(*args, **kwargs):
+            raise of_capacity.MoveError("runners_keeper: did not exit")
+
+        live = {"session": "s1", "cwd": self.cwd, "pid": 9, "status": "idle"}
+        with mock.patch.multiple(of_capacity, live_sessions=lambda d: [live] if d == self.cfg else [],
+                                 _agent_by_session=lambda _: {"pane_id": "w6:p18", "agent_status": "idle"},
+                                 _continuation=lambda _: {}, load_policy=lambda: {}, proc_env=lambda _: {},
+                                 proc_args=lambda _: "claude", background_processes=lambda _: [], missing_signins=lambda *_: [],
+                                 connectors_seen=lambda _: set(), plugins_ready=lambda _: set(), granted_labels=lambda _: {},
+                                 with_labels=lambda have, _: have, tools_for=lambda *_: None, deny_for=lambda *_: None,
+                                 exit_session=exit_session), self.assertRaises(of_capacity.MoveError):
+            of_capacity.move({"name": "runners_keeper", "holder": {"session": "s1"}}, target,
+                             assume_empty_input=True, log=lambda *_: None)
+        with open(settings) as fh:
+            self.assertEqual(fh.read(), '{"launched": "before"}')
+        self.assertEqual([c for c in self.calls if c[:2] == ("emit", "session_settings")], [])
 
     def test_carry_note_recovers_a_one_shot_even_when_install_rewrites_its_stop_notice(self):
         import of_carry
@@ -2946,7 +2988,7 @@ class ToolProfiles(unittest.TestCase):
             self.assertEqual((name, payload["by"], payload["file"], kw["position"], kw["org"]),
                              ("session_settings", "of capacity move", "s1.settings.json", "aws", "acme"))
             dry = of_capacity.launch_command("/w", "/h/.claude-b", "s1", "aws", "/n.md", deny=["Read(/k/**)", "x"],
-                                             state_dir=t, dry_run=True)
+                                             state_dir=t, write=False)
             self.assertEqual(of_capacity._ARG_SETTINGS.search(dry).group(1), path)
             self.assertEqual(of_capacity._ARG_SETTINGS.search(line).group(1), path)
             with open(path, "rb") as fh:
