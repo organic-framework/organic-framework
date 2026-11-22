@@ -140,15 +140,23 @@ class ArchiveTest(unittest.TestCase):
         put("v.jsonl.7.zst", z(b"v") + z(b"\n"))                  # the same content in other bytes: stays
         put("v.jsonl.6.zst", z(b"v\n"))                           # differs from the next in its bytes: stays
         put("v.jsonl.zst", z(b"v\n"))
+        put("w.jsonl.123.zst", z(b"w\n"))                         # a source named so beside w.jsonl: its own copy
+        put("w.jsonl.zst", z(b"w\n"))                             # (of_review on PR 502), never a kept one
+        out = []
+        of_archive.drop_identical(dry_run=True, log=out.append)
+        self.assertIn("nothing dropped", out[-1])                  # no index: a kept copy cannot be told, none goes
+        rel = ".claude-x/projects/p/"
+        with open(os.path.join(self.state, "raw", "files.json"), "w") as fh:
+            json.dump({rel + n: [1, 1, "", ""] for n in ("t.jsonl", "u.jsonl", "v.jsonl", "w.jsonl", "w.jsonl.123")}, fh)
         out = []
         of_archive.drop_identical(dry_run=True, log=out.append)
         self.assertIn("would drop 2 kept copies", out[-1])
-        self.assertEqual(len(os.listdir(d)), 8)                    # a dry run deletes nothing
+        self.assertEqual(len(os.listdir(d)), 10)                   # a dry run deletes nothing
         out = []
         of_archive.drop_identical(log=out.append)
         self.assertIn("dropped 2 kept copies", out[-1])
         self.assertEqual(sorted(os.listdir(d)), ["t.jsonl.100.zst", "t.jsonl.zst", "u.jsonl.5.zst", "v.jsonl.6.zst",
-                                                 "v.jsonl.7.zst", "v.jsonl.zst"])
+                                                 "v.jsonl.7.zst", "v.jsonl.zst", "w.jsonl.123.zst", "w.jsonl.zst"])
         self.assertEqual(self.copy("t.jsonl"), b"two\n")
 
     def test_new_files_first_within_a_budget_and_one_path(self):
