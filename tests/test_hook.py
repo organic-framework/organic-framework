@@ -866,6 +866,17 @@ class NoWriteThroughALinkTest(unittest.TestCase):
                     of_store.connect(db)
                 with open(target) as fh:
                     self.assertEqual(fh.read(), "TARGET\n")
+                # a file replaced or unlinked after open has no link left (count 0): still ours, still written
+                # (of_review on PR 545: `!= 1` refused it, and read-then-write callers lost data)
+                gone = os.path.join(state, "gone.log")
+                fd = of_events.open_own(gone)
+                os.unlink(gone)
+                os.close(fd)
+                fd = os.open(os.path.join(state, "again.log"), os.O_WRONLY | os.O_CREAT, 0o600)
+                os.close(fd)
+                os.link(os.path.join(state, "again.log"), os.path.join(d, "hard"))   # a second name: refused
+                with self.assertRaises(OSError):
+                    of_events.open_own(os.path.join(state, "again.log"))
             finally:
                 of_hook.STATE, of_events.STATE_DIR = saved
 

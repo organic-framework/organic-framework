@@ -142,7 +142,7 @@ def open_own(path, flags=os.O_WRONLY | os.O_CREAT | os.O_APPEND, mode=0o600):
     import stat
     fd = os.open(path, flags | _NOFOLLOW | getattr(os, "O_NONBLOCK", 0), mode)
     st = os.fstat(fd)
-    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_nlink != 1:
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_nlink > 1:   # 0: replaced after open
         os.close(fd)
         raise OSError(f"{path} is not a regular file of ours")
     return fd
