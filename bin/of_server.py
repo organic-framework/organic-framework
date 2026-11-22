@@ -2520,24 +2520,32 @@ def backup(cfg=None, keep=BACKUP_KEEP, ch_post=None, today=None):
         for db in dbs:
             if not _DB.fullmatch(db):
                 raise ValueError("a ClickHouse database name that is not a plain name")
-            # BACKUP refuses a name that exists, and the name is the UTC day: a database already backed up today (a run
-            # by hand before the timer's, or a run that failed after it) is left as it is, never a failure, and one
-            # that fails stops none of the others (of_agent-server, 2026-11-22)
-            if b.get("clickhouse_path") and os.path.exists(os.path.join(os.path.expanduser(b["clickhouse_path"]), day,
-                                                                       f"{db}.zip")):
+            # BACKUP refuses a name that exists, and the name is the UTC day: a database whose backup for the day is
+            # finished (its zip there, no lock beside it) is left as it is; one that fails stops none of the others
+            # (of_agent-server, 2026-11-22). A zip with its lock is a backup still written or broken off, never done,
+            # and it is told as a failure (of_review on PR 554)
+            state = _day_zip(b, day, db)
+            if state == "done":
                 out.append(f"{day}: ClickHouse {db} was backed up today already")
+                continue
+            if state == "unfinished":
+                failed.append(f"{db} (an unfinished backup of the day is there)")
                 continue
             try:
                 post(f"BACKUP DATABASE {db} TO Disk('{disk}', '{day}/{db}.zip')")  # names checked above: no quoting gap
             except Exception as e:  # noqa: BLE001 - told below, and the unit fails
-                if "BACKUP_ALREADY_EXISTS" in str(e) or "already exists" in str(e):
+                # ClickHouse also says this of a backup still being written, so it is done only when the disk's path
+                # shows a finished zip; without the path it cannot be told, and it is a failure
+                if ("BACKUP_ALREADY_EXISTS" in str(e) or "already exists" in str(e)) and _day_zip(b, day, db) == "done":
                     out.append(f"{day}: ClickHouse {db} was backed up today already")
                 else:
                     failed.append(f"{db} ({type(e).__name__})")
                 continue
             out.append(f"{day}: ClickHouse {db} backed up to its disk {disk}")
         if failed:
-            out.append(f"{day}: ClickHouse backup failed for {', '.join(failed)}")
+            # a failed night removes nothing: pruning the old days then would leave fewer good backups each failed
+            # night, until none (of_review on PR 554)
+            raise RuntimeError(f"{day}: ClickHouse backup failed for {', '.join(failed)}; no old day removed")
     cutoff = time.strftime("%Y-%m-%d", time.gmtime((today and time.mktime(time.strptime(today, "%Y-%m-%d"))
                                                     or time.time()) - keep * 86400))
     for place in [root] + ([os.path.expanduser(b["clickhouse_path"])] if b.get("clickhouse_path") else []):
@@ -2545,9 +2553,19 @@ def backup(cfg=None, keep=BACKUP_KEEP, ch_post=None, today=None):
             if re.fullmatch(r"\d{4}-\d{2}-\d{2}", name) and name < cutoff:
                 shutil.rmtree(os.path.join(place, name))
                 out.append(f"removed {name} from {place}")
-    if any("ClickHouse backup failed" in x for x in out):
-        raise RuntimeError(next(x for x in out if "ClickHouse backup failed" in x))
     return out
+
+
+def _day_zip(b, day, db):
+    """'done' when the disk's path holds DAY's finished zip of DB (no lock beside it), 'unfinished' when it holds one
+    still locked, None when there is none or the path is not configured."""
+    if not b.get("clickhouse_path"):
+        return None
+    zipf = os.path.join(os.path.expanduser(b["clickhouse_path"]), day, f"{db}.zip")
+    locked = any(os.path.lexists(x) for x in (zipf + ".lock", os.path.join(os.path.dirname(zipf), ".lock")))
+    if os.path.lexists(zipf) or locked:
+        return "unfinished" if locked else "done"
+    return None
 
 
 CLICKHOUSE_HTTPS_PORT = 18443  # the host's ClickHouse, https only on 127.0.0.1

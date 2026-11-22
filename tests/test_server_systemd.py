@@ -85,6 +85,9 @@ class SystemdTest(unittest.TestCase):
             chdir = os.path.join(d, "ch")
             os.makedirs(os.path.join(chdir, "2026-11-20"))
             open(os.path.join(chdir, "2026-11-20", "of_acme.zip"), "w").close()       # made by an earlier run
+            open(os.path.join(chdir, "2026-11-20", "of_unassigned.zip"), "w").close()  # finished: no lock beside it
+            os.makedirs(os.path.join(chdir, "2026-11-01"))                              # good old days, past the cutoff
+            os.makedirs(os.path.join(state, "backups", "2026-11-01"))
             sent = []
 
             def post(q):
@@ -98,7 +101,19 @@ class SystemdTest(unittest.TestCase):
             with mock.patch("of_ship.config", return_value={"url": "http://192.0.2.1:8123"}):
                 with self.assertRaisesRegex(RuntimeError, "failed for of_vault"):
                     of_server.backup(cfg, ch_post=post, today="2026-11-20")
-            self.assertEqual([q.split()[2] for q in sent], ["of_unassigned", "of_vault", "of_zeta"])  # acme skipped,
+            self.assertEqual([q.split()[2] for q in sent], ["of_vault", "of_zeta"])  # acme and unassigned finished,
+            # of_review on PR 554: a failed night removes no old day, or each one would leave fewer good backups
+            self.assertTrue(os.path.isdir(os.path.join(chdir, "2026-11-01")))
+            self.assertTrue(os.path.isdir(os.path.join(state, "backups", "2026-11-01")))
+            # a zip with its lock is unfinished, never done; and 'already exists' with no finished zip is a failure
+            open(os.path.join(chdir, "2026-11-20", "of_zeta.zip"), "w").close()
+            open(os.path.join(chdir, "2026-11-20", "of_zeta.zip.lock"), "w").close()
+            os.unlink(os.path.join(chdir, "2026-11-20", "of_unassigned.zip"))
+            with mock.patch("of_ship.config", return_value={"url": "http://192.0.2.1:8123"}):
+                with self.assertRaises(RuntimeError) as cm:
+                    of_server.backup(cfg, ch_post=post, today="2026-11-20")
+            self.assertIn("of_zeta (an unfinished backup of the day is there)", str(cm.exception))
+            self.assertIn("of_unassigned (RuntimeError)", str(cm.exception))
             # zeta still tried after vault failed
 
     def test_the_backup_copies_the_store_backs_up_each_database_and_keeps_seven_days(self):
