@@ -669,6 +669,8 @@ protected_code:
       checks: [unit]
 ```
 
+- **The owner's list instead of the registry's** (2026-11-22, `of_server`; agreed by `of_architect`). On a machine where an organization's registry follows its agents' pushes (the agent host, by the founder's choice on card OF-266), a push could change what vouches for the code the guard runs. So an organization's entry in `~/.config/of/orgs.yaml`, the owner's file (docs/guard.md G33), may hold its own `protected_code:` list. When it does, `of protected ff` takes that organization's `ff` entries from there alone and never reads the registry's; an empty list means none. Without such a list it reads the registry as before. On the agent host, the owner's sitting writes the live checkout's entry there (its repository, branch, checks and human set).
+
 ## Grants (proposal, 2026-11-05)
 
 Status: **v0, accepted** by `of_architect` (2026-11-05), after RFC 0001 §5.0. Code: `bin/of_grants.py`, tests `tests/test_grants.py`. Issue and revoke with `of grant issue|revoke --org …` (tenant only: it signs with the tenant key and refuses a grant whose delegation chain does not verify); `of registry check` verifies every grant and its chain; of-server answers `POST /v1/grants/verify`. Grants are what a position may do, at which autonomy tier. The guard (bounds), the relay (relayed authority), cross-organization messages and automatic changes all read them from here. Authority is never read from message text.
