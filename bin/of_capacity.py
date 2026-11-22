@@ -3948,15 +3948,23 @@ def _restore_one(e, p, plan, ts, log=print, dry_run=False, home=None, claimed=No
     # the folder the process started in (its transcript's folder), not the transcript's last cwd: platform_owner
     # started in ~/acme and works in ~/acme/org, which its account does not trust (2026-11-10)
     cwd = e.get("cwd") if e.get("cwd") and os.path.isdir(e["cwd"]) else last_field(transcript, "cwd")
-    if not cwd or not os.path.isdir(cwd):
+    if not cwd:
         raise MoveError(f"no working directory for session {sid[:8]}")
     # start_in (capacity.yaml): a restore is a restart, so a listed position resumes in its start folder, the one of
     # spawn would start it in. On another machine that is the work folder its orgs.yaml names, not the live checkout
     # the home rewrite lands in (of_agent-server, hand-over 56a0e7dc, 2026-11-22). Its trust is the owner's decision
     # on this account or on the default one, carried as a move carries it; with neither, it resumes where it ran.
+    # Looked up before the old folder is checked: that one may not exist on this machine (of_review on PR 524).
     run_cwd = resume_folder(name, cwd, target, target, log=log, p=p)
+    if not os.path.isdir(run_cwd):
+        raise MoveError(f"no working directory for session {sid[:8]}: {run_cwd} does not exist here")
     if run_cwd == cwd and not trusted_key(target, cwd):
         raise MoveError(f"folder {cwd} is not trusted in {short(target)}; the owner decides (of ask)", untrusted=cwd)
+    try:  # a start folder no account trusts: it resumes where it ran, and the note and the summary say so
+        wanted = start_folder(name, cwd, p=p)
+    except MoveError:
+        wanted = cwd
+    untrusted_start = wanted if wanted != cwd and run_cwd == cwd else None
     claimed = claimed if claimed is not None else set()
     own = os.environ.get("HERDR_PANE_ID")
     panes = _herdr("pane", "list")["panes"]
@@ -4024,7 +4032,12 @@ def _restore_one(e, p, plan, ts, log=print, dry_run=False, home=None, claimed=No
         note += (f"\n## Your working folder changed\n\nYour working folder changed from {cwd} to {run_cwd} (your "
                  f"position's start folder). Relative paths, git and the folder's agent rules now refer to the new "
                  f"folder; files you left in the old one are still there.\n")
+    elif untrusted_start:
+        note += (f"\n## Not in your start folder\n\nYour position's start folder is {untrusted_start}, but no account "
+                 f"here trusts it yet, so you resumed in {cwd}. Make no commits there; tell your structure keeper, and "
+                 f"once the owner trusts the folder, `of capacity move <you> --restart` takes you there.\n")
     _write_handover_note(note_path, note, stopped, log)
+    trust = ("trusted", trusted_key(target, cwd))
     if run_cwd != cwd:  # the trust carried and the transcript under the folder's key, as a move does
         trust = ensure_trust(target, target, run_cwd)
         log(f"  start folder {run_cwd}: {trust[0]} ({trust[1]})")
@@ -4042,15 +4055,22 @@ def _restore_one(e, p, plan, ts, log=print, dry_run=False, home=None, claimed=No
                                       "evidence": "of capacity carry restore" if carried else "of capacity reboot restore",
                                       "workplace": {"config_dir": target, "account": account_of(target),
                                                     "runtime": "herdr", "pane": pane, "cwd": run_cwd},
+                                      "previous_workplace": {"config_dir": target, "account": account_of(target),
+                                                             "runtime": "herdr", "pane": e.get("pane"), "cwd": cwd},
                                       "model": model, "effort": effort,
-                                      "trust": {"state": "trusted", "path": trusted_key(target, run_cwd)}},
+                                      # ensure_trust carries only from the default account when source and target
+                                      # are one (of_review on PR 524: a trust written for the owner shows as such)
+                                      "trust": {"state": trust[0], "path": trust[1],
+                                                **({"from": os.path.expanduser("~/.claude")}
+                                                   if trust[0] == "carried" else {})}},
                    position=e.get("position") or name, session=new["session"])
     try:
         rename_agent(pane, name, new["session"])
     except MoveError as err:
         log(f"  herdr name: not set ({err}); `of apply` sets it")
     log(f"  resumed: pid {new['pid']}, pane {pane}")
-    return {"pane": pane, "session": new["session"], "work": work}
+    return {"pane": pane, "session": new["session"], "work": work, "cwd": run_cwd,
+            **({"untrusted_start": untrusted_start} if untrusted_start else {})}
 
 
 def stray_holder(e, live_dir, args, started_ms, prepared):
@@ -4136,6 +4156,10 @@ def reboot_restore(positions, only=None, dry_run=False, log=print, of_bin=None, 
             os.replace(_reboot_current(), os.path.join(REBOOT_DIR, f"done-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"))
     log(f"{sum(1 for _, s, _ in done if s == 'resumed')} resumed, {sum(1 for _, s, _ in done if s == 'running')} "
         f"already running, {len(failed)} failed{': ' + ', '.join(failed) if failed else ''}")
+    away = [f"{n} ({r['cwd']}, start folder {r['untrusted_start']})" for n, st, r in done
+            if st == "resumed" and isinstance(r, dict) and r.get("untrusted_start")]
+    if away:  # of_review on PR 524: the live checkout, the hand-over's incident, said only in the log above
+        log(f"NOT in their start folder, which no account here trusts: {', '.join(away)}")
     return done
 
 
