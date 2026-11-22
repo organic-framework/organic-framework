@@ -417,6 +417,10 @@ class WorkCloneTest(unittest.TestCase):
                 with self.assertRaises(of_spawn.SpawnError):
                     of_spawn.work_dir(p, {"s": {"repos": []}}, [f"{d}/fw/chain"])
                 self.assertFalse(of_spawn.clone_guard()(f"{d}/out2"))
+                with open(f"{d}/out2/doc.md", "w") as fh:
+                    fh.write("x")
+                self.assertIsNone(of.doc_path("chain:doc.md", [f"{d}/fw"]))       # the doc reader too
+                self.assertIsNone(of.doc_path("lnk:../doc.md", [f"{d}/fw"]))
             # with no clone named, the sibling is taken as before
             self.assertEqual(of_spawn.work_dir(p, {"s": {"repos": ["build"]}}, [f"{d}/fw"]), f"{d}/build")
 
