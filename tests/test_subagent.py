@@ -269,77 +269,56 @@ class SubagentTest(unittest.TestCase):
         self.assertEqual(g.check(d, exe=None, run=runner(), out=io.StringIO()) if not __import__("shutil").which(
             "gitleaks") else 1, 1)
 
-    def test_the_scan_remembers_clean_content_and_keeps_progress(self):
-        """A user organization's structure keeper (message 01a20537-12ad): a repository too large to scan within the
-        timeout refused every review. Clean content is remembered (by version, rules, path and content), only the
-        rest is scanned, and a run that runs out of time keeps what it scanned and still fails closed."""
+    def test_the_scan_goes_in_batches_each_with_its_own_time(self):
+        """A user organization's structure keeper (message 01a20537-12ad), and of_server on PR 571: a large snapshot
+        is scanned whole in batches, each with SCAN_TIMEOUT_S of its own, so it completes; a stalled batch fails
+        closed; nothing is remembered between runs."""
         import io
         import tempfile
         import of_gitleaks_check as g
         with tempfile.TemporaryDirectory() as d:
-            d = os.path.realpath(d)
-            snap, cache = os.path.join(d, "snap"), os.path.join(d, "cache", "clean")
+            snap = os.path.join(os.path.realpath(d), "snap")
             os.makedirs(os.path.join(snap, "src"))
             for i in range(5):
                 with open(os.path.join(snap, "src", f"f{i}.py"), "w") as fh:
-                    fh.write(f"x = {i}\n")
-            scanned = []
+                    fh.write("KEY = 1\n" if i == 3 else f"x = {i}\n")
+            batches = []
 
             def run(argv, **kw):
                 if argv[1] == "version":
                     return subprocess.CompletedProcess(argv, 0, stdout="8.30.1\n")
+                self.assertEqual(kw.get("timeout"), g.SCAN_TIMEOUT_S)        # each batch its own time
                 root = argv[2]
                 files = sorted(os.path.relpath(os.path.join(a, f), root) for a, _, fs in os.walk(root) for f in fs)
-                scanned.append(files)
-                found = [{"File": os.path.join(root, f), "StartLine": 1, "RuleID": "r"} for f in files
-                         if open(os.path.join(root, f)).read().startswith("KEY")]
+                batches.append(files)
+                found = []
+                for f in files:
+                    with open(os.path.join(root, f)) as fh:
+                        if fh.read().startswith("KEY"):
+                            found.append({"File": os.path.join(root, f), "StartLine": 1, "RuleID": "r"})
                 with open(argv[argv.index("--report-path") + 1], "w") as fh:
                     json.dump(found, fh)
                 return subprocess.CompletedProcess(argv, 0)
-            go = lambda: g.check(snap, exe="/bin/true", run=run, out=io.StringIO(), cache=cache)  # noqa: E731
-            self.assertEqual(go(), 0)
-            self.assertEqual(sum(len(x) for x in scanned), 5)
-            scanned.clear()
-            self.assertEqual(go(), 0)
-            self.assertEqual(scanned, [])                                    # nothing new: no scan at all
-            with open(os.path.join(snap, "src", "f1.py"), "w") as fh:
-                fh.write("KEY = 1\n")
-            out = io.StringIO()
-            self.assertEqual(g.check(snap, exe="/bin/true", run=run, out=out, cache=cache), 1)
-            self.assertEqual(scanned, [[os.path.join("src", "f1.py")]])      # only the changed file
-            self.assertIn("src/f1.py:1:r", out.getvalue())
-            scanned.clear()
-            self.assertEqual(go(), 1)                                        # a finding is never remembered clean
-            # out of time: the scanned batch is kept, the run fails closed, the next one goes on
-            for i in range(5, 9):
-                with open(os.path.join(snap, f"g{i}.py"), "w") as fh:
-                    fh.write("y = 1\n" * (i * 1000))
-            os.remove(os.path.join(snap, "src", "f1.py"))
-            calls = []
-
-            def slow(argv, **kw):
-                if argv[1] != "version":
-                    calls.append(1)
-                    if len(calls) > 1:
-                        raise subprocess.TimeoutExpired(argv, kw["timeout"])
-                return run(argv, **kw)
-            with mock.patch.object(g, "BATCH_FILES", 1):
+            with mock.patch.object(g, "BATCH_FILES", 2):
                 out = io.StringIO()
-                self.assertEqual(g.check(snap, exe="/bin/true", run=slow, out=out, cache=cache), 1)
-                self.assertIn("3 of 4 files not scanned yet", out.getvalue())
-                scanned.clear()
-                self.assertEqual(go(), 0)
-                self.assertEqual(sum(len(x) for x in scanned), 3)            # the kept one is not scanned again
-            # a link at the cache's name: nothing is read from or written through it
-            target = os.path.join(d, "elsewhere")
-            with open(target, "w") as fh:
-                fh.write("")
-            os.remove(cache)
-            os.symlink(target, cache)
-            scanned.clear()
-            self.assertEqual(go(), 0)
-            self.assertEqual(sum(len(x) for x in scanned), 8)                # remembers nothing: scans all
-            self.assertEqual(open(target).read(), "")
+                self.assertEqual(g.check(snap, exe="/bin/true", run=run, out=out), 1)
+                self.assertEqual(len(batches), 3)                             # every file, in three batches
+                self.assertEqual(out.getvalue().strip(), os.path.join("src", "f3.py") + ":1:r")
+                batches.clear()
+                self.assertEqual(g.check(snap, exe="/bin/true", run=run, out=io.StringIO()), 1)
+                self.assertEqual(sum(len(x) for x in batches), 5)              # nothing remembered: all again
+                calls = []
+
+                def stalls(argv, **kw):
+                    if argv[1] != "version":
+                        calls.append(1)
+                        if len(calls) == 2:
+                            raise subprocess.TimeoutExpired(argv, kw["timeout"])
+                    return run(argv, **kw)
+                out = io.StringIO()
+                self.assertEqual(g.check(snap, exe="/bin/true", run=stalls, out=out), 1)
+                self.assertIn("did not finish within 300 s on a batch of 2 files (2 files scanned before it)",
+                              out.getvalue())
 
     def test_what_a_patch_may_not_change(self):
         """RFC 0008 §3.3 (of_review on PR 336): agent settings and instructions, git control, CI, a new or converted
