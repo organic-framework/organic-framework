@@ -2080,8 +2080,18 @@ def _transcript_exists(session_id, cache={}):
         import glob
         pats = [os.path.expanduser(f"~/.claude*/projects/*/{session_id}.jsonl"),
                 os.path.expanduser(f"~/.codex/sessions/**/*{session_id}*")]
-        cache[session_id] = any(glob.glob(p, recursive=True) for p in pats)
+        cache[session_id] = any(glob.glob(p, recursive=True) for p in pats) or not _transcripts_visible()
     return cache[session_id]
+
+
+def _transcripts_visible(cache=[]):
+    """Can this process see transcripts at all? A sandboxed session on the agent host is denied the accounts' projects
+    folders (of_spawn.sandbox_settings), so every live session there read as stale (of_agent-server, message
+    01a202cd-f226): with none in sight, a missing one tells nothing."""
+    if not cache:
+        import glob
+        cache.append(next(glob.iglob(os.path.expanduser("~/.claude*/projects/*/*.jsonl")), None) is not None)
+    return cache[0]
 
 
 def who_rows(positions, agents):
@@ -4533,8 +4543,18 @@ RELAY_LABEL = "dev.organic-framework.relay"
 
 def relay_alive():
     """Whether an `of relay run` process runs on this machine (True/False), or None when it cannot be told (no pgrep).
-    A new organization's install, 2026-11-11: no relay ran, so a conductor's first message never arrived and nothing said so."""
+    A new organization's install, 2026-11-11: no relay ran, so a conductor's first message never arrived and nothing said so.
+    A fresh heartbeat answers first: in a sandbox pgrep sees only the sandbox's own processes, and a running relay read
+    as none (of_agent-server on the agent host, message 01a202cd-f226)."""
     import subprocess
+    try:
+        import time as _time
+        import of_relay_client
+        hb = of_relay_client.read_heartbeat()
+        if hb and _time.time() - hb["ts"] <= of_relay_client.STALE_S:
+            return True
+    except Exception:  # noqa: BLE001 - no heartbeat to read: pgrep tells
+        pass
     try:
         r = subprocess.run(["pgrep", "-U", str(os.getuid()), "-f", r"of relay run"], capture_output=True, text=True,
                            timeout=5)  # this user's relay: another user's never types into this user's panes
