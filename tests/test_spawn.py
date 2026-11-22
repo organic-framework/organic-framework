@@ -434,6 +434,14 @@ class WorkCloneTest(unittest.TestCase):
                 self.assertTrue(of_spawn.clone_guard()(f"{d}/fw/lnk/.."))
                 with self.assertRaises(of_spawn.SpawnError):
                     of_spawn.work_dir(p, {"s": {"repos": []}}, [f"{d}/fw/lnk/.."])
+                # a chain of links that passes through the clone and leaves it: the clone controls the hop
+                os.makedirs(f"{d}/out2")
+                os.symlink(f"{d}/out2", f"{d}/build/hop")
+                os.symlink(f"{d}/build/hop", f"{d}/fw/chain")
+                self.assertTrue(of_spawn.clone_guard()(f"{d}/fw/chain"))
+                with self.assertRaises(of_spawn.SpawnError):
+                    of_spawn.work_dir(p, {"s": {"repos": []}}, [f"{d}/fw/chain"])
+                self.assertFalse(of_spawn.clone_guard()(f"{d}/out2"))
             # with no clone named, the sibling is taken as before
             self.assertEqual(of_spawn.work_dir(p, {"s": {"repos": ["build"]}}, [f"{d}/fw"]), f"{d}/build")
 
