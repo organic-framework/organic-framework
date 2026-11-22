@@ -2032,6 +2032,52 @@ class Resume(unittest.TestCase):
             self.assertEqual(fh.read(), '{"launched": "before"}')
         self.assertEqual([c for c in self.calls if c[:2] == ("emit", "session_settings")], [])
 
+    def test_a_restore_resumes_a_start_in_position_in_its_start_folder(self):
+        """of_agent-server, hand-over 56a0e7dc (2026-11-22): carry restore rewrote the home only, so a session landed in
+        the host's live checkout, not the work folder its orgs.yaml names; a restore is a restart, so it honours
+        start_in as a move does, its trust and its transcript's folder key included."""
+        work = os.path.join(self.home.name, "work", "acme")
+        os.makedirs(work)
+        work = os.path.realpath(work)           # start_folder resolves links (macOS: /var is /private/var)
+        e = {"name": "runners_keeper", "position": "runners_keeper", "session": "s1", "config_dir": self.cfg,
+             "cwd": self.cwd, "model": "claude-opus-5-5"}
+        plan = {"kind": "carry", "prepared_at": "2026-11-22T15:00:00Z", "home": "/Users/alex"}
+
+        def restore(trusted):
+            with open(os.path.join(self.cfg, ".claude.json"), "w") as fh:
+                json.dump({"oauthAccount": {"emailAddress": "vp@x"}, "projects": {
+                    self.cwd: {"hasTrustDialogAccepted": True},
+                    **({work: {"hasTrustDialogAccepted": True}} if trusted else {})}}, fh)
+            del self.calls[:]
+            start = mock.Mock(return_value={"pid": 9, "session": "s1"})
+            with mock.patch.multiple(of_capacity, _herdr=mock.Mock(return_value={
+                    "panes": [], "workspaces": [], "tabs": [], "pane_id": "w6:p18"}),
+                    load_policy=lambda: {"start_in": ["runners_keeper"]}, spawn_folder=lambda p: work,
+                    deny_for=lambda *_: None, tools_for=lambda *_: None, rename_agent=mock.Mock(),
+                    start_session=start):
+                r = of_capacity._restore_one(dict(e), {"name": "runners_keeper", "_org": "team"}, plan,
+                                             "2026-11-22T15:01:00Z", log=lambda *_: None)
+            return r, start.call_args.args
+
+        r, args = restore(trusted=False)        # no account trusts it: where it ran, as a move does
+        self.assertEqual(args[2], self.cwd)
+        r, args = restore(trusted=True)
+        self.assertEqual(args[2], work)
+        held = next(c[2] for c in self.calls if c[:2] == ("emit", "holder_changed"))
+        self.assertEqual((held["workplace"]["cwd"], held["trust"]["path"]), (work, work))
+        self.assertTrue(os.path.exists(os.path.join(self.cfg, "projects", of_capacity.folder_key(work), "s1.jsonl")))
+        self.assertEqual(of_capacity.find_transcript(self.cfg, "s1"),
+                         os.path.join(self.cfg, "projects", of_capacity.folder_key(work), "s1.jsonl"))
+        with open(os.path.join(r["work"], "note.md")) as fh:
+            self.assertIn(f"Your working folder changed from {self.cwd} to {work}", fh.read())
+        # the owner trusted it once, on the default account: carried into this one (ensure_trust), as a move does
+        with open(os.path.join(self.home.name, ".claude.json"), "w") as fh:
+            json.dump({"projects": {work: {"hasTrustDialogAccepted": True}}}, fh)
+        with mock.patch.dict(os.environ, {"HOME": self.home.name}):
+            r, args = restore(trusted=False)
+        self.assertEqual(args[2], work)
+        self.assertEqual(of_capacity.trusted_key(self.cfg, work), work)
+
     def test_carry_note_recovers_a_one_shot_even_when_install_rewrites_its_stop_notice(self):
         import of_carry
         sid = "5e551011-0000-4000-8000-000000000001"

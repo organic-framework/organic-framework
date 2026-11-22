@@ -3950,7 +3950,12 @@ def _restore_one(e, p, plan, ts, log=print, dry_run=False, home=None, claimed=No
     cwd = e.get("cwd") if e.get("cwd") and os.path.isdir(e["cwd"]) else last_field(transcript, "cwd")
     if not cwd or not os.path.isdir(cwd):
         raise MoveError(f"no working directory for session {sid[:8]}")
-    if not trusted_key(target, cwd):
+    # start_in (capacity.yaml): a restore is a restart, so a listed position resumes in its start folder, the one of
+    # spawn would start it in. On another machine that is the work folder its orgs.yaml names, not the live checkout
+    # the home rewrite lands in (of_agent-server, hand-over 56a0e7dc, 2026-11-22). Its trust is the owner's decision
+    # on this account or on the default one, carried as a move carries it; with neither, it resumes where it ran.
+    run_cwd = resume_folder(name, cwd, target, target, log=log, p=p)
+    if run_cwd == cwd and not trusted_key(target, cwd):
         raise MoveError(f"folder {cwd} is not trusted in {short(target)}; the owner decides (of ask)", untrusted=cwd)
     claimed = claimed if claimed is not None else set()
     own = os.environ.get("HERDR_PANE_ID")
@@ -3977,21 +3982,22 @@ def _restore_one(e, p, plan, ts, log=print, dry_run=False, home=None, claimed=No
               f"The Mac restarted, and of_capacity resumed this session. Read {note_path} and follow it.")
     launch = dict(model=model, effort=effort, bypass=bypass, resumed=True, memory_dir=mem, prompt=prompt,
                   deny=deny_for(p, log), tools=tools_for(p, sid, target, log))
-    cmd = launch_command(cwd, target, sid, name, note_path, write=False, **launch)  # written right before the start
+    cmd = launch_command(run_cwd, target, sid, name, note_path, write=False, **launch)  # written right before the start
     if home:  # its own workspace; the tab it had there, if it was there (not on the desk)
         ws_label, tab_label = home[0], saved[1] if saved[0] == home[0] and saved[1] else home[1]
     else:
         ws_label, tab_label = saved[0] or "reboot", saved[1] or name
     where = f"pane {pane}" if pane else f"a new pane in {ws_label} / {tab_label}"
     log(f"{name}: resume {sid} on {short(target)} in {where}; {model}, effort {effort}, "
-        f"{'bypass' if bypass else 'default'} mode{', own memory' if mem else ''}")
+        f"{'bypass' if bypass else 'default'} mode{', own memory' if mem else ''}"
+        + (f"; start folder {cwd} -> {run_cwd}" if run_cwd != cwd else ""))
     if pane:
         claimed.add(pane)
     if dry_run:
         log(f"  {cmd}")
         return {"dry_run": True, "command": cmd}
     if not pane:
-        cmd_place, follow = place_command(ws_label, tab_label, cwd, workspaces, tabs, panes)
+        cmd_place, follow = place_command(ws_label, tab_label, run_cwd, workspaces, tabs, panes)
         pane = first_pane_id(_herdr(*cmd_place))
         if not pane:
             raise MoveError(f"herdr {' '.join(cmd_place[:2])} returned no pane")
@@ -4014,11 +4020,19 @@ def _restore_one(e, p, plan, ts, log=print, dry_run=False, home=None, claimed=No
     except (OSError, ValueError) as err:
         stopped = []
         log(f"  {name}: scheduled tasks stopped since the plan: not read ({err})")
+    if run_cwd != cwd:
+        note += (f"\n## Your working folder changed\n\nYour working folder changed from {cwd} to {run_cwd} (your "
+                 f"position's start folder). Relative paths, git and the folder's agent rules now refer to the new "
+                 f"folder; files you left in the old one are still there.\n")
     _write_handover_note(note_path, note, stopped, log)
-    cmd = launch_command(cwd, target, sid, name, note_path, **launch)  # the settings file, now (of_review, PR 516)
+    if run_cwd != cwd:  # the trust carried and the transcript under the folder's key, as a move does
+        trust = ensure_trust(target, target, run_cwd)
+        log(f"  start folder {run_cwd}: {trust[0]} ({trust[1]})")
+        rekey_session(target, sid, folder_key(run_cwd), os.path.join(work, "backup"))
+    cmd = launch_command(run_cwd, target, sid, name, note_path, **launch)  # the settings file, now (of_review, PR 516)
     record_launch(sid, e.get("position") or (p or {}).get("name") or name, (p or {}).get("_org"),
                   "of capacity carry restore" if carried else "of capacity reboot restore", log)
-    new = start_session(sid, name, cwd, target, prompt, lambda: _run_in_pane(pane, cmd),
+    new = start_session(sid, name, run_cwd, target, prompt, lambda: _run_in_pane(pane, cmd),
                         lambda: _pane_lines(pane), lambda k: _herdr("pane", "send-keys", pane, k.lower()),
                         "carry: resume note" if carried else "reboot: resume note", log=log)
     if bypass:
@@ -4027,9 +4041,9 @@ def _restore_one(e, p, plan, ts, log=print, dry_run=False, home=None, claimed=No
                                       "new_session": new["session"],
                                       "evidence": "of capacity carry restore" if carried else "of capacity reboot restore",
                                       "workplace": {"config_dir": target, "account": account_of(target),
-                                                    "runtime": "herdr", "pane": pane},
+                                                    "runtime": "herdr", "pane": pane, "cwd": run_cwd},
                                       "model": model, "effort": effort,
-                                      "trust": {"state": "trusted", "path": trusted_key(target, cwd)}},
+                                      "trust": {"state": "trusted", "path": trusted_key(target, run_cwd)}},
                    position=e.get("position") or name, session=new["session"])
     try:
         rename_agent(pane, name, new["session"])
