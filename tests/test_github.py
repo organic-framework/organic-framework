@@ -330,6 +330,42 @@ class SignatureProgramTest(unittest.TestCase):
             self.assertFalse(os.path.exists(mark))
 
 
+class OptionBranchTest(unittest.TestCase):
+    def test_a_branch_that_reads_as_an_option_is_refused_and_git_runs_with_the_repositorys_programs_off(self):
+        """of_server, message 01a202e4-62f9: an origin/HEAD naming --output=<path> came back as the default and had git
+        log write the session's commit messages to that path; and a promisor remote runs a configured program."""
+        import subprocess
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as root:
+            repo, out = os.path.join(root, "r"), os.path.join(root, "leak.txt")
+            git = lambda *a: subprocess.run(["git", "-C", repo, "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false",  # noqa: E731
+                                             "-c", "user.email=t@t", "-c", "user.name=t", *a],
+                                            capture_output=True, text=True, check=True)
+            os.makedirs(repo)
+            git("init", "-q", "-b", "main")
+            open(os.path.join(repo, "a"), "w").close()
+            git("add", "a")
+            git("commit", "-qm", "secret message")
+            git("symbolic-ref", "refs/remotes/origin/HEAD", f"refs/remotes/origin/--output={out}")
+            ref, why = of_github.default_branch(repo)
+            self.assertIsNone(ref)
+            self.assertIn("reads as an option", why)
+            with self.assertRaises(RuntimeError):
+                of_github.local_commits(repo, "2020-01-01", branch=f"--output={out}")
+            self.assertFalse(os.path.exists(out))
+            self.assertEqual([c["title"] for c in of_github.local_commits(repo, "2020-01-01")], ["secret message"])
+            seen = []
+            real = subprocess.run
+            with mock.patch.object(of_github.subprocess, "run", lambda argv, **kw: seen.append((argv, kw)) or real(argv, **kw)):
+                of_github.local_commits(repo, "2020-01-01")
+            for argv, kw in seen:
+                self.assertEqual(argv[0], "/usr/bin/git")
+                self.assertIn("core.hooksPath=/dev/null", argv)
+                self.assertEqual((kw["env"]["GIT_NO_LAZY_FETCH"], kw["env"]["HOME"]), ("1", "/nonexistent"))
+            self.assertEqual(seen[-1][0][-2], "--end-of-options")
+            self.assertRegex(seen[-1][0][-1], r"^[0-9a-f]{40}$")          # the commit id, never the name
+
+
 class DefaultBranchTest(unittest.TestCase):
     """The founder, 2026-11-11: of import git read only main; a repository's default may be another branch."""
 

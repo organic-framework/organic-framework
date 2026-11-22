@@ -533,25 +533,40 @@ def systems_by_dir(systems):
 DEFAULT_CANDIDATES = ("main", "master", "trunk", "develop")
 
 
+def _git(root, *args, timeout=30, extra=()):
+    """The system's git in ROOT with no program the repository's own configuration names (fsmonitor, hooks, a pager, an
+    external diff, a promisor's lazy fetch, every transport) and no user or system configuration: of_protected's
+    settings. A session's file tools can write any checkout's .git/config (of_server, message 01a202e4-62f9; of_review
+    on PR 507: a promisor remote asked for a missing object runs a program --no-show-signature does not stop)."""
+    import of_protected
+    return subprocess.run(of_protected._git_cmd(root, extra) + list(args), capture_output=True, text=True,
+                          timeout=timeout, env=of_protected._env())
+
+
+def _plain(name):
+    """A branch name that cannot be read as an option: one starting with '-' (a branch named --output=<path> came back
+    as origin/HEAD's and had git log write to that path; of_server, message 01a202e4-62f9) is refused."""
+    return bool(name) and not str(name).startswith("-")
+
+
 def default_branch(root, override=None, git="git"):
     """(ref, how) for the checkout's default branch, or (None, why not). The founder, 2026-11-11: of import git read
     only `main`, and a repository's default may be master, develop, trunk or another. In order: the branch orgs.yaml
     names for this repository (`branches:` on the organization's entry); the remote's default (origin/HEAD), as the
-    local branch of that name when it exists; else the one of main, master, trunk, develop that exists."""
-    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0")
-
-    def run(*a):
-        return subprocess.run([git, "-C", root, *a], capture_output=True, text=True, timeout=30, env=env)
-
+    local branch of that name when it exists; else the one of main, master, trunk, develop that exists. A name that
+    starts with '-' is refused. GIT is kept for callers; the system's git runs (_git)."""
     def exists(ref):
-        return run("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").returncode == 0
+        return _plain(ref) and _git(root, "rev-parse", "--verify", "--quiet",
+                                    f"{ref}^{{commit}}").returncode == 0
     if override:
         return (override, "orgs.yaml") if exists(override) else \
             (None, f"the branch {override!r} that orgs.yaml names does not exist here")
-    r = run("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+    r = _git(root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
     if r.returncode == 0 and r.stdout.strip():
         remote = r.stdout.strip()                      # origin/<name>
         name = remote.split("/", 1)[1] if "/" in remote else remote
+        if not (_plain(name) and _plain(remote)):
+            return None, f"origin/HEAD names {remote!r}, which reads as an option; name the default in orgs.yaml"
         return (name, "origin/HEAD") if exists(f"refs/heads/{name}") else (remote, "origin/HEAD")
     found = [b for b in DEFAULT_CANDIDATES if exists(f"refs/heads/{b}")]
     if len(found) == 1:
@@ -565,15 +580,18 @@ def default_branch(root, override=None, git="git"):
 
 def local_commits(root, since, git="git", branch="main"):
     """[{sha, author, at, title, message, paths}] on `branch` of the checkout at `root` (its default branch, from
-    default_branch), since the ISO date (oldest first). Read-only: no locks, no prompts, no user config."""
-    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0")
+    default_branch), since the ISO date (oldest first). Read-only: no locks, no prompts, no user config, no program the
+    repository names (_git); the branch is resolved to its commit id first and given after --end-of-options."""
+    if not _plain(branch):
+        raise RuntimeError(f"git log {root}: the branch {branch!r} reads as an option")
+    rev = _git(root, "rev-parse", "--verify", "--quiet", f"{branch}^{{commit}}")   # never "-": _plain
+    if rev.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40,64}", rev.stdout.strip()):
+        raise RuntimeError(f"git log {root}: no commit for {branch!r}")
     fmt = GIT_SEP.join(["%H", "%an", "%ct", "%s", "%B"]) + REC_SEP
     # --no-show-signature: a repository's own .git/config with log.showSignature and gpg.program would have the
-    # listener run that program, and any session's file tools can write a checkout's .git/config (of_server, message
-    # 01a202d3-e7c8, tried on a scratch repository)
-    r = subprocess.run([git, "-C", root, "-c", "core.quotepath=false", "log", "--no-show-signature", branch,
-                        "--reverse", f"--since={since}", f"--format={fmt}", "--name-only"], capture_output=True,
-                       text=True, timeout=120, env=env)
+    # listener run that program (of_server, message 01a202d3-e7c8, tried on a scratch repository)
+    r = _git(root, "log", "--no-show-signature", "--reverse", f"--since={since}", f"--format={fmt}", "--name-only",
+             "--end-of-options", rev.stdout.strip(), timeout=120, extra=("-c", "core.quotepath=false"))
     if r.returncode != 0:
         raise RuntimeError(f"git log {root}: {r.stderr.strip()[:200]}")
     out = []

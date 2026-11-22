@@ -88,18 +88,19 @@ def committed_registry(path, timeout=5):
     does not parse."""
     root = os.path.dirname(os.path.dirname(path))
     try:
-        top = subprocess.run(["git", "-C", root, "rev-parse", "--show-toplevel"], capture_output=True, text=True,
-                             timeout=timeout)
+        import of_protected   # no program the repository's own configuration names (of_server, msg 01a202e4-62f9)
+        git = lambda *a: subprocess.run(of_protected._git_cmd(root) + list(a), capture_output=True,  # noqa: E731
+                                        text=True, timeout=timeout, env=of_protected._env())
+        top = git("rev-parse", "--show-toplevel")
         if top.returncode != 0:
             return None
         rel = os.path.relpath(os.path.realpath(path), os.path.realpath(top.stdout.strip()))
-        r = subprocess.run(["git", "-C", root, "show", f"HEAD:{rel}"], capture_output=True, text=True,
-                           timeout=timeout)
+        r = git("show", "--end-of-options", f"HEAD:{rel}")
         if r.returncode != 0:
             return None
         doc = yaml.safe_load(r.stdout) or {}
         return doc if isinstance(doc, dict) else None
-    except (OSError, subprocess.TimeoutExpired, yaml.YAMLError):
+    except Exception:  # noqa: BLE001 - OSError, a timeout, YAML, of_protected.Refused (no system git): no stand-in
         return None
 ORG_SHORT = {}  # organization -> short name for unit workspace labels (`short:` in orgs.yaml)
 ORGS_FILE = os.environ.get("OF_ORGS") or os.path.join(os.environ.get("OF_CONFIG_DIR") or os.path.expanduser("~/.config/of"), "orgs.yaml")
