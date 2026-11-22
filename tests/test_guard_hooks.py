@@ -135,6 +135,29 @@ class PluginCodeTest(unittest.TestCase):
             self.assertFalse(self.deny("Bash", {"command": f"cat {target}"}), target)   # reading stays open
             self.assertFalse(self.deny("Read", {"file_path": target}), target)
 
+    def test_benchs_checkout_is_not_written(self):
+        """of_platform, 2026-11-23: OF imports Bench's checkout outside any sandbox, as it imports a plugin."""
+        from unittest import mock
+        import of_benchpath
+        import of_events
+        bench = os.path.join(self.tmp.name, "bench")
+        os.makedirs(os.path.join(bench, "bin"))
+        conf = os.path.join(self.tmp.name, "conf")
+        os.makedirs(conf)
+        with open(os.path.join(conf, "owner.yaml"), "w") as fh:
+            fh.write(f"language: en\nbench: '{bench}'   # Bench's checkout\n")
+        of_guard._PLUGIN_DIRS.clear()
+        with mock.patch.object(of_events, "CONFIG_DIR", conf):
+            self.assertEqual(of_guard._bench_home(), os.path.realpath(bench))
+            with mock.patch.object(of_events, "CONFIG_DIR", conf), \
+                    mock.patch("of_init.owner_settings", return_value={"bench": bench}):
+                self.assertEqual(of_benchpath.home(), of_guard._bench_home())   # the guard reads what OF imports
+            target = os.path.join(bench, "bin", "bench.py")
+            self.assertTrue(self.deny("Write", {"file_path": target, "content": "x"}))
+            self.assertTrue(self.deny("Bash", {"command": f"echo x > {target}"}))
+            self.assertFalse(self.deny("Bash", {"command": f"cat {target}"}))   # reading stays open
+        of_guard._PLUGIN_DIRS.clear()
+
     def test_herdrs_plugin_folders_and_acts(self):
         """of_platform's review of PR 24: herdr runs the plugin as the owner; of_home in its config folder decides
         what run.sh starts. Writes there are denied, and so are herdr plugin link and the like, but in of_herdr's

@@ -5374,6 +5374,21 @@ def _herdr_lab(path):
     return bool(path) and (p == lab or p.startswith(lab + "/"))
 
 
+def _bench_home():
+    """Bench's checkout as of_benchpath.home() names it: owner.yaml's top-level `bench:`, else ~/.local/share/bench.
+    Read without YAML, since the hook decides before importing PyYAML, and without waiting (_read_text)."""
+    import of_events
+    v = None
+    try:
+        for line in _read_text(of_events.config_path("owner.yaml"), 1 << 16).splitlines():
+            m = re.match(r"^bench:\s*(.*?)\s*(?:#.*)?$", line)
+            if m:
+                v = m.group(1).strip().strip("'\"") or None
+    except OSError as e:
+        _unreadable(of_events.config_path("owner.yaml"), e)
+    return os.path.realpath(_expanduser(v or os.path.join("~", ".local", "share", "bench")))
+
+
 def _plugin_dirs():
     if not _PLUGIN_DIRS:
         try:
@@ -5382,6 +5397,7 @@ def _plugin_dirs():
             dirs.append(os.path.join(os.path.dirname(of_family.SHIPPED.rstrip("/")), "..", "herdr-plugin"))
         except Exception:  # noqa: BLE001 - no loader, no plugin folders to keep
             dirs = []
+        dirs.append(_bench_home())   # OF imports it outside any sandbox, as it imports a plugin (of_platform, 2026-11-23)
         keep = [os.path.realpath(d) for d in dirs if not gated(d)]
         xdg = os.environ.get("XDG_CONFIG_HOME")
         herdr = list(HERDR_PLUGIN_DIRS) + ([os.path.join(xdg, "herdr", "plugins")] if xdg and not _herdr_lab(xdg)
