@@ -361,47 +361,28 @@ def _key_file(path):
     return bool(_KEY_HEAD.match(head))
 
 
-GREP_KEY_MAX = 64 * 1024   # a private key file is smaller: a larger file is not opened to look for one
-_GREP_SKIP_DIRS = {".git", ".hg", ".svn", "node_modules", "__pycache__"}
-# source, documents and media are not opened in a folder's walk: the hook runs before every call (a key saved under
-# such a name is still refused on Read, Grep and Edit of that file by G1.13 itself)
-_GREP_SKIP_SUFFIXES = (".py", ".pyc", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".kt", ".c", ".h",
-                       ".cc", ".cpp", ".hpp", ".rb", ".php", ".swift", ".m", ".sh", ".zsh", ".md", ".mdx", ".rst",
-                       ".html", ".css", ".scss", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".lock", ".svg", ".png",
-                       ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip", ".gz", ".zst", ".tar", ".wasm",
-                       ".sqlite", ".db", ".csv", ".tsv", ".log")
+_GREP_SKIP_DIRS = {".git", ".hg", ".svn"}   # version control's own store, which ripgrep never searches
 
 
-def _key_in_folder(root, pattern=None):
-    """The first private key (G1.13, by its content) among the files a Grep over the folder ROOT would print lines
-    of, or None: walked in sorted order within the glob budget (EXPAND_BUDGET entries), skipping version-control and
-    cache folders, files larger than a key and, when the call names one, files its `glob` does not match. A folder
-    past the budget is judged on what was read (docs/guard.md G1.13; the Grep tool over a folder was the route left
-    to a key once its name and its direct reads were refused: of_review's probe on organic-framework PR 513)."""
-    import fnmatch
+def _key_in_folder(root):
+    """(the first private key, by its content (G1.13), among the files of the folder ROOT, or None; whether the walk
+    passed the budget). A Grep in content mode prints the lines of every file it searches there, so every file is
+    read for a key's header, whatever its name, size or the call's own `glob` (fnmatch does not read ripgrep's globs:
+    braces, a leading !), past version control's own store; folders and files both count against the glob budget
+    (EXPAND_BUDGET entries), and a walk past it is reported, so the caller refuses rather than pass what it did not
+    read (of_review and of_secrets-review on organic-framework PR 517; the route left to a key once its name and its
+    direct reads were refused: of_review's probe on PR 513)."""
     seen = 0
     for d, dirs, files in os.walk(root):
         dirs[:] = sorted(x for x in dirs if x not in _GREP_SKIP_DIRS)
-        for f in sorted(files):
-            seen += 1
-            if seen > EXPAND_BUDGET:
-                return None
-            if pattern and not (fnmatch.fnmatch(f, pattern) or fnmatch.fnmatch(
-                    os.path.relpath(os.path.join(d, f), root), pattern)):
-                continue
-            if f.lower().endswith(_GREP_SKIP_SUFFIXES):
-                continue
-            p = os.path.join(d, f)
-            try:
-                if os.lstat(p).st_size > GREP_KEY_MAX:
-                    continue
-            except OSError:
-                continue
-            if _key_file(p):
-                return p
+        seen += 1 + len(files)
         if seen > EXPAND_BUDGET:
-            return None
-    return None
+            return None, True
+        for f in sorted(files):
+            p = os.path.join(d, f)
+            if _key_file(p):
+                return p, False
+    return None, False
 
 
 def _local(word, here):
@@ -6401,10 +6382,15 @@ def critical_deny(tool, tool_input, cwd=None):
         _WARNINGS.append((f"a secret file ({os.path.basename(path)}): a private key by its content", path, KEY_NOTE))
     if tool == "Grep" and ti.get("output_mode") == "content":  # G1.13 over a folder: the lines of every file it reads
         root = _local(str(path), cwd) if path else cwd
-        hit = _key_in_folder(root, ti.get("glob")) if root and os.path.isdir(root) else None
-        if hit:
+        hit, over = _key_in_folder(root) if root and os.path.isdir(root) else (None, False)
+        if over:
+            reason = (f"a search in content mode over more than {EXPAND_BUDGET} folder entries, which the guard cannot "
+                      "read for a private key before it runs: give the search a narrower path")
+            hit = root
+        elif hit:
             reason = (f"a secret file inside the folder searched ({os.path.basename(hit)}): a private key by its "
                       "content, whose lines this search would print")
+        if hit:
             if KEY_READ_MODE["content"] == "deny":
                 return reason, hit
             _WARNINGS.append((reason, hit, KEY_NOTE))
