@@ -1173,9 +1173,6 @@ class PruneTest(unittest.TestCase):
         self.assertEqual(of_fold.FAILED, [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class GithubBusyTest(unittest.TestCase):
     def test_a_run_waits_out_a_high_load_for_at_most_two_hours(self):
@@ -1202,3 +1199,7 @@ class GithubBusyTest(unittest.TestCase):
                 p2.tick(None, T0 + 7200)                             # two hours since the last: it runs
         self.assertEqual(len(started), 2)
         self.assertEqual(started[0][0][:3], ["nice", "-n", "15"])       # at background priority
+
+
+if __name__ == "__main__":
+    unittest.main()

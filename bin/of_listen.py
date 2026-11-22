@@ -935,9 +935,10 @@ sys.exit(p.returncode)
 
 
 class GithubProcessor(Processor):
-    """Every 30 minutes: `of import github --org all` (incremental, since the last imported merge) as a
-    detached process with its own lock, so the listener never waits on GitHub (of_architect, 2026-11-06:
-    work records stopped at the last hand-run import). gh's own auth; no SSH agent."""
+    """Every 30 minutes: `of import github --org all` (incremental, since the last imported merge), then
+    `of import git --org all`, as a detached process with its own lock, so the listener never waits on GitHub
+    (of_architect, 2026-11-06: work records stopped at the last hand-run import). While the load stands above
+    BUSY_LOAD x cores both wait, for at most two hours since the last run. gh's own auth; no SSH agent."""
     name = "github"
     version = "1"
     tick_s = 1800
