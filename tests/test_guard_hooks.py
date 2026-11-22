@@ -152,6 +152,20 @@ class PluginCodeTest(unittest.TestCase):
             with mock.patch.object(of_events, "CONFIG_DIR", conf), \
                     mock.patch("of_init.owner_settings", return_value={"bench": bench}):
                 self.assertEqual(of_benchpath.home(), of_guard._bench_home())   # the guard reads what OF imports
+            for line in ("bench : '%s'" % bench, '"bench": "%s"  # here' % bench, "bench: %s # here" % bench):
+                with open(os.path.join(conf, "owner.yaml"), "w") as fh:
+                    fh.write(line + "\n")
+                self.assertEqual(of_guard._bench_home(), os.path.realpath(bench), line)   # as YAML reads it
+            os.makedirs(os.path.join(bench, ".git", "hooks"))                       # gated: kept all the same
+            with open(os.path.join(bench, ".git", "hooks", "pre-commit"), "w") as fh:
+                fh.write("# Installed by organic-framework-build release/install-hooks.sh: the gate.\n")
+            with open(os.path.join(conf, "owner.yaml"), "w") as fh:
+                fh.write("bench: '/tmp/a\x00b'\n")                              # no path at all: the default
+            self.assertEqual(of_guard._bench_home(), os.path.realpath(os.path.expanduser("~/.local/share/bench")))
+            with open(os.path.join(conf, "owner.yaml"), "w") as fh:
+                fh.write(f"bench: {bench}\n")
+            of_guard._PLUGIN_DIRS.clear()
+            of_guard._GATED.clear()
             target = os.path.join(bench, "bin", "bench.py")
             self.assertTrue(self.deny("Write", {"file_path": target, "content": "x"}))
             self.assertTrue(self.deny("Bash", {"command": f"echo x > {target}"}))

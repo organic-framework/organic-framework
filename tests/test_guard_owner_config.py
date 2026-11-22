@@ -34,7 +34,7 @@ class OwnerConfigTest(unittest.TestCase):
         self.assertIsNone(bash("mkdir -p /tmp/t1/.config/of && printf 'orgs: []\\n' > /tmp/t1/.config/of/orgs.yaml"))
 
     def test_writing_it_is_denied(self):
-        for name in ("orgs.yaml", "views.yaml"):
+        for name in ("orgs.yaml", "views.yaml", "owner.yaml"):
             p = f"~/.config/of/{name}"
             for cmd in (f"printf 'x' >> {p}", f"echo x > {p}", f"cp /tmp/x {p}", f"mv /tmp/x {p}", f"rm {p}",
                         f"ln -sf /tmp/x {p}", f"tee {p} < /tmp/x", f"sed -i '' s/a/b/ {p}",

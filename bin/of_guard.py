@@ -1021,7 +1021,7 @@ def _owner_config_in_code(code, lits):
     targets = _owner_config_targets()
     for n in names:
         if os.path.realpath(_expanduser(n)) in targets or \
-                re.search(r"(?:^|/)\.config/of/(?:orgs|views)\.yaml$", n):   # a home folder joined in code
+                re.search(r"(?:^|/)\.config/of/(?:orgs|views|owner)\.yaml$", n):   # a home folder joined in code
             return n
     return None
 
@@ -3760,8 +3760,10 @@ def _org_path_act(words):
     # double dash is no positional for argparse, so it is dropped before the places are read (of_review on PR 427 at
     # 0159efd: `of org -- set ofb path`, `of org set -- ofb path`, `of org set ofb -- path` ran the act)
     words = [w for w in words if w != "--"]
-    # and `work_clone`, which makes a folder writable from every sandbox of its organization (of_review on PR 542)
-    return words[:2] == ["org", "set"] and words[3:4] in (["path"], ["work_clone"])
+    # and `work_clone`, which makes a folder writable from every sandbox of its organization (of_review on PR 542),
+    # and `of owner set bench`, the folder OF imports Bench from outside any sandbox (of_secrets-review on PR 575)
+    return (words[:2] == ["org", "set"] and words[3:4] in (["path"], ["work_clone"])) or \
+        (words[:3] == ["owner", "set", "bench"])
 
 
 def _actor_deny(head, args, stext, env):
@@ -4358,11 +4360,12 @@ LAUNCH_DENY = ("the program OF starts in place of Claude Code for every session,
 # is the owner's: agents change it through OF's own commands (of org set, of view add, of init), never by writing the
 # file (docs/guard.md G33; the gap "OF's own configuration is written by any agent", 2026-11-18; of_review on
 # organic-framework PR 345, msg 01a1efc7-283b, through of_herdr)
-OWNER_CONFIG_FILES = ("orgs.yaml", "views.yaml")
+OWNER_CONFIG_FILES = ("orgs.yaml", "views.yaml", "owner.yaml")   # owner.yaml: bench:, the code OF imports
 OWNER_CONFIG_DENY = ("OF's own configuration, which only the machine's owner writes: orgs.yaml (which registries the "
-                     "guard reads) and views.yaml (what runs in the person's panes). Agents change them through OF's "
-                     "commands, which write the file from their own process: `of org set <org> hold on|off`, "
-                     "`of view add|remove`, `of init`. A script or text that only names the file: change that file "
+                     "guard reads), views.yaml (what runs in the person's panes) and owner.yaml (where OF imports "
+                     "Bench from). Agents change them through OF's commands, which write the file from their own "
+                     "process: `of org set <org> hold on|off`, `of view add|remove`, `of owner set language|surface`, "
+                     "`of init`. A script or text that only names the file: change that file "
                      "with the Edit tool. A test's own copy: write it by its own folder's path, not through $HOME "
                      "(docs/guard.md G33)")
 # A deny from 2026-11-19: the 21-day replay's live flow, agents editing orgs.yaml's hold: by sed for the founder, has
@@ -5374,19 +5377,39 @@ def _herdr_lab(path):
     return bool(path) and (p == lab or p.startswith(lab + "/"))
 
 
+_BENCH_KEY = re.compile(r"""^(?:bench|'bench'|"bench")[ \t]*:[ \t]*(.*?)[ \t]*$""")
+
+
 def _bench_home():
     """Bench's checkout as of_benchpath.home() names it: owner.yaml's top-level `bench:`, else ~/.local/share/bench.
-    Read without YAML, since the hook decides before importing PyYAML, and without waiting (_read_text)."""
+    Read without YAML, since the hook decides before importing PyYAML, and without waiting. owner.yaml is the owner's
+    (G33). What cannot be read falls back to the default, as OF's own reading does."""
     import of_events
+    import stat as _stat
     v = None
     try:
-        for line in _read_text(of_events.config_path("owner.yaml"), 1 << 16).splitlines():
-            m = re.match(r"^bench:\s*(.*?)\s*(?:#.*)?$", line)
+        fd = os.open(of_events.config_path("owner.yaml"), os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+        try:
+            text = os.read(fd, 1 << 16).decode("utf-8", "replace") if _stat.S_ISREG(os.fstat(fd).st_mode) else ""
+        finally:
+            os.close(fd)
+        for line in text.splitlines():
+            m = _BENCH_KEY.match(line)
             if m:
-                v = m.group(1).strip().strip("'\"") or None
-    except OSError as e:
-        _unreadable(of_events.config_path("owner.yaml"), e)
-    return os.path.realpath(_expanduser(v or os.path.join("~", ".local", "share", "bench")))
+                v = _yaml_scalar(m.group(1))
+        return os.path.realpath(_expanduser(v or os.path.join("~", ".local", "share", "bench")))
+    except Exception:  # noqa: BLE001 - any value at all: the default, never an error on the guard's path
+        return os.path.realpath(_expanduser(os.path.join("~", ".local", "share", "bench")))
+
+
+def _yaml_scalar(raw):
+    """A plain or quoted YAML scalar as a person writes a path: quotes removed, an unquoted `#` comment dropped."""
+    raw = raw.strip()
+    if raw[:1] in ("'", '"'):
+        q = raw[0]
+        end = raw.find(q, 1)
+        return raw[1:end] if end > 0 else None
+    return re.split(r"\s#", raw, 1)[0].strip() or None
 
 
 def _plugin_dirs():
@@ -5397,8 +5420,10 @@ def _plugin_dirs():
             dirs.append(os.path.join(os.path.dirname(of_family.SHIPPED.rstrip("/")), "..", "herdr-plugin"))
         except Exception:  # noqa: BLE001 - no loader, no plugin folders to keep
             dirs = []
-        dirs.append(_bench_home())   # OF imports it outside any sandbox, as it imports a plugin (of_platform, 2026-11-23)
         keep = [os.path.realpath(d) for d in dirs if not gated(d)]
+        # Bench's checkout, which OF imports outside any sandbox as it imports a plugin (of_platform, 2026-11-23),
+        # kept whether or not it carries the gate's hooks: no development copy of it is ever the one OF runs
+        keep.append(_bench_home())
         xdg = os.environ.get("XDG_CONFIG_HOME")
         herdr = list(HERDR_PLUGIN_DIRS) + ([os.path.join(xdg, "herdr", "plugins")] if xdg and not _herdr_lab(xdg)
                                            else [])
