@@ -2142,6 +2142,38 @@ class Resume(unittest.TestCase):
         r, args = restore(trusted=True)
         self.assertEqual(args[2], work)
 
+    def test_a_restore_resumes_from_the_freshest_copy_of_the_transcript(self):
+        """2026-11-22: of_lab, carried back from the agent host, resumed from the laptop's copy of its close there, not
+        from the host's newer copy under the work folder's key: the first copy glob listed won, the plan's folder did
+        not exist here, the older copy's folder was the start folder, and nothing was rekeyed."""
+        home = os.path.realpath(self.cwd)
+        stale = os.path.join(self.cfg, "projects", "-acme", "s1.jsonl")      # setUp's copy, in the start folder
+        fresh_dir = os.path.join(self.cfg, "projects", "-elsewhere-work")
+        os.makedirs(fresh_dir)
+        fresh = os.path.join(fresh_dir, "s1.jsonl")
+        with open(fresh, "w") as fh:
+            fh.write(json.dumps({"type": "user", "cwd": "/nowhere/work", "timestamp": "2026-11-22T17:18:00Z",
+                                 "message": {"content": "turns on the other machine"}}) + "\n")
+        os.utime(stale, (time.time() - 600, time.time() - 600))
+        self.assertEqual(of_capacity.find_transcript(self.cfg, "s1"), fresh)   # the freshest, never the first listed
+        with open(os.path.join(self.cfg, ".claude.json"), "w") as fh:
+            json.dump({"oauthAccount": {"emailAddress": "vp@x"}, "projects": {home: {"hasTrustDialogAccepted": True}}}, fh)
+        start = mock.Mock(return_value={"pid": 9, "session": "s1"})
+        e = {"name": "runners_keeper", "position": "runners_keeper", "session": "s1", "config_dir": self.cfg,
+             "cwd": "/nowhere/work", "model": "claude-opus-5-5"}
+        with mock.patch.multiple(of_capacity, _herdr=mock.Mock(return_value={
+                "panes": [], "workspaces": [], "tabs": [], "pane_id": "w6:p18"}),
+                load_policy=lambda: {"start_in": ["runners_keeper"]}, spawn_folder=lambda p: home,
+                deny_for=lambda *_: None, tools_for=lambda *_: None, rename_agent=mock.Mock(), start_session=start):
+            of_capacity._restore_one(e, {"name": "runners_keeper", "_org": "team"},
+                                     {"kind": "carry", "prepared_at": "2026-11-22T17:18:54Z", "home": "/home/of"},
+                                     "2026-11-22T17:19:00Z", log=lambda *_: None)
+        self.assertEqual(start.call_args.args[2], home)
+        now_there = os.path.join(self.cfg, "projects", of_capacity.folder_key(home), "s1.jsonl")
+        with open(now_there) as fh:
+            self.assertIn("turns on the other machine", fh.read())            # the fresh copy, under its key
+        self.assertEqual(glob.glob(os.path.join(self.cfg, "projects", "*", "s1.jsonl")), [now_there])
+
     def test_carry_note_recovers_a_one_shot_even_when_install_rewrites_its_stop_notice(self):
         import of_carry
         sid = "5e551011-0000-4000-8000-000000000001"
