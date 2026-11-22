@@ -47,6 +47,27 @@ def _open_own(path, flags, mode=0o600):
     return fd
 
 
+def _read_own(path, mode="r"):
+    """PATH in OF's state folder opened for reading, never through a link a session put there: the relay runs outside
+    the sandbox, and what it reads it may write back where a session reads it (of_review on organic-framework PR 541:
+    the stuck-box file carried a linked file's content into the state folder). The same checks as _open_own."""
+    fd = os.open(path, os.O_RDONLY | NOFOLLOW | getattr(os, "O_NONBLOCK", 0))
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_nlink != 1:
+            raise OSError(f"{path} is not a regular file of ours")
+        return os.fdopen(fd, mode)
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _tmp_suffix():
+    """A temporary name of this process and thread alone: _open_new refuses a name another writer holds (of_review on
+    organic-framework PR 541: two listings at once failed on one shared name)."""
+    return f".{os.getpid()}.{threading.get_ident()}.tmp"
+
+
 def _open_new(tmp, mode=0o600):
     """A new file at TMP, to be renamed over the file it replaces: whatever lies at that name, a link included, is
     removed first (never followed), and the file is made with O_EXCL, so one planted meanwhile stops the write."""
@@ -256,7 +277,7 @@ def _stuck_path():
 
 def read_stuck():
     try:
-        with open(_stuck_path()) as fh:
+        with _read_own(_stuck_path()) as fh:
             return json.load(fh) or {}
     except (OSError, ValueError):
         return {}
@@ -285,7 +306,7 @@ def note_box(pane, text, now=None):
     else:
         return
     try:
-        tmp = _stuck_path() + f".{os.getpid()}"
+        tmp = _stuck_path() + _tmp_suffix()
         with open(_open_new(tmp), "w") as fh:
             json.dump(doc, fh)
         os.replace(tmp, _stuck_path())
@@ -299,7 +320,7 @@ def _typed_path():
 
 def _read_typed():
     try:
-        with open(_typed_path()) as fh:
+        with _read_own(_typed_path()) as fh:
             return json.load(fh) or {}
     except (OSError, ValueError):
         return {}
@@ -307,7 +328,7 @@ def _read_typed():
 
 def _write_typed(doc):
     try:
-        tmp = _typed_path() + f".{os.getpid()}"
+        tmp = _typed_path() + _tmp_suffix()
         with open(_open_new(tmp), "w") as fh:
             json.dump(doc, fh)
         os.replace(tmp, _typed_path())
@@ -486,7 +507,7 @@ def seen(msg_id):
             if st.st_ino != ino or st.st_size < done:  # a new or truncated file: read it again
                 ids, done, ino = set(), 0, st.st_ino
             if st.st_size > done:
-                with open(p, "rb") as fh:
+                with _read_own(p, "rb") as fh:
                     fh.seek(done)
                     chunk = fh.read()
                 end = chunk.rfind(b"\n") + 1  # complete lines only
@@ -527,7 +548,7 @@ def _arriving_path():
 
 def _read_arriving():
     try:
-        with open(_arriving_path()) as fh:
+        with _read_own(_arriving_path()) as fh:
             return json.load(fh) or {}
     except (OSError, ValueError):
         return {}
@@ -542,7 +563,7 @@ def set_arriving(key, msg_id, on, now=None):
         (doc.get(key) or {}).pop(msg_id, None)
     doc = {k: v for k, v in doc.items() if v}
     try:
-        tmp = _arriving_path() + f".{os.getpid()}"
+        tmp = _arriving_path() + _tmp_suffix()
         with open(_open_new(tmp), "w") as fh:
             json.dump(doc, fh)
         os.replace(tmp, _arriving_path())
@@ -558,7 +579,7 @@ def arriving(key, now=None):
 def seen_since(key, since):
     """Ids of messages to `key` delivered or taken here after `since` (epoch), from the seen file's tail."""
     try:
-        with open(_seen_path(), "rb") as fh:
+        with _read_own(_seen_path(), "rb") as fh:
             fh.seek(0, 2)
             fh.seek(max(0, fh.tell() - 256 * 1024))
             lines = fh.read().splitlines()
@@ -614,7 +635,7 @@ def _spool_tail(path):
     if hit and hit[0] == key:
         return hit[1]
     try:
-        with open(path, "rb") as fh:
+        with _read_own(path, "rb") as fh:
             fh.seek(max(0, st.st_size - SPOOL_TAIL))
             lines = [ln for ln in fh.read().split(b"\n") if b"agent_message_in" in ln]
     except OSError:
@@ -733,7 +754,7 @@ def _emitted_path():
 def read_queues():
     """{"<org>:<position>": {"n", "oldest", "at"}} as the relay last heard it from the servers."""
     try:
-        with open(_queues_path()) as fh:
+        with _read_own(_queues_path()) as fh:
             return json.load(fh).get("queues") or {}
     except (OSError, ValueError, AttributeError):
         return {}
@@ -745,7 +766,7 @@ _LAST_QUEUES = {}
 def read_unsent():
     """{"<org>:<position>": {"n", "items", "at"}}: what each local holder sent that the servers had not delivered."""
     try:
-        with open(_queues_path()) as fh:
+        with _read_own(_queues_path()) as fh:
             return json.load(fh).get("unsent") or {}
     except (OSError, ValueError, AttributeError):
         return {}
@@ -761,7 +782,7 @@ def record_queues(queued, now=None, unsent=None, keep_orgs=()):
         # queue that emptied meanwhile still gets its step to 0 (of_studio). Its own file: of inbox --mine
         # corrects relay-queues.json for of status, and that must not hide a step from the measure.
         try:
-            with open(_emitted_path()) as fh:
+            with _read_own(_emitted_path()) as fh:
                 _LAST_QUEUES.update({k: tuple(v) for k, v in json.load(fh).items()})
         except (OSError, ValueError, TypeError):
             pass
@@ -782,7 +803,7 @@ def record_queues(queued, now=None, unsent=None, keep_orgs=()):
         unsent.update({k: v for k, v in read_unsent().items() if mine(k) and k not in unsent and isinstance(v, dict)})
         kept = {k for k in set(prev) | set(_LAST_QUEUES) if k != "_seeded" and mine(k)}
     try:
-        tmp = _queues_path() + f".{os.getpid()}"
+        tmp = _queues_path() + _tmp_suffix()
         with open(_open_new(tmp), "w") as fh:
             json.dump({"at": now, "queues": out, "unsent": unsent}, fh)
         os.replace(tmp, _queues_path())
@@ -799,7 +820,7 @@ def record_queues(queued, now=None, unsent=None, keep_orgs=()):
     _LAST_QUEUES.update({k: (v["n"], v["oldest"]) for k, v in out.items() if k not in kept}, _seeded=True)
     _LAST_QUEUES.update(held)
     try:
-        tmp = _emitted_path() + f".{os.getpid()}"
+        tmp = _emitted_path() + _tmp_suffix()
         with open(_open_new(tmp), "w") as fh:
             json.dump({k: v for k, v in _LAST_QUEUES.items() if k != "_seeded"}, fh)
         os.replace(tmp, _emitted_path())
@@ -813,7 +834,7 @@ def set_queue(key, n, oldest, now=None):
     queue from the server, so `of status` does not repeat a stale count for up to 60 s (of_studio). No
     event: the relay declares changes from its own state."""
     try:
-        with open(_queues_path()) as fh:
+        with _read_own(_queues_path()) as fh:
             doc = json.load(fh)
     except (OSError, ValueError):
         doc = {"at": now or time.time(), "queues": {}}
@@ -823,7 +844,7 @@ def set_queue(key, n, oldest, now=None):
     else:
         qs.pop(key, None)
     try:
-        tmp = _queues_path() + f".{os.getpid()}"
+        tmp = _queues_path() + _tmp_suffix()
         with open(_open_new(tmp), "w") as fh:
             json.dump(doc, fh)
         os.replace(tmp, _queues_path())
@@ -924,7 +945,7 @@ def _taken_path():
 
 def _shown_load():
     try:
-        with open(_shown_path()) as fh:
+        with _read_own(_shown_path()) as fh:
             return json.load(fh) or {}
     except (OSError, ValueError):
         return {}
@@ -941,7 +962,7 @@ def mark_shown(key, session, msg_ids, now=None):
         data[k] = {i: t for i, t in data[k].items() if now - t < SHOWN_KEEP_S}
         if not data[k]:
             del data[k]
-    tmp = _shown_path() + ".tmp"
+    tmp = _shown_path() + _tmp_suffix()
     with open(_open_new(tmp), "w") as fh:
         json.dump(data, fh)
     os.replace(tmp, _shown_path())
@@ -975,7 +996,7 @@ def taken_messages(key, since_s=TAKEN_KEEP_S, now=None):
     now = now or time.time()
     out = []
     try:
-        with open(_taken_path()) as fh:
+        with _read_own(_taken_path()) as fh:
             for line in fh:
                 try:
                     r = json.loads(line)
@@ -1219,7 +1240,7 @@ def _coord_cursor_path():
 def read_coord_cursor():
     """{"<server url>|<org>": seq}: how far this machine has read each organization's coordination feed."""
     try:
-        with open(_coord_cursor_path()) as fh:
+        with _read_own(_coord_cursor_path()) as fh:
             d = json.load(fh)
         return d if isinstance(d, dict) else {}
     except (OSError, ValueError):
@@ -1228,7 +1249,7 @@ def read_coord_cursor():
 
 def write_coord_cursor(cursor):
     try:
-        tmp = _coord_cursor_path() + f".{os.getpid()}"
+        tmp = _coord_cursor_path() + _tmp_suffix()
         with open(_open_new(tmp), "w") as fh:
             json.dump(cursor, fh)
         os.replace(tmp, _coord_cursor_path())
@@ -1276,10 +1297,11 @@ def heartbeat_path():
 def write_heartbeat(ticks, now=None):
     """{ts, pid, loops: {loop: last time it ran}}, written by the presence loop every PRESENCE_CHECK seconds."""
     path = heartbeat_path()
+    tmp = path + _tmp_suffix()
     try:
-        with open(_open_new(path + ".tmp"), "w") as fh:
+        with open(_open_new(tmp), "w") as fh:
             json.dump({"ts": time.time() if now is None else now, "pid": os.getpid(), "loops": dict(ticks)}, fh)
-        os.replace(path + ".tmp", path)
+        os.replace(tmp, path)
     except OSError:
         pass
 
