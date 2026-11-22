@@ -27,7 +27,8 @@ in the guard or the sandbox away from a session; only another OS user is a wall 
 
 - **A. A posting unit (recommended).** The token is held by a unit outside the sandbox, as its own OS user. A session
   hands it the text and gets the result back, and never sees the token. The unit can check the text before it is
-  published.
+  published. It moves verdicts only with the reviewers' own OS user and a merge that counts only pull request
+  reviews (option 1 on the owner's card `OF-272`, §4); without them it posts comments only.
 - **B. A scoped token the session reads.** This is the simplest option. But the session can do whatever the token
   allows, with no check on the text, and it can publish the token itself, since the sandbox's network allowlist keeps
   GitHub open. Rejected.
@@ -57,7 +58,9 @@ in the guard or the sandbox away from a session; only another OS user is a wall 
   agents' user reads.
 - **What it allows.** Two actions only: a comment on a pull request, and a review whose event is a comment (never an
   approval, which branch protection could count). Both only on OF's repositories, named in the program and never in
-  the registry, since the registry follows agents' pushes (card `OF-266`). It refuses everything else.
+  the registry, since the registry follows agents' pushes (card `OF-266`). It refuses everything else. Whatever the
+  option, it refuses a body, of either kind, in which the merge's reader would find a verdict line, unless the request
+  comes from the reviewers' own user's folder; it tests the body with that reader's own pattern, never a copy of it.
 - **The gate.** The body is publication, so it passes the export gate's checks. The unit runs them from a copy that the
   owner's sitting installs root-owned, pinned by its sha256. It never runs them from organic-framework-build's
   `release/`, which follows pushes.
@@ -67,7 +70,7 @@ in the guard or the sandbox away from a session; only another OS user is a wall 
 - **The cost, stated.** As specified so far, any session on the host could post a comment or a review verdict on OF's
   pull requests under any position's name. Nothing in today's merge path tells a forged verdict from a real one: the
   merge takes the newest `Verdict:` line with each `Position:` line, and the owner reviews no pull request before it.
-  So the unit carries no verdict on its own. It carries verdicts only with the owner's card's first option: the
+  So the unit carries no verdict on its own. It carries verdicts only with option 1 on the owner's card `OF-272`: the
   reviewers post from an OS user of their own; the unit makes a pull request review only from that user's request
   folder, and refuses a body with a `Verdict:` line from any other; and the merge counts only reviews, never a
   comment. Without that option, the unit carries comments, and verdicts stay where they are posted today. The two
@@ -108,8 +111,11 @@ in the guard or the sandbox away from a session; only another OS user is a wall 
 ## 6. The owner's hands, once
 
 - In his browser: create the fine-grained token (the repository, and only the permissions comments and reviews need).
+- His yes to a second writable folder in each posting session's sandbox, `/srv/of-gh-post/requests`, which is a
+  change of spawn's sandbox block (§4, "The door").
 - In a plain terminal, in one sitting: create `of-gh`, install the program and its units, and read the token silently
   into its file. Never with `!` in an agent's session, and never pasted into a chat.
+- With option 1, in the same sitting: create the reviewers' OS user, its home and its request folder.
 
 ## 7. Open
 
