@@ -47,15 +47,21 @@ in the guard or the sandbox away from a session; only another OS user is a wall 
 
 - **Who runs it.** A root-owned program, `/usr/local/libexec/of-gh-post`, run by root's units as its own OS user,
   `of-gh`. That user's home, mode 700, holds the token.
-- **The door.** A session writes a request, then touches a signal file, and a path unit starts the service. The request
-  names the repository, the pull request, the kind and a body file. It cannot lie in OF's state folder, which is mode
-  700 and so closed to `of-gh`. It lies in `/srv/of-gh-post/requests`, outside any home: owner the agents' user, group
-  `of-gh`, mode 2750, so the setgid bit passes the group on. A session writes each request file with mode 640 itself
-  (an explicit `fchmod`, since its umask gives 600). A sandboxed session's Bash may write only its working folders and
-  OF's state folder, so this folder is a second writable folder in every sandbox that posts: a change of spawn's
-  sandbox block, and a widening to name on the owner's card. The service reads a request as data: no link, regular
-  files only, a size bound. It writes the result in `/var/lib/of-gh-post/results`, which only it writes and the
-  agents' user reads.
+- **The door** (interface v1, of_server, message `01a20553-b1bd`). Two doors. The reviewers' is their own user's
+  `~/.local/state/of/gh-post/requests` (mode 2750, group `of-gh-review`, as the owner's sitting makes it); every other
+  OF session's is `/srv/of-gh-post/of/requests`, outside any home (owner the agents' user, group `of-gh`, mode 2750, so
+  the setgid bit passes the group on). Beside each `requests/` is a `signal` file. A session writes one request,
+  `<uuid>.json`: mode 640 (an explicit `fchmod`, since its umask gives 600), a regular file with one name, at most
+  128 KiB, `{v: 1, kind: comment|review, repo, pr, commit, body, position, session}` with the body inline. It then
+  touches `signal`, and a path unit starts the service. OF's state folder is mode 700 and so closed to `of-gh`, hence
+  the door outside it. A sandboxed session's Bash may write only its working folders and OF's state folder, so the
+  sessions' door's `requests/` and `signal` are a second writable place in every sandbox that posts: spawn's sandbox
+  block names them, and only where the door exists (card `OF-272`, option 1). The service reads a request as data: no
+  link, regular files only, the size bound. It writes the result to `/var/lib/of-gh-post/<the door's user>/<uuid>.json`
+  (mode 640, the door user's group): posted with its URL, or refused with why. `of post comment|review --pr N
+  [--commit SHA] --body-file F` (`bin/of_post.py`) checks the signal first and writes nothing to a door with none,
+  writes the request, touches the signal and waits for the result. A review goes only through the reviewers' door,
+  on the pull request's head commit.
 - **What it allows.** Two actions only: a comment on a pull request, and a review whose event is a comment (never an
   approval, which branch protection could count). Both only on OF's repositories, named in the program and never in
   the registry, since the registry follows agents' pushes (card `OF-266`). It refuses everything else. Whatever the

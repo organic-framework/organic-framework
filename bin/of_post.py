@@ -25,10 +25,23 @@ class PostError(Exception):
     pass
 
 
-def door(home=None):
-    """(the door folder, its kind): the reviewers' door when this user has one, else the sessions' door."""
+REVIEWERS_GROUP = "of-gh-review"
+
+
+def door(home=None, group=REVIEWERS_GROUP):
+    """(the door folder, its kind): the reviewers' door when this user's own one is there as the sitting makes it
+    (its requests folder of the reviewers' group), else the sessions' door. A folder any session could make by name
+    alone is not taken: nobody reads it (of_review on PR 576)."""
+    import grp
     mine = os.path.join(home or os.path.expanduser("~"), ".local", "state", "of", "gh-post")
-    if os.path.isdir(os.path.join(mine, "requests")):
+    req = os.path.join(mine, "requests")
+    try:
+        st = os.lstat(req)
+        gid = grp.getgrnam(group).gr_gid
+    except (OSError, KeyError):
+        return SESSIONS_DOOR, "sessions"
+    import stat as _st
+    if _st.S_ISDIR(st.st_mode) and st.st_gid == gid:
         return mine, "reviewers"
     return SESSIONS_DOOR, "sessions"
 
@@ -57,6 +70,11 @@ def submit(req, folder, kind_of_door, wait_s=120, poll_s=1.0, results=RESULTS, u
     result's data). state is posted, refused, or waiting (no result within WAIT_S)."""
     if req["kind"] == "review" and kind_of_door != "reviewers":
         raise PostError("a review goes only through the reviewers' door; this session has the sessions' door")
+    sig = os.path.join(folder, "signal")
+    # the signal first: a request written to a door with no unit behind it would stay there for a unit started later
+    # to post, and a retry would post twice (of_review on PR 576)
+    if not os.path.lexists(sig) or os.path.islink(sig) or not os.path.isfile(sig):
+        raise PostError(f"the door has no signal file ({sig}); the unit is not set up here, and nothing was written")
     rid = str(uuid.uuid4())
     path = os.path.join(folder, "requests", f"{rid}.json")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o640)
@@ -65,11 +83,7 @@ def submit(req, folder, kind_of_door, wait_s=120, poll_s=1.0, results=RESULTS, u
         os.write(fd, json.dumps(req, ensure_ascii=False).encode("utf-8"))
     finally:
         os.close(fd)
-    sig = os.path.join(folder, "signal")
-    if os.path.lexists(sig) and not os.path.islink(sig):
-        os.utime(sig, None, follow_symlinks=False)
-    else:
-        raise PostError(f"the door has no signal file ({sig}); the unit is not set up here")
+    os.utime(sig, None, follow_symlinks=False)
     user = user or pwd.getpwuid(os.getuid()).pw_name
     out = os.path.join(results, user, f"{rid}.json")
     end = time.monotonic() + wait_s
