@@ -584,8 +584,7 @@ class WaitsProcessor(Processor):
         fh.close()
         self.dirty = False
         here = os.path.dirname(os.path.realpath(__file__))
-        log = open(os.open(os.path.join(of_events.STATE_DIR, "listen.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-                           0o600), "a")
+        log = os.fdopen(of_events.open_own(of_events.log_path("listen.log")), "a")
         subprocess.Popen([sys.executable, "-c", _WAITS_RUNNER, lock_path, here], stdin=subprocess.DEVNULL,
                          stdout=log, stderr=log, start_new_session=True,
                          env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
@@ -841,8 +840,7 @@ class BlockedProcessor(Processor):
         """Into the receiver's inbox, never its pane: a detached `of send --fyi` from the detector's owner."""
         import subprocess
         here = os.path.dirname(os.path.realpath(__file__))
-        log = open(os.open(os.path.join(of_events.STATE_DIR, "listen.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-                           0o600), "a")
+        log = os.fdopen(of_events.open_own(of_events.log_path("listen.log")), "a")
         subprocess.Popen([sys.executable, os.path.join(here, "of"), "send", to, "--from",
                           "organic-framework-build:of_platform", "--fyi", text],
                          stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
@@ -893,8 +891,7 @@ class PulseProcessor(Processor):
         fcntl.flock(fh, fcntl.LOCK_UN)
         fh.close()
         of_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "of")
-        log = open(os.open(os.path.join(of_events.STATE_DIR, "pulse.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-                           0o600), "a")
+        log = os.fdopen(of_events.open_own(of_events.log_path("pulse.log")), "a")
         subprocess.Popen([sys.executable, "-c", _PULSE_RUNNER, lock_path, of_path, str(self.TIMEOUT_S)],
                          stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
                          env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
@@ -977,8 +974,7 @@ class GithubProcessor(Processor):
         fcntl.flock(fh, fcntl.LOCK_UN)
         fh.close()
         here = os.path.dirname(os.path.realpath(__file__))
-        log = open(os.open(os.path.join(of_events.STATE_DIR, "github-import.log"),
-                           os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a")
+        log = os.fdopen(of_events.open_own(of_events.log_path("github-import.log")), "a")
         subprocess.Popen(["nice", "-n", "15", sys.executable, "-c", _GH_RUNNER, lock_path, os.path.join(here, "of")],
                          stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
                          env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
@@ -1024,8 +1020,7 @@ class ArchiveProcessor(Processor):
         except OSError:
             idle = False
         here = os.path.dirname(os.path.realpath(__file__))
-        log = open(os.open(os.path.join(of_events.STATE_DIR, "archive.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-                           0o600), "a")
+        log = os.fdopen(of_events.open_own(of_events.log_path("archive.log")), "a")
         subprocess.Popen([sys.executable, os.path.join(here, "of"), "archive", "--quiet", "--budget",
                           "600" if idle else "60"], stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                          start_new_session=True, env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
@@ -1166,8 +1161,7 @@ class DeliverProcessor(Processor):
     def spawn(self, position):
         import subprocess
         here = os.path.dirname(os.path.realpath(__file__))
-        log = open(os.open(os.path.join(of_events.STATE_DIR, "deliver.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-                           0o600), "a")
+        log = os.fdopen(of_events.open_own(of_events.log_path("deliver.log")), "a")
         subprocess.Popen([sys.executable, os.path.join(here, "of"), "asks", "deliver", position],
                          stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
                          env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
@@ -1234,8 +1228,7 @@ class CaseProcessor(Processor):
     def spawn(self, trigger):
         import subprocess
         here = os.path.dirname(os.path.realpath(__file__))
-        log = open(os.open(os.path.join(of_events.STATE_DIR, "case.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-                           0o600), "a")
+        log = os.fdopen(of_events.open_own(of_events.log_path("case.log")), "a")
         subprocess.Popen([sys.executable, os.path.join(here, "of"), "desk", "case", "--infer", "--trigger", trigger],
                          stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
                          env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
@@ -1279,8 +1272,7 @@ class CorrectionsProcessor(Processor):
     def spawn(self, action):
         import subprocess
         here = os.path.dirname(os.path.realpath(__file__))
-        log = open(os.open(os.path.join(of_events.STATE_DIR, "corrections.log"),
-                           os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a")
+        log = os.fdopen(of_events.open_own(of_events.log_path("corrections.log")), "a")
         subprocess.Popen([sys.executable, os.path.join(here, "of"), "corrections", action, "--quiet"],
                          stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
                          env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
@@ -1309,8 +1301,7 @@ class AccessDigestProcessor(Processor):
             self.at = now
             import subprocess
             here = os.path.dirname(os.path.realpath(__file__))
-            log = open(os.open(os.path.join(of_events.STATE_DIR, "access-digest.log"),
-                               os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a")
+            log = os.fdopen(of_events.open_own(of_events.log_path("access-digest.log")), "a")
             subprocess.Popen([sys.executable, os.path.join(here, "of"), "access", "digest", "--quiet"],
                              stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
                              env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
@@ -1346,8 +1337,7 @@ class TempoProcessor(Processor):
             self.pending, self.started = False, now
             import subprocess
             here = os.path.dirname(os.path.realpath(__file__))
-            log = open(os.open(os.path.join(of_events.STATE_DIR, "tempo.log"),
-                               os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a")
+            log = os.fdopen(of_events.open_own(of_events.log_path("tempo.log")), "a")
             subprocess.Popen([sys.executable, os.path.join(here, "of"), "tempo", "judge", "--quiet"],
                              stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
                              env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
@@ -1599,12 +1589,12 @@ def launchd_plists(python=None, of_bin=None):
     10 (of_server's 3981069). Its children lower themselves where they are batch work."""
     python = python or sys.executable
     of_bin = of_bin or os.path.join(os.path.dirname(os.path.realpath(__file__)), "of")
-    log = os.path.join(of_events.STATE_DIR, "listen.log")
+    log = of_events.log_path("listen.log")
     listener = _plist(LAUNCHD_LABEL, [python, of_bin, "listen", "run"], log,
                       "  <key>RunAtLoad</key><true/>\n  <key>KeepAlive</key><true/>\n"
                       "  <key>ThrottleInterval</key><integer>10</integer>\n")
     watch = _plist(WATCHDOG_LABEL, [python, of_bin, "listen", "watchdog"],
-                   os.path.join(of_events.STATE_DIR, "listen-watchdog.log"),
+                   of_events.log_path("listen-watchdog.log"),
                    f"  <key>StartInterval</key><integer>{WATCHDOG['every']}</integer>\n")
     return {LAUNCHD_LABEL: listener, WATCHDOG_LABEL: watch}
 

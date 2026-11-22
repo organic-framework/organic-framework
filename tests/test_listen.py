@@ -1073,7 +1073,10 @@ class WatchdogTest(unittest.TestCase):
 class SystemdTest(unittest.TestCase):
     def test_listener_and_watchdog_units(self):
         from unittest import mock
-        with mock.patch.dict(of_listen.WATCHDOG, {"every": 37}), mock.patch.object(of_events, "STATE_DIR", "/of state"):
+        import tempfile
+        logs = tempfile.mkdtemp()
+        with mock.patch.dict(of_listen.WATCHDOG, {"every": 37}), mock.patch.object(of_events, "STATE_DIR", "/of state"), \
+                mock.patch.object(of_events, "LOG_DIR", logs):
             units = of_listen.systemd_units(python="/my python", of_bin="/my repo/of")
         self.assertEqual(set(units), {"of-listen.service", "of-listen-watchdog.service", "of-listen-watchdog.timer"})
         for name, action in (("of-listen.service", "run"), ("of-listen-watchdog.service", "watchdog")):
@@ -1081,7 +1084,8 @@ class SystemdTest(unittest.TestCase):
             self.assertIn(f'ExecStart="/my python" "/my repo/of" listen {action}', lines)
             self.assertIn("Environment=OF_AUTOMATION=1", lines)
             self.assertIn("Environment=SSH_AUTH_SOCK=", lines)
-            log = "/of state/" + ("listen.log" if action == "run" else "listen-watchdog.log")
+            # the logs live in LOG_DIR, never in the state folder a sandbox may write (hand-over 58681935)
+            log = os.path.join(logs, "listen.log" if action == "run" else "listen-watchdog.log")
             self.assertIn(f"StandardOutput=append:{log}", lines)
             self.assertIn(f"StandardError=append:{log}", lines)
         self.assertTrue({"Restart=always", "RestartSec=10", "WantedBy=default.target"}.issubset(

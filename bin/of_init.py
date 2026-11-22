@@ -1552,7 +1552,7 @@ def install_units(out=print, system=None, run=subprocess.run, wait_s=8, sleep=ti
     system = system or platform.system()
     failed = []
     for u in UNITS:
-        log = os.path.join(of_events.STATE_DIR, f"{u['name']}.log")
+        log = of_events.log_path(f"{u['name']}.log")   # never in the state folder (hand-over 58681935)
         if system == "Darwin":
             path = os.path.expanduser(f"~/Library/LaunchAgents/{u['label']}.plist")
             start = [["launchctl", "bootout", f"gui/{os.getuid()}/{u['label']}"],
