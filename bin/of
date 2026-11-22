@@ -6323,7 +6323,8 @@ def cmd_pulse(args):
         mem = of_pulse.load_memory()
         of_pulse.booking_notes(positions, agents, bind, mem, _time.time(), conn,
                                prompt=None if args.no_nudge else of_pulse.herdr_prompt,
-                               log=(lambda m: None) if args.quiet else print, elsewhere=elsewhere)
+                               log=(lambda m: None) if args.quiet else print, elsewhere=elsewhere,
+                               works=_loop_works())
         of_pulse.save_memory(mem)
     except Exception as e:  # noqa: BLE001
         print(f"booking notes: {e}")

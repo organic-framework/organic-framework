@@ -1238,9 +1238,12 @@ def _epoch_iso(ts):
         return 0.0
 
 
-def booking_note(items):
+def booking_note(items, loops=()):
     """What a position reads when it booked work for later with no basis (bin/of_tempo.py; organic-framework AGENTS.md
-    and docs/method.md, "Work starts when it is ready")."""
+    and docs/method.md, "Work starts when it is ready"). LOOPS: the works with a loop it owns or does. `of loop wait`
+    refuses a work with no loop (RFC 0005 par. 4), so the note offers it only for those: on 2026-11-22 a user
+    organization counted 523 notes to 36 positions offering it, most of them doers of projects alone, and one re-booked
+    twice after the refusal (its structure keeper, message 01a2029e-969a)."""
     where = {"cron": "a cron you set", "clock_wait": "a background task that waits on the clock",
              "message": "your message to {to}", "ask": "your question to the owner"}
     lines = [f"- {where[x['source']].format(to=x.get('to'))}"
@@ -1248,16 +1251,19 @@ def booking_note(items):
              for x in items]
     return ("Message from of_pulse (via of pulse, authority: none; work put off with no named wait, \"Work starts when "
             "it is ready\")\nYou put this off to a later time without naming what it waits on:\n" + "\n".join(lines)
-            + "\nRun it now, or name what it waits on: `of status waiting --on <position>`, or `of loop wait <work> "
-            "--on runner|window|release|holdout|ask|position|calendar --until <time>`. If a basis exists (a position, "
-            "the owner's card, a window with its source, a runner, data that does not exist yet, a named conflict, the "
-            "owner's limit with its ask id), say it where you booked it.\n[once per booking]")
+            + "\nRun it now, or name what it waits on: `of status waiting --on <position>`, "
+            + (f"`of loop wait <work> --on runner|window|release|holdout|ask|position|calendar --until <time>` (your "
+               f"works with a loop: {', '.join(loops)}), " if loops else "")
+            + "or `of status idle --note \"<the wait and its source>\"`. If a basis exists (a position, the owner's "
+            "card, a window with its source, a runner, data that does not exist yet, a named conflict, the owner's "
+            "limit with its ask id), say it with its source where you booked it.\n[once per booking]")
 
 
-def booking_notes(positions, agents, bind, mem, now, conn, prompt=None, log=print, elsewhere=None):
+def booking_notes(positions, agents, bind, mem, now, conn, prompt=None, log=print, elsewhere=None, works=None):
     """Type each `of.booking_judged` with no_basis items into its position's pane once, one note per judgement (one
     turn's items): hand-over 277de578. Only positions this machine holds, and only into an idle pane; a busy one is
-    tried at the next pulse for TEMPO_KEEP_S. A person's position gets nothing typed. Returns the number told."""
+    tried at the next pulse for TEMPO_KEEP_S. A person's position gets nothing typed. works: as loop_stalls takes it; a
+    position offered `of loop wait` owns or does one with a loop. Returns the number told."""
     import of_tempo
     if not of_tempo.NOTES_LIVE:
         return 0
@@ -1281,6 +1287,12 @@ def booking_notes(positions, agents, bind, mem, now, conn, prompt=None, log=prin
     live = {p["name"]: a for p, a in bind(positions, agents)[0]}
     people = {p["name"] for p in positions if (p.get("holder") or {}).get("runtime") == "human"}
     away = {n for _, n in (elsewhere or {})}
+    loops = {}
+    for org, wid, work, loop in works or ():
+        if loop:
+            for who in dict.fromkeys([work.get("owner")] + list(work.get("doers") or [])):
+                if who:
+                    loops.setdefault((org, str(who)), []).append(wid)
     told, keep = 0, []
     for x in st["pending"]:
         a = live.get(x["position"]) or {}
@@ -1290,7 +1302,7 @@ def booking_notes(positions, agents, bind, mem, now, conn, prompt=None, log=prin
         if not prompt or x["position"] in away or not a.get("pane_id") or a.get("agent_status") not in ("idle", "done"):
             keep.append(x)
             continue
-        note = booking_note(x["items"])
+        note = booking_note(x["items"], loops.get((x["org"], x["position"])) or ())
         res = prompt(a["pane_id"], note, "of_pulse")
         if (res[0] if isinstance(res, tuple) else (res is None or res is True)) is not True:
             keep.append(x)
