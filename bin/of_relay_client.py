@@ -969,11 +969,10 @@ def pull(client, key, session, take=None, pane_busy=False, newest=False):
     got = (client.queued_messages(key, session, newest=newest) if newest else client.queued_messages(key, session)) or {}
     msgs = got.get("messages") or []
     total = int(got.get("total") or len(msgs))   # an older server sends no total: the listing is all it says
-    LAST_QUEUE[key] = {"total": total, "urgent": int(got.get("urgent") or 0), "listed": len(msgs)}
     if take is None:
         mark_shown(key, session, [m["msg_id"] for m in msgs])
     listed = shown(key, session) if take == "all" else set()
-    out = []
+    out, here = [], 0
     for m in msgs:
         if take == "all" and m["msg_id"] not in listed and not seen(m["msg_id"]):
             out.append((dict(m, _new=NEW_SINCE_LISTING), False))
@@ -981,6 +980,7 @@ def pull(client, key, session, take=None, pane_busy=False, newest=False):
         want = take == "all" or (take and m["msg_id"].startswith(take))
         if seen(m["msg_id"]):  # taken here already (a busy pane under a lease): the server learns it from the
             # relay's next ack; never list it twice (2026-11-06). Retry the server's take quietly.
+            here += 1
             if want:
                 try:
                     client.take_message(m["msg_id"], key, session)
@@ -1014,9 +1014,14 @@ def pull(client, key, session, take=None, pane_busy=False, newest=False):
                            position=key.partition(":")[2], session=session)
         out.append((m, bool(want)))
     left = [m for m, taken in out if not taken]
-    # the whole queue less what this call took, never only the listing's length (a backlog past the server's limit)
-    set_queue(key, max(total - sum(1 for _, t in out if t), len(left)),
-              min((m.get("created_at") for m in left if m.get("created_at")), default=None))
+    # the whole queue less what this call took and what this machine already typed into the pane (the server counts
+    # it until the relay's ack; listed, it would show twice), never only the listing's length (a backlog past the
+    # server's limit). Counted as shown and not, it read "1 message queued" over an empty listing (a user
+    # organization through its structure keeper, msg 01a203ee-9025)
+    waiting = max(total - here - sum(1 for _, t in out if t), len(left))
+    LAST_QUEUE[key] = {"total": max(total - here, len(out)), "urgent": int(got.get("urgent") or 0),
+                       "listed": len(out), "typed_here": here}
+    set_queue(key, waiting, min((m.get("created_at") for m in left if m.get("created_at")), default=None))
     return out
 
 
