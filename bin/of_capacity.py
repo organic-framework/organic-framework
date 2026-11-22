@@ -1336,6 +1336,61 @@ def set_source_aside(src, sid, dest):
     return out
 
 
+def redact_backup(root, log=lambda _: None, register=None):
+    """Mark, in every transcript a move keeps under its backup `root`, the records the raw archive's redaction register
+    names (of_redact.archive_filter), so a backup never keeps whole what the owner had marked everywhere else. When
+    the register does not read, the backup keeps no transcript at all: the live one holds every record. 2026-11-20,
+    of_server (redaction 7da5d129, the founder's yes on card OF-170): a move's backup held a whole copy of a session
+    the register names. Returns (marked, dropped) relative paths."""
+    import of_redact
+    files = [os.path.join(dp, f) for dp, _, fs in os.walk(root) for f in fs if f.endswith(".jsonl")]
+    if not files:
+        return [], []
+    try:
+        entries = of_redact.archive_register() if register is None else register
+    except OSError as e:  # RegisterError is one
+        for f in files:
+            os.unlink(f)
+        log(f"  backup: {len(files)} transcript(s) not kept ({e})")
+        return [], [os.path.relpath(f, root) for f in files]
+    marked = []
+    for f in files:
+        rel = os.path.relpath(f, root)
+        if not any(e["session"] in rel for e in entries):
+            continue
+        with open(f, "rb") as fh:
+            data = fh.read()
+        new = of_redact.archive_filter(rel, data, entries)
+        if new is data:
+            continue
+        tmp = f"{f}.{os.getpid()}.tmp"
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as fh:
+            fh.write(new)
+        os.replace(tmp, f)
+        marked.append(rel)
+    if marked:
+        log(f"  backup: the register's records marked in {len(marked)} transcript(s)")
+    return marked, []
+
+
+def _redact_backup_safely(root, log):
+    """redact_backup during a move: a failure there never fails the move, and leaves no transcript in the backup. Any
+    failure: an of_redact without the register (of_review on PR 492) failed every move with a backup transcript."""
+    try:
+        redact_backup(root, log)
+    except Exception as e:  # noqa: BLE001
+        gone = 0
+        for dp, _, fs in os.walk(root):
+            for f in fs:
+                if f.endswith(".jsonl"):
+                    try:
+                        os.unlink(os.path.join(dp, f))
+                        gone += 1
+                    except OSError:
+                        pass
+        log(f"  backup: the register's records not marked ({type(e).__name__}: {e}); {gone} transcript(s) not kept")
+
+
 def _read(p):
     try:
         with open(p, "rb") as fh:
@@ -3314,6 +3369,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
     rekeyed = rekey_session(target, sid, folder_key(run_cwd) if run_cwd != s["cwd"] else key,
                             os.path.join(work, "backup")) if key else []
     mark_copied(rekeyed)
+    _redact_backup_safely(os.path.join(work, "backup"), log)
     try:  # the old process has exited: a failed reading costs the note's list, never the move
         final = find_transcript(target, sid)
         stopped = stopped_tasks(final, exit_started) if final else []
@@ -3354,6 +3410,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
                 log(f"  the old account's copy ({len(gone)} path(s)) is in the move's backup until it is pruned")
         except OSError as e:
             log(f"  the old account's copy stays where it was: {e}")
+        _redact_backup_safely(os.path.join(work, "backup"), log)
     if bypass and (runtime != "zellij" or place):  # a herdr pane: the footer can be read and keyed
         check_bypass_after_start(new_pane, log)
     # 5. record and rebind
