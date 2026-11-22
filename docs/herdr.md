@@ -287,7 +287,20 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
     moved it under the unit.
 
   Status with no login session needs `XDG_RUNTIME_DIR` to reach the user manager. A cron or `runuser` has none,
-  so the command sets it to `/run/user/<uid>` when that folder exists. Not run yet: a restart after a crash.
+  so the command sets it to `/run/user/<uid>` when that folder exists.
+- **Checked on 2026-11-22 on a Linux Lab VM by `of_lab`,** for `Slice=` and `OOMPolicy=` (hand-overs `376e51e8`
+  and `e8a57731`). The agent host's `app.slice` drop-in and oomd settings were reproduced, the unit was bound to
+  256 MB with no swap, and a process in one pane allocated until the kernel killed it:
+  - With the old text (`app.slice`, `OOMPolicy=stop`), the kernel took that process and then herdr's server, and
+    every pane ended. Why it took the server as a second victim is not established. `Restart=on-failure` started
+    the server again 10 s later: a restart after a crash.
+  - With the new text written by `install` over the running unit, and no restart, `OOMPolicy=continue` was in
+    force from the install's daemon-reload. The next kill took only the allocating process. The unit and the other
+    pane survived, still in `app.slice`.
+  - After `systemctl --user restart`, the unit's cgroup was `session.slice/of-herdr.service`, and `oomctl` listed
+    `app.slice` and not `session.slice`. A kill left the unit with the same main process and the other pane alive.
+  - A bound set with `systemctl --user set-property` stayed under `~/.config/systemd/user.control/` across a
+    second install.
 
 ## Resuming OF's sessions after a herdr restart
 
