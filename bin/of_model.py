@@ -118,6 +118,24 @@ def iso(sec):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(sec))
 
 
+# ------------------------------------------------------------------ reading a checkout
+
+def git_read(repo, *args, timeout=10, **kw):
+    """`git ARGS` in REPO as bin/of_protected.py runs git: the system's git with no global or system configuration, no
+    lazy fetch, no replace objects, every transport off and no hook, monitor, pager or external diff. Studio, the model
+    and `of works` read organizations' checkouts outside any sandbox, and a session may write such a checkout's
+    configuration: one that names a signature program or a promisor remote would otherwise make git run a program of
+    the session's choosing (of_review's probes on organic-framework PR 507; docs/guard.md, Gaps). Callers add
+    `--no-show-signature` to log, and pass no revision read from the repository on the command line. Raises OSError
+    where the machine has no system git, as a missing git did before."""
+    import of_protected
+    try:
+        cmd = of_protected._git_cmd(repo)
+    except of_protected.Refused as e:
+        raise FileNotFoundError(str(e)) from None
+    return subprocess.run(cmd + list(args), capture_output=True, timeout=timeout, env=of_protected._env(), **kw)
+
+
 # ------------------------------------------------------------------ registry at t
 
 def registry_at(repo, at=None, rel="registry/positions.yaml"):
@@ -126,11 +144,10 @@ def registry_at(repo, at=None, rel="registry/positions.yaml"):
     repo = os.path.expanduser(repo)
     if at is not None:
         try:
-            rev = subprocess.run(["git", "-C", repo, "rev-list", "-1", f"--before={iso(epoch(at))}", "HEAD", "--", rel],
-                                 capture_output=True, text=True, timeout=10).stdout.strip()
+            rev = git_read(repo, "rev-list", "-1", f"--before={iso(epoch(at))}", "HEAD", "--", rel,
+                           text=True).stdout.strip()
             if rev:
-                text = subprocess.run(["git", "-C", repo, "show", f"{rev}:{rel}"],
-                                      capture_output=True, text=True, timeout=10).stdout
+                text = git_read(repo, "cat-file", "blob", f"{rev}:{rel}", text=True).stdout
                 return yaml.safe_load(text) or {}, rev
         except (OSError, subprocess.SubprocessError):
             pass
@@ -189,8 +206,8 @@ def _registry_history(repo, head, rel="registry/positions.yaml"):
     changes, so each revision's keepers are kept on disk by commit id: a run parses only the revisions it has not seen
     (a user organization's 179 took 72 s per run, 2026-11-11). Progress is saved every 10 s, so a killed run still keeps it."""
     try:
-        revs = subprocess.run(["git", "-C", repo, "log", "--reverse", "--format=%H %ct", "--", rel],
-                              capture_output=True, text=True, timeout=20).stdout.split("\n")
+        revs = git_read(repo, "log", "--no-show-signature", "--reverse", "--format=%H %ct", "--", rel, text=True,
+                        timeout=20).stdout.split("\n")
     except (OSError, subprocess.SubprocessError):
         return ()
     path = _keepers_cache_path(repo, rel)
@@ -206,8 +223,7 @@ def _registry_history(repo, head, rel="registry/positions.yaml"):
         rev, ct = line.split()
         if rev not in cache:
             try:
-                text = subprocess.run(["git", "-C", repo, "show", f"{rev}:{rel}"], capture_output=True, text=True,
-                                      timeout=10).stdout
+                text = git_read(repo, "cat-file", "blob", f"{rev}:{rel}", text=True).stdout
                 cache[rev] = _keepers_of(text)
             except Exception:  # noqa: BLE001 — an unparseable old revision is skipped, and remembered as such
                 cache[rev] = None
@@ -227,7 +243,7 @@ def keeper_since(repo, system, keeper):
     None when unknown (no git history)."""
     repo = os.path.expanduser(repo)
     try:
-        head = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5).stdout.strip()
+        head = git_read(repo, "rev-parse", "HEAD", text=True, timeout=5).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return None
     since = None
