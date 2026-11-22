@@ -45,6 +45,11 @@ class SystemdTest(unittest.TestCase):
         self.assertIn("WantedBy=default.target", srv)
         self.assertIn("server watchdog", units["of-server-watchdog.service"])
         self.assertIn("Type=oneshot", units["of-server-watchdog.service"])
+        for name, unit in units.items():   # every service logs outside the state folder a sandbox writes (Gaps entry)
+            for line in unit.splitlines():
+                if line.startswith(("StandardOutput=append:", "StandardError=append:")):
+                    self.assertNotIn("/.local/state/of/", line, name)
+                    self.assertIn("/.local/log/of/", line, name)
         self.assertIn(f"OnUnitActiveSec={of_server.WATCHDOG['every']}", units["of-server-watchdog.timer"])
 
     def test_install_enables_the_server_and_the_timer(self):
