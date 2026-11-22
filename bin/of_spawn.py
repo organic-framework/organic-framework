@@ -45,15 +45,28 @@ def brief_text(p, org_root, subagents=False):
             + f"At the end of every turn: of status working|waiting --on founder|<position>|idle|done.")
 
 
+def clone_guard(orgs_file=None):
+    """A predicate: is a path, resolved, a named work clone, or does it hold or lie in one, refused or not? The
+    readers outside the sandbox that pick a folder (work_dir, doc_path) never take such a path (of_review on PR 551:
+    checked where the folder is picked, not predicted when the clone is named)."""
+    clones = [c for _, c, _, _ in work_clones(orgs_file, include_refused=True)]
+
+    def hit(path):
+        q = os.path.realpath(os.path.expanduser(str(path)))
+        return any(q == c or q.startswith(c + os.sep) or c.startswith(q + os.sep) for c in clones)
+    return hit
+
+
 def work_dir(p, systems, org_paths, exists=os.path.isdir):
     """The position's folder: the first repository of its system that exists under the organization's paths (as a
-    child of a path, or as a sibling of it), else the organization's first path."""
+    child of a path, or as a sibling of it), else the organization's first path. Never a named work clone."""
     repos = ((systems or {}).get(p.get("system")) or {}).get("repos") or []
     roots = [os.path.expanduser(str(x)) for x in org_paths or []]
+    in_clone = clone_guard()
     for repo in repos:
         for root in roots:
             for cand in (os.path.join(root, repo), os.path.join(os.path.dirname(root), repo)):
-                if exists(cand):
+                if exists(cand) and not in_clone(cand):
                     return cand
     for root in roots:
         if exists(root):
