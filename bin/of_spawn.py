@@ -138,9 +138,9 @@ def agent_env():
 # network only to SANDBOX_DOMAINS, with strictAllowlist on. of_agent-server tried exactly this block on the agent host on 2026-11-20 under of (its msg
 # 01a1f88b-5471): the denied reads and writes failed, herdr, of who and of asks worked. macOS keeps running without it
 # until it is tried there. Known gap (docs/guard.md, Gaps): on Linux the sandbox opens every Unix socket or none
-# (allowUnixSockets is macOS-only), and of, herdr and the relay need theirs, so a command can reach herdr or of-server
-# and read through them past denyRead. The systemd user bus was not reachable from inside in a session on the host
-# (`systemctl --user` failed to connect; of_agent-server, message 01a202cd-f226): the gap is open for it, not shown.
+# (allowUnixSockets is macOS-only), and of, herdr and the relay need theirs, so a command can reach the systemd user
+# bus, herdr or of-server and read through them past denyRead. `systemctl --user` failed to connect in one session on
+# the host (of_agent-server, message 01a202cd-f226); whether the bus socket answers was not observed.
 SANDBOX_DENY_READ = ("~/.ssh", "~/.codex", "~/.config/of/service-accounts", "~/.config/of/grant_ed25519",
                      "~/.config/of/clickhouse", "~/.config/of/clickhouse-passwords", "~/.config/of/move",
                      "~/.local/state/of/server")

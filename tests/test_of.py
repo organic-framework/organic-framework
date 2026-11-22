@@ -265,8 +265,8 @@ class RegistryTest(unittest.TestCase):
             with mock.patch.object(of_relay_client, "read_heartbeat", lambda *a, **k: {"ts": _t.time() - 30}):
                 self.assertTrue(of.relay_alive())
             with mock.patch.object(of_relay_client, "read_heartbeat",
-                                   lambda *a, **k: {"ts": _t.time() - of_relay_client.STALE_S - 60}):
-                self.assertFalse(of.relay_alive())                     # an old heartbeat: pgrep tells
+                                   lambda *a, **k: {"ts": _t.time() - 6 * of_relay_client.PRESENCE_CHECK - 5}):
+                self.assertFalse(of.relay_alive())   # a killed relay leaves its heartbeat: past a few beats, pgrep tells
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
             seen = []
             with mock.patch.object(of, "_transcripts_visible", lambda: False):
@@ -275,6 +275,10 @@ class RegistryTest(unittest.TestCase):
                 self.assertFalse(of._transcript_exists("s-gone", {}))
             os.makedirs(os.path.join(home, ".claude", "projects", "p"))
             self.assertFalse(of._transcripts_visible([]))
+            codex = os.path.join(home, ".codex", "sessions", "2026", "11", "22")
+            os.makedirs(codex)
+            open(os.path.join(codex, "rollout-x-c1.jsonl"), "w").close()
+            self.assertTrue(of._transcripts_visible([]))                    # Codex's rollouts count too (PR 505 review)
             open(os.path.join(home, ".claude", "projects", "p", "s1.jsonl"), "w").close()
             self.assertTrue(of._transcripts_visible([]))
             self.assertTrue(of._transcript_exists("s1", {}))
