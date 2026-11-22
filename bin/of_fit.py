@@ -236,8 +236,7 @@ def call(prompt, config_dir=None, runner=subprocess.run, model=MODEL):
     import of_capacity
     d = config_dir or of_case.account()
     argv = [prompt if x is None else x for x in command(model)]
-    cwd = os.path.join(of_events.STATE_DIR, "fit")
-    os.makedirs(cwd, mode=0o700, exist_ok=True)
+    cwd = of_events.model_cwd()   # never a folder a session's sandbox can write
     t0 = time.time()
     try:
         r = runner(argv, capture_output=True, text=True, timeout=TIMEOUT_S, env=of_capacity.probe_env(d), cwd=cwd)
@@ -310,8 +309,7 @@ def delegate(task, positions, org, asker=None, runner=subprocess.run, model=MODE
             "--json-schema", json.dumps(DELEGATE_SCHEMA), "--output-format", "json", "--no-session-persistence",
             "--settings", '{"disableAllHooks": true}', "--strict-mcp-config", "--disable-slash-commands",
             "--max-turns", "3"]
-    cwd = os.path.join(of_events.STATE_DIR, "fit")
-    os.makedirs(cwd, mode=0o700, exist_ok=True)
+    cwd = of_events.model_cwd()   # never a folder a session's sandbox can write
     try:
         r = runner(argv, capture_output=True, text=True, timeout=TIMEOUT_S,
                    env=of_capacity.probe_env(config_dir or of_case.account()), cwd=cwd)

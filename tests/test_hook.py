@@ -818,6 +818,23 @@ class RegistryIndexUnwritableTest(unittest.TestCase):
         self.assertEqual(left, [])
 
 
+class ModelCwdTest(unittest.TestCase):
+    def test_a_model_call_runs_in_a_fresh_folder_outside_the_state_folder(self):
+        """of_agent-server, message 01a20511-834d, the same class: a model call OF makes outside the sandbox never
+        runs in a folder a session's sandbox can write."""
+        saved = of_events._MODEL_CWD
+        of_events._MODEL_CWD = None
+        try:
+            d = of_events.model_cwd()
+            self.assertTrue(os.path.isdir(d) and not os.path.islink(d))
+            self.assertFalse(os.path.realpath(d).startswith(os.path.realpath(of_events.STATE_DIR)))
+            self.assertEqual(os.listdir(d), [])
+            self.assertEqual(os.stat(d).st_mode & 0o777, 0o700)
+            self.assertEqual(of_events.model_cwd(), d)                   # one per process
+        finally:
+            of_events._MODEL_CWD = saved
+
+
 class NoWriteThroughALinkTest(unittest.TestCase):
     """of_server, hand-over 58681935 (docs/guard.md Gaps, "A process outside the sandbox follows a link"): on the agent
     host a sandboxed session may write OF's state folder; the hook and the store, which run outside the sandbox, never

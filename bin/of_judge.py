@@ -227,7 +227,7 @@ def call(prompt, config_dir=None, runner=subprocess.run, cfg=None):
     try:
         argv = [prompt if x is PROMPT_SLOT else x for x in argv]  # right after -p: --tools takes several values
         r = runner(argv, input=prompt if stdin else None, capture_output=True,
-                   text=True, timeout=TIMEOUT_S, env=env(config_dir), cwd=state_dir("cwd"))
+                   text=True, timeout=TIMEOUT_S, env=env(config_dir), cwd=of_events.model_cwd())
         j, meta = parse(r.stdout)
     except subprocess.TimeoutExpired:
         return {"verdict": "error", "error": f"timed out after {TIMEOUT_S}s", "ms": int((time.time() - t0) * 1000)}

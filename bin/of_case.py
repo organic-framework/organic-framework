@@ -270,8 +270,7 @@ def call(prompt, names, config_dir=None, runner=subprocess.run, model=MODEL):
     import of_capacity
     d = config_dir or account()
     argv = [prompt if x is None else x for x in command(model)]
-    cwd = os.path.join(of_events.STATE_DIR, "case")
-    os.makedirs(cwd, mode=0o700, exist_ok=True)
+    cwd = of_events.model_cwd()   # never a folder a session's sandbox can write
     t0 = time.time()
     try:
         r = runner(argv, capture_output=True, text=True, timeout=TIMEOUT_S, env=of_capacity.probe_env(d), cwd=cwd)
