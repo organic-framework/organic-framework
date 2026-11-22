@@ -288,6 +288,28 @@ def settings_file(settings, sid, state_dir=None):
     return path
 
 
+def record_settings(pl, state_dir=None, emit=None):
+    """Record the session's settings file as it is launched: of.session_settings with its sha256, size and time. The
+    event reaches the organization's server, which no sandbox reads or writes, so a session that rewrites its own or
+    another session's file under OF's state folder, or backdates it, shows against it (of_server, message
+    01a20337-fe93: the bootstrap's second run tells which sessions run on which settings; a deny would stop a structure
+    keeper spawning from its own session). Returns the digest, or None when the session has no settings file."""
+    import hashlib
+    import of_events
+    path = os.path.join(state_dir or of_events.STATE_DIR, "spawn", f"{pl['session']}.settings.json")
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return None
+    digest = hashlib.sha256(data).hexdigest()
+    (emit or of_events.emit)("session_settings", {"session": pl["session"], "position": pl["position"],
+                                                  "sha256": digest, "bytes": len(data), "by": "of spawn",
+                                                  "file": os.path.basename(path)},
+                             position=pl["position"], session=pl["session"], org=pl.get("org"))
+    return digest
+
+
 def launch_command(cwd, config_dir, sid, name, default_dir, model=None, bypass=True, memory=None, deny=None,
                    state_dir=None, tools=None, effort=None):
     """memory: the --settings JSON naming the position's memory directory (bin/of_memory.py, RFC 0006); deny: the
@@ -490,6 +512,7 @@ def run(pl, herdr, deliver, rename, wait_session, log=print, of_bin=None, timeou
             herdr("tab", "rename", tab_id, follow[1])
     log(f"  pane {pane} in {pl['workspace']} / {pl['tab']}")
     bypass = of_capacity.BYPASS_FLAG in pl["command"]
+    record_settings(pl)
     herdr("pane", "run", pane, pl["command"])
     if not wait_session(pl["session"], timeout):
         if trust_dialog(herdr, pane):

@@ -319,6 +319,26 @@ class AgentDefaultsTest(unittest.TestCase):
 
 
 
+class SettingsDigestTest(unittest.TestCase):
+    def test_the_settings_file_is_recorded_by_its_digest_at_launch(self):
+        """of_server, message 01a20337-fe93: a session can rewrite or backdate a settings file under OF's state folder;
+        the digest in an event the server keeps shows it."""
+        import hashlib
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            pl = {"session": "S1", "position": "ops_a", "org": "acme"}
+            got = []
+            self.assertIsNone(of_spawn.record_settings(pl, d, emit=lambda *a, **k: got.append((a, k))))
+            self.assertEqual(got, [])                                          # no file: nothing recorded
+            path = of_spawn.settings_file('{"x": 1}', "S1", d)
+            digest = of_spawn.record_settings(pl, d, emit=lambda *a, **k: got.append((a, k)))
+            with open(path, "rb") as fh:
+                self.assertEqual(digest, hashlib.sha256(fh.read()).hexdigest())
+            (name, payload), kw = got[0]
+            self.assertEqual((name, payload["session"], payload["sha256"], kw["session"]),
+                             ("session_settings", "S1", digest, "S1"))
+
+
 class SandboxBlock(unittest.TestCase):
     """Layer 3 of the agent host's isolation plan (the founder's yes, of_conductor msg 01a1efaf-43fd): every agent
     session on Linux starts with Claude Code's sandbox on, as of_agent-server tried it on the host (msg 01a1f88b-5471)."""
