@@ -120,9 +120,8 @@ def owner_entries(orgs_file=None):
             continue
         name = o.get("name") or (os.path.basename(os.path.join(base, os.path.expanduser(str(o["path"]))))
                                  if o.get("path") else None)
-        if name:
-            items = o["protected_code"]
-            out[str(name)] = items if isinstance(items, list) else []
+        items = o["protected_code"]   # an entry with no name at all still counts: the key's presence decides
+        out.setdefault(str(name or ""), []).extend(items if isinstance(items, list) else [])
     return out
 
 
