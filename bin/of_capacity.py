@@ -3143,9 +3143,27 @@ def _inject(sid, text, reason):
     of_events.emit("injected_prompt", {"injector": "of_capacity", "target_session": sid, "text_sha256": digest,
                                        "reason": reason}, position=actor())
     # as the other state files are written: a regular file of this user's, no link (of_events.append_own; of_server,
-    # hand-over 58681935)
-    of_events.append_own(os.path.join(STATE_DIR, "injections.jsonl"),
-                         json.dumps({"ts": time.time(), "session": sid, "sha256": digest, "injector": "of_capacity"}) + "\n")
+    # hand-over 58681935). One that cannot be written is this session's MoveError, never another error that would
+    # stop a restore's later sessions (of_review on PR 566)
+    try:
+        of_events.append_own(_injections_path(), json.dumps(
+            {"ts": time.time(), "session": sid, "sha256": digest, "injector": "of_capacity"}) + "\n")
+    except OSError as e:
+        raise MoveError(f"session {sid[:8]}: its first prompt's declaration could not be recorded ({e}), so it is not "
+                        f"started with it")
+
+
+def _injections_path():
+    return os.path.join(STATE_DIR, "injections.jsonl")
+
+
+def check_injections():
+    """Before anything irreversible: the file the first prompt's declaration goes to can be opened as a state file is,
+    so a move never exits a session it then cannot start (of_review on PR 566)."""
+    try:
+        os.close(_own_fd(_injections_path()))
+    except OSError as e:
+        raise MoveError(f"the first prompt's declaration cannot be recorded ({e}); nothing was changed")
 
 
 EXIT_DIALOG = "Background work is running"
@@ -3666,6 +3684,7 @@ def _move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, 
             held = "zellij" in proc_args(ppid)
         except Exception:
             held = False
+    check_injections()  # the start's declaration can be recorded, before the exit (of_review on PR 566)
     # 1. exit between turns, by the screen ("Background work is running": scheduled tasks, background shells)
     drafts = set_drafts_aside(src, sid, work)
     if drafts:
@@ -7663,7 +7682,7 @@ def spawn_balance():
     logf = os.path.join(STATE_DIR, "capacity", "balance.log")
     of_events.own_dir(os.path.dirname(logf))
     env = dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK="")
-    with os.fdopen(_own_fd(logf), "a") as fh:
+    with _log_file(logf) as fh:
         subprocess.Popen([sys.executable, of_path, "capacity", "balance"], stdout=fh, stderr=fh, env=env,
                          start_new_session=True, stdin=subprocess.DEVNULL)
 
@@ -7676,6 +7695,15 @@ def _own_fd(path):
     name, never through a link, and with no wait on open, as the other state files are (of_server's hand-over 58681935
     and verdict on organic-framework PR 545, through of_platform, messages 01a2046b-ceb8 and 01a2049c-37f5)."""
     return of_events.open_own(path)
+
+
+def _log_file(path):
+    """A detached run's log, opened as a state file is; one that cannot be opened costs only the log, never the run
+    (of_review on PR 566)."""
+    try:
+        return os.fdopen(_own_fd(path), "a")
+    except OSError:
+        return open(os.devnull, "a")
 
 
 def _tick_lock():
@@ -7738,7 +7766,7 @@ def spawn_tick():
     except OSError:
         pass
     env = dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK="")
-    with os.fdopen(_own_fd(logf), "a") as fh:
+    with _log_file(logf) as fh:
         subprocess.Popen([sys.executable, of_path, "capacity", "tick"], stdout=fh, stderr=fh, env=env,
                          start_new_session=True, stdin=subprocess.DEVNULL)
     return True
