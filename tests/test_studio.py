@@ -3405,6 +3405,132 @@ class KeeperHistoryTest(unittest.TestCase):
             self.assertEqual(of_model.keeper_since(repo, "s1", "b"), of_model.epoch("2026-11-02T00:00Z"))
 
 
+class CheckoutReadTest(unittest.TestCase):
+    """Studio, the model and `of works` read a checkout as bin/of_protected.py runs git: a configuration a session
+    wrote, naming a signature program or a promisor remote, runs no program (of_review's probes on organic-framework
+    PR 507; of_server, msg 01a202e4-7043). Each case first shows that plain git runs the program on that checkout."""
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        if not os.path.isfile("/usr/bin/git"):
+            self.skipTest("no system git")
+        self.top = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.top, True)
+        self.mark = os.path.join(self.top, "ran")
+        self.prog = os.path.join(self.top, "marker.sh")
+        with open(self.prog, "w") as fh:
+            fh.write(f"#!/bin/sh\n: > '{self.mark}'\nexit 1\n")
+        os.chmod(self.prog, 0o700)
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") and k != "SSH_AUTH_SOCK"}
+        self.env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0",
+                        GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+
+    def git(self, repo, *args, stdin=None, check=True):
+        import subprocess
+        return subprocess.run(["git", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-C", repo, *args],
+                              input=stdin, capture_output=True, text=True, check=check, env=self.env).stdout.strip()
+
+    def repo(self, name):
+        """A checkout whose default branch is origin/main: one signed commit with a registry and an RFC."""
+        r = os.path.join(self.top, name)
+        os.makedirs(os.path.join(r, "registry"))
+        os.makedirs(os.path.join(r, "docs", "rfc"))
+        with open(os.path.join(r, of_studio.REGISTRY_FILE), "w") as fh:
+            fh.write("systems:\n  s1: {keeper: a}\npositions: []\n")
+        with open(os.path.join(r, "docs", "rfc", "0001-x.md"), "w") as fh:
+            fh.write("# X\n")
+        self.git(r, "init", "-q", "-b", "main")
+        self.git(r, "add", "-A")
+        self.git(r, "commit", "-q", "-m", "one")
+        head, _, msg = self.git(r, "cat-file", "commit", "HEAD").partition("\n\n")
+        signed = head + "\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n aGk=\n -----END PGP SIGNATURE-----\n\n" + msg + "\n"
+        sha = self.git(r, "hash-object", "-t", "commit", "-w", "--stdin", stdin=signed)
+        self.git(r, "update-ref", "refs/heads/main", sha)
+        self.git(r, "update-ref", "refs/remotes/origin/main", sha)
+        self.git(r, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        return r
+
+    def signature(self, name):
+        r = self.repo(name)
+        with open(os.path.join(r, ".git", "config"), "a") as fh:
+            fh.write(f"[log]\n\tshowSignature = true\n[gpg]\n\tprogram = {self.prog}\n")
+        return r
+
+    def promisor(self, name):
+        """A partial clone that lacks its commit's tree, with a promisor remote whose upload-pack is the marker."""
+        r = self.repo(name)
+        tree = self.git(r, "rev-parse", "HEAD^{tree}")
+        path = os.path.join(r, ".git", "config")
+        with open(path) as fh:
+            cfg = fh.read().replace("repositoryformatversion = 0", "repositoryformatversion = 1")
+        with open(path, "w") as fh:
+            fh.write(cfg + f'[extensions]\n\tpartialClone = p\n[remote "p"]\n\turl = .\n\tpromisor = true\n'
+                           f'\tuploadpack = {self.prog}\n')
+        obj = os.path.join(r, ".git", "objects", tree[:2], tree[2:])
+        os.chmod(obj, 0o600)
+        os.remove(obj)
+        return r
+
+    def reads(self, r):
+        """Every git read of a checkout in of_works, of_model and of_studio, as each is called."""
+        import of_works
+        orgs_file = os.path.join(self.top, "orgs.yaml")
+        with open(orgs_file, "w") as fh:
+            fh.write(f"orgs:\n  - name: acme\n    path: {r}\n    paths: [{r}]\n")
+        of_model._registry_history.cache_clear()
+        return {"works log": of_works._mainline(r, object()),
+                "works rfc log": of_works._doc_commits(r, object()),
+                "works branches": of_works._branches(r, object()),
+                "works files": of_works._cat_files(r, ["origin/HEAD:registry/positions.yaml"]),
+                "registry at": of_model.registry_at(r, at=time.time() + 5)[1],
+                "keeper since": of_model.keeper_since(r, "s1", "a"),
+                "registry moved": of_studio.registry_moved_since(0, orgs_file)}
+
+    def ran(self):
+        try:
+            os.remove(self.mark)
+            return True
+        except FileNotFoundError:
+            return False
+
+    def test_a_signature_program_never_runs(self):
+        r = self.signature("sig")
+        self.git(r, "log", "-1", "origin/HEAD", check=False)
+        self.assertTrue(self.ran(), "plain git log ran no signature program: the case shows nothing")
+        got = self.reads(r)
+        self.assertFalse(self.ran())
+        self.assertEqual(len(got["works log"]), 1)                   # the reads still answer
+        self.assertEqual(got["works log"][0][1], ["docs/rfc/0001-x.md", of_studio.REGISTRY_FILE])
+        self.assertEqual(list(got["works rfc log"]), ["docs/rfc/0001-x.md"])
+        self.assertEqual(list(got["works branches"]), ["main"])
+        self.assertIn("s1", got["works files"]["origin/HEAD:registry/positions.yaml"])
+        self.assertRegex(got["registry at"], r"^[0-9a-f]{40}$")
+        self.assertIsNotNone(got["keeper since"])
+        self.assertEqual(got["registry moved"], ["acme"])
+
+    def test_a_promisor_remote_never_runs(self):
+        r = self.promisor("lazy")
+        self.git(r, "log", "-1", "--name-only", "origin/HEAD", check=False)
+        if not self.ran():
+            self.skipTest("this git runs no promisor remote for a missing tree")
+        self.reads(self.promisor("lazy2"))
+        self.assertFalse(self.ran())
+
+    def test_it_runs_the_system_git_without_the_users_configuration(self):
+        import of_protected
+        from unittest import mock
+        with mock.patch.object(of_model.subprocess, "run") as run:
+            of_model.git_read("/r", "log", "--no-show-signature", text=True)
+        cmd, kw = run.call_args[0][0], run.call_args[1]
+        self.assertEqual(cmd, of_protected._git_cmd("/r") + ["log", "--no-show-signature"])
+        self.assertEqual(kw["env"], of_protected._env())
+        self.assertIn("protocol.allow=never", cmd)
+        self.assertEqual(kw["env"]["GIT_NO_LAZY_FETCH"], "1")
+        with mock.patch.object(of_protected, "SYSTEM_GIT", "/nonexistent/git"), self.assertRaises(OSError):
+            of_model.git_read("/r", "rev-parse", "HEAD")
+
+
 class UnitUsageTest(unittest.TestCase):
     """The delegated units' usage refresh reads transcripts forward from saved offsets, inside a time budget."""
 

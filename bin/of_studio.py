@@ -3094,8 +3094,8 @@ def registry_moved_since(t, orgs_file=None):
     for o in orgs(orgs_file):
         repo = os.path.expanduser(o["repo"])
         try:
-            ct = subprocess.run(["git", "-C", repo, "log", "-1", "--format=%ct", "--", REGISTRY_FILE],
-                                capture_output=True, text=True, timeout=10).stdout.strip()
+            ct = of_model.git_read(repo, "log", "--no-show-signature", "-1", "--format=%ct", "--", REGISTRY_FILE,
+                                   text=True).stdout.strip()
             moved = max(float(ct or 0), os.path.getmtime(os.path.join(repo, REGISTRY_FILE)))
         except (OSError, ValueError, subprocess.SubprocessError):
             continue

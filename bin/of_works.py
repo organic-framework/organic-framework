@@ -71,8 +71,8 @@ def _head(path):
 def _doc_commits(repo_path, minute):
     """{relative path: [commit epochs, newest first]} for docs/rfc over 60 days; cached per minute."""
     try:
-        out = subprocess.run(["git", "-C", repo_path, "log", "origin/HEAD", "--since=60.days", "--name-only", "--format=@%cI",
-                              "--", "docs/rfc"], capture_output=True, text=True, timeout=10).stdout
+        out = of_model.git_read(repo_path, "log", "--no-show-signature", "--since=60.days", "--name-only",
+                                "--format=@%cI", "--end-of-options", "origin/HEAD", "--", "docs/rfc", text=True).stdout
     except (OSError, subprocess.SubprocessError):
         return {}
     res, t = collections.defaultdict(list), None
@@ -234,9 +234,8 @@ def checkouts(org):
 def _branches(repo_path, minute):
     """{branch: last commit epoch} for the remote branches the checkout has fetched (refs/remotes/origin)."""
     try:
-        out = subprocess.run(["git", "-C", repo_path, "for-each-ref", "refs/remotes/origin",
-                              "--format=%(refname:short) %(committerdate:iso-strict)"],
-                             capture_output=True, text=True, timeout=10).stdout
+        out = of_model.git_read(repo_path, "for-each-ref", "--format=%(refname:short) %(committerdate:iso-strict)",
+                                "refs/remotes/origin", text=True).stdout
     except (OSError, subprocess.SubprocessError):
         return {}
     res = {}
@@ -250,10 +249,9 @@ def _branches(repo_path, minute):
 @functools.lru_cache(maxsize=32)
 def _mainline(repo_path, minute):
     """[(commit epoch, [files])] on the default branch over 14 days."""
-    ref = "origin/HEAD"
     try:
-        out = subprocess.run(["git", "-C", repo_path, "log", ref, "--since=14.days", "--name-only", "--format=@%cI"],
-                             capture_output=True, text=True, timeout=15).stdout
+        out = of_model.git_read(repo_path, "log", "--no-show-signature", "--since=14.days", "--name-only",
+                                "--format=@%cI", "--end-of-options", "origin/HEAD", "--", text=True, timeout=15).stdout
     except (OSError, subprocess.SubprocessError):
         return []
     res, cur = [], None
@@ -311,13 +309,13 @@ STATUS_DONE = re.compile(r"\b(?:phases?|stages?|parts?|steps?)\s+([0-9a-z ,]+?(?
 
 
 def _cat_files(repo_path, specs):
-    """{"<ref>:<path>": text or None} through one `git cat-file --batch` (one process for many files)."""
+    """{"<ref>:<path>": text or None} through one `git cat-file --batch` (one process for many files). The names go on
+    its standard input, never on the command line: doc_texts builds them from branch names read from the repository."""
     specs = list(dict.fromkeys(specs))
     if not specs:
         return {}
     try:
-        r = subprocess.run(["git", "-C", repo_path, "cat-file", "--batch"], input=("\n".join(specs) + "\n").encode(),
-                           capture_output=True, timeout=15)
+        r = of_model.git_read(repo_path, "cat-file", "--batch", input=("\n".join(specs) + "\n").encode(), timeout=15)
     except (OSError, subprocess.SubprocessError):
         return {}
     out, data, i = {}, r.stdout, 0
