@@ -3142,9 +3142,10 @@ def _inject(sid, text, reason):
     digest = hashlib.sha256(text.strip().encode()).hexdigest()
     of_events.emit("injected_prompt", {"injector": "of_capacity", "target_session": sid, "text_sha256": digest,
                                        "reason": reason}, position=actor())
-    path = os.path.join(STATE_DIR, "injections.jsonl")
-    with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as fh:
-        fh.write(json.dumps({"ts": time.time(), "session": sid, "sha256": digest, "injector": "of_capacity"}) + "\n")
+    # as the other state files are written: a regular file of this user's, no link (of_events.append_own; of_server,
+    # hand-over 58681935)
+    of_events.append_own(os.path.join(STATE_DIR, "injections.jsonl"),
+                         json.dumps({"ts": time.time(), "session": sid, "sha256": digest, "injector": "of_capacity"}) + "\n")
 
 
 EXIT_DIALOG = "Background work is running"
@@ -7350,8 +7351,9 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
         return []
     import fcntl
     lockf = os.path.join(STATE_DIR, "capacity", "balance.lock")
-    os.makedirs(os.path.dirname(lockf), mode=0o700, exist_ok=True)
-    lock = open(lockf, "w")
+    of_events.own_dir(os.path.dirname(lockf))
+    # opened as the other state files are (of_events.open_own; of_server on PR 545)
+    lock = os.fdopen(_own_fd(lockf), "a")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -7659,9 +7661,9 @@ def spawn_balance():
     """A detached `of capacity balance` (moves take minutes; the listener must not wait)."""
     of_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "of")
     logf = os.path.join(STATE_DIR, "capacity", "balance.log")
-    os.makedirs(os.path.dirname(logf), mode=0o700, exist_ok=True)
+    of_events.own_dir(os.path.dirname(logf))
     env = dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK="")
-    with open(logf, "a") as fh:
+    with os.fdopen(_own_fd(logf), "a") as fh:
         subprocess.Popen([sys.executable, of_path, "capacity", "balance"], stdout=fh, stderr=fh, env=env,
                          start_new_session=True, stdin=subprocess.DEVNULL)
 
@@ -7669,12 +7671,19 @@ def spawn_balance():
 TICK_LOG_MAX = 1 << 20
 
 
+def _own_fd(path):
+    """of_events.open_own: the file at PATH in OF's state folder, opened only as a regular file of this user with one
+    name, never through a link, and with no wait on open, as the other state files are (of_server's hand-over 58681935
+    and verdict on organic-framework PR 545, through of_platform, messages 01a2046b-ceb8 and 01a2049c-37f5)."""
+    return of_events.open_own(path)
+
+
 def _tick_lock():
     """The capacity tick's lock file, taken without waiting; None when another tick holds it."""
     import fcntl
     lockf = os.path.join(STATE_DIR, "capacity", "tick.lock")
-    os.makedirs(os.path.dirname(lockf), mode=0o700, exist_ok=True)
-    lock = open(lockf, "w")
+    of_events.own_dir(os.path.dirname(lockf))
+    lock = os.fdopen(_own_fd(lockf), "a")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -7729,7 +7738,7 @@ def spawn_tick():
     except OSError:
         pass
     env = dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK="")
-    with open(logf, "a") as fh:
+    with os.fdopen(_own_fd(logf), "a") as fh:
         subprocess.Popen([sys.executable, of_path, "capacity", "tick"], stdout=fh, stderr=fh, env=env,
                          start_new_session=True, stdin=subprocess.DEVNULL)
     return True
@@ -7745,9 +7754,8 @@ def _replan_path():
 
 def mark_replan(sessions):
     """The stop watch names the sessions it saw stop, for a balance run already under way (replan_due)."""
-    os.makedirs(os.path.dirname(_replan_path()), mode=0o700, exist_ok=True)
-    with open(os.open(_replan_path(), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "w") as fh:
-        fh.write("".join(f"{sid}\n" for sid in sessions if sid))
+    of_events.own_dir(os.path.dirname(_replan_path()))
+    of_events.append_own(_replan_path(), "".join(f"{sid}\n" for sid in sessions if sid))
 
 
 def clear_replan():
@@ -7762,8 +7770,7 @@ def replan_due(known):
     them before its next move that is not a rescue (2026-11-20: twelve sessions stopped on ~/.claude-max-1's 5-hour
     limit while a relief run moved others one by one; the first rescue came 5 to 10 minutes after the stops)."""
     try:
-        with open(_replan_path()) as fh:
-            return {x.strip() for x in fh if x.strip()} - set(known)
+        return {x.strip() for x in of_events.read_own(_replan_path()).splitlines() if x.strip()} - set(known)
     except OSError:
         return set()
 
@@ -7773,7 +7780,7 @@ def _balance_busy():
     import fcntl
     lockf = os.path.join(STATE_DIR, "capacity", "balance.lock")
     try:
-        fh = open(lockf, "a")
+        fh = os.fdopen(_own_fd(lockf), "a")
     except OSError:
         return False
     try:
