@@ -5176,6 +5176,35 @@ def _due(text, now=None):
     return t.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _before_file(me, text, opts, tags, to, args, task):
+    """The organization's hooks before of-asks's module "file" (bin/of_asks_package.py; organic-framework-build
+    reports/framework/metamethod/11-first-slice.md, part 5). None when the card may be filed: of-asks is not installed
+    in the organization's folder, or every hook passed. Otherwise the card is not filed and takes no card id: an
+    of.ask_stopped record names the hook and its words, the asker reads them, and the exit code is 1."""
+    import of_asks_package
+    # a hook gates on what the asker declared; a tag OF guessed from the words is shown apart, so a guess alone never
+    # keeps a question from its decider (as a guessed tag never skips the unit owner, docs/registry.md)
+    names = [t.get("tag") for t in tags if isinstance(t, dict)]
+    card = {"question": text, "options": list(opts), "tags": names if args.tags else [],
+            "tags_guessed": [] if args.tags else names,
+            "to": to, "from": me.get("name"), "blocking": bool(args.blocking), "due": args.due or None,
+            "task": bool(task)}
+    gate = of_asks_package.before_file(me.get("_root"), card)
+    if gate.get("decision") == "pass":
+        return None
+    import of_events
+    of_events.emit("ask_stopped", {
+        "decision": gate["decision"], "by": gate.get("by"), "package": of_asks_package.PACKAGE, "module": "file",
+        **{k: gate[k] for k in ("reason", "to", "until") if gate.get(k)},
+        "from_position": me["name"], "intended_to": to, "question": text, "tags": card["tags"]},
+        position=me["name"], org=me.get("_orgid"), session=_asker_session(me, args.sender))
+    said = {"stop": "stopped it", "hand": f"hands it to {gate.get('to')}", "hold": f"holds it until {gate.get('until')}"}
+    print(f"not filed: {gate.get('by')} {said.get(gate['decision'], gate['decision'])}"
+          + (f": {gate['reason']}" if gate.get("reason") else "") + ". The card took no id; act on the hook's words "
+          "or ask its organization's structure keeper.", file=sys.stderr)
+    return 1
+
+
 def cmd_ask(args):
     """An agent asks the founder (or a peer) something, visibly: an event plus a batched notification."""
     _ask_refs(args, "amend", "escalates")
@@ -5215,6 +5244,9 @@ def cmd_ask(args):
     if src and to != "founder":
         raise OfError(f"--escalates: your asks go to {to}, not to the founder; answer {src['position']} yourself "
                       f"(of send {src['position']} --reply-to {src['event_id'][-8:]} …)")
+    stopped = _before_file(me, text, opts, tags, to, args, task)
+    if stopped:
+        return stopped
     ask_id = getattr(args, "event_id", None) or of_events._uuid7()
     try:  # its card id from the organization's server, here so the asker can name it (of_events stamps the others')
         ref = of_events.card_ref(me.get("_org"), ask_id)

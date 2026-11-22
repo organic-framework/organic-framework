@@ -457,8 +457,9 @@ def from_kind(sender):
 # ---- escalation tags (docs/handover.md §2.1, 2026-11-06) ----
 TAGS = ("prod_change", "money", "security_incident", "irreversible", "window_go")
 RISK = ("low", "medium", "high")  # risk_appetite, ordered; attenuation compares by this order
+# `ask_unanswered` alone: after the organization's of-asks setting escalate_after (2h by default; bin/of_asks_package.py)
 ESCALATE = re.compile(
-    r"^(?:ask\.blocking|ask_unanswered\s*>\s*\d+\s*[mh]|ask_due\s*<\s*\d+\s*[dh]|budget_used\s*>\s*\d+%|"
+    r"^(?:ask\.blocking|ask_unanswered(?:\s*>\s*\d+\s*[mh])?|ask_due\s*<\s*\d+\s*[dh]|budget_used\s*>\s*\d+%|"
     r"issue\.severity\s*>=\s*(?:low|medium|high|critical)|envelope[ _]breach|"
     r"(?:prod_change|window_go)(?:\{\s*(?:affects|systems)\s*:\s*\[[\w ,.-]*\]\s*\})?|"
     r"money|security_incident|irreversible)$")
