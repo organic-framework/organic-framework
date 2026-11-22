@@ -362,17 +362,32 @@ def show(rs, out=print):
 
 # ------------------------------------------------------------------ of claude
 
-def resume_line(sid, of_bin=None, run=subprocess.run):
-    """The line `of resume-command` gives for a session (its account, model, effort, permission mode), or None."""
+RESUME_TIMEOUT_S = 60
+RESUME_TRIES = 2   # one more try before refusing: a loaded machine can pass the timeout (2026-11-22: load 190 on 10 cores)
+
+
+def resume_line(sid, of_bin=None, run=subprocess.run, why=None):
+    """The line `of resume-command` gives for a session (its account, model, effort, permission mode), or None; `why`,
+    a list, gets the reason there is none."""
     of_bin = of_bin or os.path.join(os.path.dirname(os.path.realpath(__file__)), "of")
+    note = why.append if why is not None else (lambda _: None)
     try:
         # this Python, not PATH's first python3: in a login shell /usr/bin comes first and its python3 has no PyYAML,
         # so bin/of failed and the resume fell to another account (of_herdr's lab, 2026-11-11, hand-over a9c118e8)
-        r = run([sys.executable, of_bin, "resume-command", sid], capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.TimeoutExpired):
+        r = run([sys.executable, of_bin, "resume-command", sid], capture_output=True, text=True,
+                timeout=RESUME_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        note(f"timed out after {RESUME_TIMEOUT_S} s")
+        return None
+    except OSError as e:
+        note(f"did not run ({e})")
         return None
     line = (r.stdout or "").strip()
-    return line if r.returncode == 0 and line else None
+    if r.returncode == 0 and line:
+        return line
+    tail = ((r.stderr or "").strip().splitlines() or [""])[-1][:200]
+    note(f"exited {r.returncode}" + (f": {tail}" if tail else "") if r.returncode else "printed no line")
+    return None
 
 
 def choose(cwd, home=None, status_rows=None):
@@ -386,17 +401,14 @@ def choose(cwd, home=None, status_rows=None):
     return expand(t["config_dir"], home) if t else None
 
 
-def holder_of(sid, home=None):
-    """The config folder that holds the session's newest transcript, or None (of_resume.newest_copy)."""
-    import of_resume
-    d, _ = of_resume.newest_copy(sid, dirs(home))
-    return d
-
-
-def launch(args, env=None, cwd=None, home=None, chooser=None, resumer=None, holder=None):
+def launch(args, env=None, cwd=None, home=None, chooser=None, resumer=None):
     """(argv, env) that `of claude ARGS` runs. `--account NAME` picks the account; without it the exact form
-    `--resume <id>` resumes the session as it ran (the account that holds it); otherwise an already set
-    CLAUDE_CONFIG_DIR is kept, else the account is chosen as of spawn chooses."""
+    `--resume <id>` resumes the session as it ran, by the line `of resume-command` gives, or not at all; otherwise an
+    already set CLAUDE_CONFIG_DIR is kept, else the account is chosen as of spawn chooses.
+
+    With no line after RESUME_TRIES tries it raises AccountError, never starting Claude Code bare: a bare resume ran
+    the session without its deny rules, its tool profile and, on Linux, its sandbox, with nothing said, and herdr's
+    restore of an agent pane comes through here (hand-over af34d473 from of_architect, 2026-11-22)."""
     import of_capacity
     env = dict(os.environ if env is None else env)
     args, account = list(args), None
@@ -405,12 +417,16 @@ def launch(args, env=None, cwd=None, home=None, chooser=None, resumer=None, hold
     elif args and args[0].startswith("--account="):
         account, args = args[0].split("=", 1)[1], args[1:]
     if account is None and len(args) == 2 and args[0] == "--resume":
-        line = (resumer or resume_line)(args[1])
-        if line:
-            return ["/bin/sh", "-c", "exec " + line], env
-        held = (holder or holder_of)(args[1], home)  # no line: at least the account that holds it, never a guess
-        if held:
-            env["CLAUDE_CONFIG_DIR"] = held
+        why = []
+        get = resumer or (lambda sid: resume_line(sid, why=why))
+        for _ in range(RESUME_TRIES):
+            line = get(args[1])
+            if line:
+                return ["/bin/sh", "-c", "exec " + line], env
+        raise AccountError(f"no resume line for session {args[1]}: `of resume-command` "
+                           f"{why[-1] if why else 'gave none'} ({RESUME_TRIES} tries). A bare start would run it "
+                           f"without its deny rules, tool profile and sandbox, so it does not start. Run "
+                           f"`of resume-command {args[1]}` to see why, then `of claude --resume {args[1]}` again.")
     if account is not None:
         e = find(account, home)
         if not e:
