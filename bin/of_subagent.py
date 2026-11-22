@@ -240,7 +240,15 @@ def committed_registry(path):
 
 
 def repo_of(checkout):
-    """The checkout's repository name: its root folder's name (docs/registry.md, "Subagent harnesses")."""
+    """The checkout's repository name (docs/registry.md, "Subagent harnesses"): the folder that holds its common git
+    folder, so a git worktree names its repository, not its own folder (a user organization's structure keeper,
+    message 01a204dd-0789: every review from a worktree was refused); else, for a git folder that is no `.git`, the
+    checkout's root folder's name. The snapshot is exported from that same git folder, so the name and the content
+    agree."""
+    common = _git(checkout, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+    common = os.path.realpath(common).rstrip("/")
+    if os.path.basename(common) == ".git":
+        return os.path.basename(os.path.dirname(common)) or None
     root = _git(checkout, "rev-parse", "--show-toplevel").strip()
     return os.path.basename(os.path.realpath(root).rstrip("/")) or None
 

@@ -1029,5 +1029,26 @@ class ReadSucceededByContent(unittest.TestCase):
         self.assertFalse(of_subagent._no_read_succeeded(self.item("cat $CODEX_HOME/auth.json",
                                                                   '{"tokens": {"access_token": "x"}}', 0), marks))
 
+
+class RepoOfWorktreeTest(unittest.TestCase):
+    def test_a_worktree_names_its_repository(self):
+        """A user organization's structure keeper, message 01a204dd-0789: a review from a git worktree was refused,
+        since the worktree's folder name was taken for the repository's."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "infra-repo")
+            git = lambda *a: subprocess.run(["git", "-C", repo, "-c", "commit.gpgsign=false", "-c", "user.email=t@t",  # noqa: E731
+                                             "-c", "user.name=t", *a], capture_output=True, text=True, check=True)
+            os.makedirs(repo)
+            git("init", "-q", "-b", "main")
+            open(os.path.join(repo, "a"), "w").close()
+            git("add", "a")
+            git("commit", "-qm", "one")
+            wt = os.path.join(repo, ".claude", "worktrees", "topic-branch")
+            git("worktree", "add", "-q", wt)
+            self.assertEqual(of_subagent.repo_of(repo), "infra-repo")
+            self.assertEqual(of_subagent.repo_of(wt), "infra-repo")
+
+
 if __name__ == "__main__":
     unittest.main()
