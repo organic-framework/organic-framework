@@ -1608,9 +1608,11 @@ class JudgeTest(unittest.TestCase):
                 self.assertIsNone(of_judge.only_filed_ids(conn, "WAITING ON: founder"))
                 # acme_org, 2026-11-10: a card cited by the first 8 characters of its id, as the event store shows it
                 self.assertEqual(of_judge.only_filed_ids(conn, f"WAITING ON: карточка `{gw2[:8]}`"), [gw2[:8]])
+                # the card has an id only where record() could take one (a card counter here, none in CI: PR 528's red
+                # unit run read "card None"); the prompt names it when it has one
                 ref = conn.execute("SELECT json_extract(payload, '$.ref') FROM event WHERE event_id = ?",
                                    (gw2,)).fetchone()[0]
-                self.assertIn(f"- {o} (also cited as {gw2[:8]}, card {ref}): gw2?",
+                self.assertIn(f"- {o} (also cited as {gw2[:8]}{f', card {ref}' if ref else ''}): gw2?",
                               of_judge.user_prompt("x", "po", filed=of_judge.filed(conn, "po")))
                 self.assertIn(f"- {o} (also cited as {gw2[:8]}): gw2?", of_judge.user_prompt("x", "po", filed=[
                     (gw2, "gw2?")]))  # the lab's older cases carry no card id
@@ -1693,6 +1695,24 @@ class JudgeTest(unittest.TestCase):
                 prompt = of_judge.user_prompt(said, "architect", named=of_judge.named_asks(asks, said, "architect"))
                 self.assertIn(f"- {card[-8:]} (also cited as {card[:8]}, card AC-230), filed by srv: Which redesign?",
                               prompt)
+                self.assertIn("card AC-230): Which redesign?",
+                              of_judge.user_prompt("x", "srv", filed=of_judge.filed(conn, "srv")))
+                # of_review on PR 528: a second decision joined by a conjunction to a card id is no reminder
+                for line in ("WAITING ON: AC-230 and your approval of the second runner.",
+                             f"WAITING ON: {card[-8:]} and your approval of the second runner.",
+                             "Жду AC-230 и одобрения второго раннера.", "Жду AC-230, а также решения по ключу."):
+                    self.assertIsNone(of_judge.only_filed_ids(conn, line), line)
+                # of_review on PR 528: a machine with the listener reads its fresh view, which has to carry the card id
+                import of_listen
+                procs = [of_listen.AsksProcessor()]
+                of_listen.step(conn, procs, of_listen.prepare(conn, procs))
+                of_listen.heartbeat(conn)
+                self.assertTrue(of_listen.fresh(conn))
+                self.assertEqual(of_judge.only_filed_ids(conn, "WAITING ON: AC-230 (the redesign)."), ["AC-230"])
+                self.assertEqual(of_judge.only_filed_ids(conn, "WAITING ON: AC-240"), ["AC-240"])  # its backfilled id
+                self.assertEqual(of_judge.only_filed_ids(conn, closing), sorted([copy[-8:], "AC-230"]))
+                self.assertEqual(of_judge.named_asks(of_judge.open_founder_asks(conn), said, "architect"),
+                                 [(card, "Which redesign?", "srv", "AC-230")])
                 self.assertIn("card AC-230): Which redesign?",
                               of_judge.user_prompt("x", "srv", filed=of_judge.filed(conn, "srv")))
                 conn.close()

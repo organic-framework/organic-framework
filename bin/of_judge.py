@@ -420,7 +420,12 @@ def only_filed_ids(conn, text, now=None, until=None, asks=None):
     return sorted(ids) if ids & opened else None
 
 
-_UNFILED_ITEM = re.compile(r"(?i)\b(?:вопрос\w*|question\w*|решени\w*|decision\w*|выбор\w*|choice|одобрени\w*|approval)\b")
+_UNFILED_ITEM = re.compile(r"(?i)\b(?:вопрос\w*|question\w*|решени\w*|decision\w*|выбор\w*|choice|одобр\w*"
+                           r"|approv\w*)\b")
+# An item of a line that names asks ends at "," or ";", or before a conjunction (of_review on organic-framework PR 528:
+# "WAITING ON: AC-230 and your approval of the second runner" was cleared with the card, the approval unseen). Not at a
+# sentence's end: "…duplicated OF-230. The one question is in card OF-230" points at the card it names.
+_ITEM = re.compile(r"[,;]|\s(?=(?:or|and|but|then|also|plus|или|либо|и|а|но|потом|затем|плюс)\s)", re.I)
 
 
 # A wait on "the card" points at an ask already filed (of_architect, 2026-11-12: cards d6b7fbdd, fb9338c0 and
@@ -443,7 +448,7 @@ def says_more(text, ids):
         return True
     for ln in lines:
         if any(i in ln for i in ids):
-            items = re.split(r"[,;]", re.sub(r"\([^)]*\)", " ", ln))
+            items = _ITEM.split(re.sub(r"\([^)]*\)", " ", ln))
             if any(not any(i in it for i in ids) and _UNFILED_ITEM.search(it) for it in items):
                 return True
     return False

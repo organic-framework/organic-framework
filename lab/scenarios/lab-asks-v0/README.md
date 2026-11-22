@@ -116,14 +116,19 @@ since 2026-11-17), in the filed-ids rule and in the asks listed to the model, be
 only the 8-character ones. Of the 32 pane cards it filed for the OF team to 2026-11-22, 29 ended withdrawn or replaced,
 and 29 came from a closing message that named a card then open by its card id (`of_metamethod`'s reading, message
 `01a203ab-8a69`, checked card by card by `of_asks`). The 21 its askers withdrew as copies of a decision already open
-are `asks-127` to `asks-147`. On them the rules before the model clear 14 under j-v7 and none under j-v6. On the first
+are `asks-127` to `asks-147`. On them the rules before the model clear 13 under j-v7 and none under j-v6. On the first
 126 cases the rules give the same results under both, since none names a card id, so no labelled question is cleared.
 Replayed on the 97 pane cards j-v6 filed in the two organizations of this machine, from each card's recorded closing
-message with the queue as the asks view records it at the card's time, the rule clears 34: 30 withdrawn or replaced,
+message with the queue as the asks view records it at the card's time, the rule clears 33: 29 withdrawn or replaced,
 and 4 a unit owner answered. Three of those four were copies of the open card they name. The fourth is a wait list in
 which items with no card stand beside the named task, on lines of their own, and q-v5's patterns, which read the lines
 that name no ask, found no request to the owner in them, as they would beside an 8-character id. The model's part is
-not measured yet: the prompt now shows each listed ask's card id, and the 7 new cases the rules leave go to it.
+not measured yet: the prompt now shows each listed ask's card id, and the 8 new cases the rules leave go to it.
+`of_review` on organic-framework PR 528 found two faults in the first build, both fixed in that pull request. The
+listener's view gave the judge no card id (`of_listen.read_asks`), so where the listener runs the rule knew none; it
+reads the card id and the diff from the ask the view keeps now, and j-v5's listing of a diff's card had missed it there
+too. And an item joined to a card id by "and" ("WAITING ON: AC-230 and your approval of the second runner") was cleared
+with it; an item now ends before a conjunction too, which costs one of the 14 cases the first build cleared.
 
 Two prompt changes were measured and dropped. With the turn's last `of status`, the open founder asks of the unit
 owner and of the waited-on position, an item "a decision another position already carries", and a line saying where
