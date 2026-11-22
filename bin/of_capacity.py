@@ -2251,15 +2251,22 @@ def _write_handover_note(path, note, stopped=(), log=print):
         log(f"  recorded {len(stopped)} stopped scheduled task(s) in the hand-over note")
 
 
+# Claude Code's own bridge to its sandbox's network proxy on Linux (2026-11-22, on the agent host: every sandboxed
+# session has one, so each read as holding background work and no balancer move would take it)
+_SANDBOX_PROXY = _re.compile(r"^socat UNIX-LISTEN:\S*/claude-[\w.-]+\.sock\b")
+
+
 def background_processes(pid):
-    """What runs under the harness process besides MCP servers: the commands its background shells run."""
+    """What runs under the harness process besides MCP servers and the harness's own helpers: the commands its
+    background shells run."""
     out = []
     try:
         kids = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True, timeout=10).stdout.split()
         for c in kids:
             a = proc_args(c)
-            if not a or "mcp" in a.split()[0].lower() or "mcp-" in a or a.startswith("caffeinate "):
-                continue  # MCP servers, and the harness's own keep-awake while a turn runs
+            if (not a or "mcp" in a.split()[0].lower() or "mcp-" in a or a.startswith("caffeinate ")
+                    or _SANDBOX_PROXY.match(a)):
+                continue  # MCP servers, the keep-awake while a turn runs, the sandbox's proxy bridge
             cmd = a.split("&& eval ", 1)[-1] if "&& eval " in a else a
             out.append(cmd.rsplit(" < /dev/null", 1)[0].strip("'")[:400])
     except Exception:
