@@ -167,6 +167,40 @@ class TLSTest(unittest.TestCase):
         with self.assertRaises(Exception):
             of_client.Client("http://127.0.0.1:18297")._request("GET", "/v1/x")
 
+    def test_of_server_route_sets_the_route_for_an_enrolled_machine(self):
+        """of_review on organic-framework PR 521: a command sets the route, the owner's alone, with no new invite."""
+        import argparse
+        import importlib.machinery
+        import importlib.util
+        loader = importlib.machinery.SourceFileLoader("of_cli_route", os.path.join(os.path.dirname(
+            os.path.abspath(__file__)), "..", "bin", "of"))
+        cli = importlib.util.module_from_spec(importlib.util.spec_from_loader("of_cli_route", loader))
+        loader.exec_module(cli)
+        import of_asks_answer
+        url = "https://127.0.0.1:18296"
+        args = lambda via: argparse.Namespace(action="route", path=url, via=via)          # noqa: E731
+        with mock.patch.object(of_asks_answer, "not_the_owner", lambda: False):
+            with self.assertRaises(cli.OfError):                                          # no pin yet
+                cli._server_route(args(f"tcp:127.0.0.1:{self.srv.server_address[1]}"))
+            dest = of_client.pin_path(url)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copy(self.cert, dest)
+            cli._server_route(args(f"tcp:127.0.0.1:{self.srv.server_address[1]}"))
+            status, body = of_client.Client("http://127.0.0.1:18296")._request("GET", "/v1/x")
+            self.assertEqual((status, body["ok"]), (200, True))                           # through the new route
+            side = dest[:-len(".pem")] + ".socket"
+            self.assertEqual(oct(os.stat(side).st_mode & 0o777), "0o600")
+            for bad in ("tcp:example.invalid:443", "relative/path", ""):
+                with self.assertRaises(cli.OfError):
+                    cli._server_route(args(bad))
+            cli._server_route(args("direct"))
+            self.assertFalse(os.path.exists(side))
+        with mock.patch.object(of_asks_answer, "not_the_owner", lambda: True):           # an agent's session
+            with self.assertRaises(cli.OfError) as cm:
+                cli._server_route(args(f"tcp:127.0.0.1:{self.srv.server_address[1]}"))
+            self.assertIn("owner's", str(cm.exception))
+        self.assertFalse(os.path.exists(side))
+
     def test_the_server_keeps_its_error_handler(self):
         self.assertIn("handle_error", of_server.Server.__dict__)  # PR 350: it had been moved into tls_init
         self.assertTrue(issubclass(of_server.TLSServer, of_server.Server))
