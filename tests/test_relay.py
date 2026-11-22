@@ -289,6 +289,23 @@ class RelayTest(unittest.TestCase):
         self.assertEqual((q["total"], q["listed"], q["typed_here"]), (1, 1, 1))   # the header counts what it shows
         self.assertEqual(of_relay.read_queues()["ofb:of_a"]["n"], 1)
 
+    def test_a_take_finds_what_newest_listed(self):
+        """of_review on organic-framework PR 527: a take of an id --newest listed exited 2, since the take read
+        only the oldest hundred."""
+        class Server:
+            def queued_messages(self, to, session, newest=False):
+                old = [{"msg_id": f"O{i}", "to": to, "from": "zeta:x", "text": "o", "state": "queued"} for i in range(2)]
+                new = [{"msg_id": "N9", "to": to, "from": "zeta:x", "text": "n", "state": "queued"}]
+                return {"messages": new if newest else old, "total": 3, "urgent": 0}
+
+            def take_message(self, msg_id, to, session):
+                taken.append(msg_id)
+                return {}
+        taken = []
+        of_relay.pull(Server(), "ofb:of_a", "S", newest=True)               # the listing showed N9
+        got = of_relay.pull(Server(), "ofb:of_a", "S", take="N9")
+        self.assertEqual(([m["msg_id"] for m, t in got if t], taken), (["N9"], ["N9"]))
+
     def test_a_take_under_a_live_lease_leaves_it_to_the_pane(self):
         class Leased(Exception):
             status = 409

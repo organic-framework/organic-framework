@@ -969,6 +969,12 @@ def pull(client, key, session, take=None, pane_busy=False, newest=False):
     got = (client.queued_messages(key, session, newest=newest) if newest else client.queued_messages(key, session)) or {}
     msgs = got.get("messages") or []
     total = int(got.get("total") or len(msgs))   # an older server sends no total: the listing is all it says
+    if take is not None and total > len(msgs):
+        # a take finds what either listing showed: a message --newest listed lies past the oldest, and the reverse
+        # (of_review on organic-framework PR 527: a take of what --newest listed exited 2)
+        more = (client.queued_messages(key, session, newest=not newest) or {}).get("messages") or []
+        have = {m.get("msg_id") for m in msgs}
+        msgs = msgs + [m for m in more if m.get("msg_id") not in have]
     if take is None:
         mark_shown(key, session, [m["msg_id"] for m in msgs])
     listed = shown(key, session) if take == "all" else set()

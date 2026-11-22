@@ -4614,10 +4614,13 @@ def _inbox_mine(args):
         urls = of_relay.inbox_servers(me.get("_org"), url, cfg["server_url"])
     except Exception:  # noqa: BLE001 - a broken orgs.yaml: the organization's own server still answers
         urls = [url.rstrip("/")]
+    sums = {"total": 0, "urgent": 0, "listed": 0}   # summed over the servers a drain reads, never the last alone
     for i, u in enumerate(urls):
         try:
             got += of_relay.pull(of_client.Client(u), key, session, take=args.take, pane_busy=busy,
                                  newest=getattr(args, "newest", False))
+            for k in sums:
+                sums[k] += int((of_relay.LAST_QUEUE.get(key) or {}).get(k) or 0)
         except Exception as e:  # noqa: BLE001 - the server's 403 says why (not the holder, or a person)
             if i == 0:
                 raise OfError(f"of inbox --mine: {e}")
@@ -4626,8 +4629,8 @@ def _inbox_mine(args):
         print(f"not read: {line}")
     if args.take and args.take != "all" and not any(t for _, t in got):
         raise OfError(f"no queued message for {me['name']} matches {args.take!r}")
-    q = of_relay.LAST_QUEUE.get(key) or {}
-    total, urgent = q.get("total", len(got)), q.get("urgent", 0)
+    q = sums   # of_review on PR 527: with a drain, the header counted the last server alone
+    total, urgent = max(q.get("total", 0), len(got)), q.get("urgent", 0)
     shown = (f"{total} message(s) queued for {me['name']}"
              + (f", {urgent} of them urgent" if urgent else "")
              + (f"; listed here: {q.get('listed')}, the urgent first, then the "
