@@ -122,6 +122,36 @@ class RelayTest(unittest.TestCase):
         self.assertGreater(calls["n"], 2)
         self.assertTrue(sent and all(b and b[0]["position"] == "of_a" for b in sent))
 
+    def test_one_server_down_holds_back_no_other_servers_presence(self):
+        """of_conductor, msg 01a203da-ade5: one organization's server was killed, and the other's mail waited 15
+        minutes, since presence to every server sat in one try and stopped at the first that failed."""
+        import threading
+        sent = {"a": 0, "b": 0}
+
+        class C:
+            def __init__(self, url):
+                self.url = url
+
+            def put_presence(self, body):
+                if self.url == "a":
+                    raise ConnectionRefusedError("down")
+                sent[self.url] += 1
+
+            def poll_messages(self, t):
+                stop.wait(0.05)
+                return {}
+        saved = of_relay.PRESENCE_EVERY
+        of_relay.PRESENCE_EVERY = 0.01
+        stop = threading.Event()
+        try:
+            of_relay.run(lambda: {"ofb:of_a": LOCAL["ofb:of_a"]}, C, {"ofa": "a", "ofb": "b"}, "a",
+                         log=lambda m: None, stop=stop)
+            stop.wait(0.3)
+        finally:
+            stop.set()
+            of_relay.PRESENCE_EVERY = saved
+        self.assertGreater(sent["b"], 0)                                     # "a" sorts first and is down
+
     def test_a_holder_change_is_published_at_once(self):
         """of_capacity, 2026-11-07: after an account move the server said not_holder for minutes; a changed
         session (or pane, or kind) goes out on the next check, an unchanged set only every PRESENCE_EVERY."""

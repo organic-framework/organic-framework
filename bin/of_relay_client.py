@@ -1375,16 +1375,24 @@ def run(load, client_for, servers, default, log=print, stop=None, deliverer=herd
                     except Exception:  # noqa: BLE001 - a broken orgs.yaml drains nothing; presence goes on
                         drains = {}
                     bodies = presence_bodies(state["local"], servers, default, drains)
-                    queued, unsent = {}, {}
-                    for url in set(servers.values()) | {default} | set(bodies):
+                    queued, unsent, failed = {}, {}, 0
+                    for url in sorted(set(servers.values()) | {default} | set(bodies)):
                         ticks["presence"] = time.time()  # per server: two hung servers outlast STALE_S together
                         write_heartbeat(ticks)
-                        r = client_for(url).put_presence(bodies.get(url, []))
+                        try:   # one server down never keeps the others' presence back: their receivers would read
+                            # as absent and get nothing (of_conductor, msg 01a203da-ade5: a killed server of one
+                            # organization held another's mail for 15 minutes)
+                            r = client_for(url).put_presence(bodies.get(url, []))
+                        except Exception as e:  # noqa: BLE001 - said, and tried again at the next check
+                            failed += 1
+                            log(f"presence {url}: {type(e).__name__}: {e}")
+                            continue
                         if isinstance(r, dict):
                             queued.update(r.get("queued") or {})
                             unsent.update(r.get("unsent") or {})
                     record_queues(queued, unsent=unsent)
-                    sent_key, sent_at = key, time.time()
+                    if not failed:   # a server that failed is asked again at the next check, not after PRESENCE_EVERY
+                        sent_key, sent_at = key, time.time()
                 except Exception as e:
                     log(f"presence: {type(e).__name__}: {e}")
             stop.wait(min(PRESENCE_CHECK, PRESENCE_EVERY))
