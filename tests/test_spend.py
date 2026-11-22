@@ -124,7 +124,7 @@ class Store(unittest.TestCase):
         self.conn.executescript("""
             CREATE TABLE transcript_record (id INTEGER PRIMARY KEY, source_path TEXT, session_id TEXT, message_id TEXT,
               timestamp TEXT, input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,
-              cache_write_tokens INTEGER, cache_write_5m_tokens INTEGER, cache_write_1h_tokens INTEGER);
+              cache_write_tokens INTEGER, cache_write_5m_tokens INTEGER, cache_write_1h_tokens INTEGER, model TEXT);
             CREATE TABLE event (event_id TEXT, ts TEXT, name TEXT, session_id TEXT, position TEXT, source TEXT,
               org TEXT, payload TEXT);""")
         self.n = 0
@@ -133,11 +133,12 @@ class Store(unittest.TestCase):
         of_spend.of_events.STATE_DIR = self.saved
         self.tmp.cleanup()
 
-    def rec(self, sid, mid, t, inp=1000, out=100, cw1=0, cr=0, sub=False):
+    def rec(self, sid, mid, t, inp=1000, out=100, cw1=0, cr=0, sub=False, model="claude-opus-5-5", acct="a"):
         self.n += 1
-        path = f"/h/.claude-a/projects/-w/{sid}/subagents/agent-1.jsonl" if sub else f"/h/.claude-a/projects/-w/{sid}.jsonl"
-        self.conn.execute("INSERT INTO transcript_record VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                          (self.n, path, "agent-1" if sub else sid, mid, iso(t), inp, out, cr, None, 0, cw1))
+        base = f"/h/.claude-{acct}/projects/-w/{sid}"
+        path = f"{base}/subagents/agent-1.jsonl" if sub else f"{base}.jsonl"
+        self.conn.execute("INSERT INTO transcript_record VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                          (self.n, path, "agent-1" if sub else sid, mid, iso(t), inp, out, cr, None, 0, cw1, model))
 
     def ev(self, t, name, sid, pos, payload=None, org="acme"):
         self.conn.execute("INSERT INTO event VALUES (?,?,?,?,?,?,?,?)",
@@ -155,6 +156,66 @@ class Store(unittest.TestCase):
         self.assertEqual(rows, [("m1", "S1", 1100), ("m2", "S1", 1100)])
         self.rec("S2", "m4", T0 + 3 * H)
         self.assertEqual(of_spend.ingest(self.conn, now)[0], 1)  # the cursor goes on from where it stopped
+
+    def test_each_response_keeps_its_account_and_its_models_price(self):
+        """The day and hour views need the account; and one Opus price for every model misread a day by model."""
+        now = T0 + 10 * 86400
+        self.rec("S1", "m1", T0 + H, inp=1_000_000, out=0)                                  # Opus 5.5: $4
+        self.rec("S1", "m2", T0 + H, inp=1_000_000, out=0, model="claude-sonnet-5-5")       # $2
+        self.rec("S1", "m3", T0 + H, inp=1_000_000, out=0, model="claude-fable-5-2")        # by family: $10
+        self.rec("S1", "m4", T0 + H, inp=1_000_000, out=0, model="something-new", acct="b")  # no price: Opus's
+        of_spend.ingest(self.conn, now)
+        got = dict(((m, (round(c, 2), d)) for m, c, d in self.conn.execute(
+            "SELECT message_id, cost, config_dir FROM view_spend_month")))
+        self.assertEqual(got, {"m1": (4.0, "/h/.claude-a"), "m2": (2.0, "/h/.claude-a"), "m3": (10.0, "/h/.claude-a"),
+                               "m4": (4.0, "/h/.claude-b")})
+
+    def test_a_view_of_the_old_shape_is_made_again_and_read_from_the_start(self):
+        now = T0 + 10 * 86400
+        self.conn.executescript("CREATE TABLE view_spend_month (message_id TEXT PRIMARY KEY, session_id TEXT, "
+                                "epoch REAL, fresh INTEGER, cost REAL);")
+        self.conn.execute("CREATE TABLE IF NOT EXISTS listener_meta (key TEXT PRIMARY KEY, value TEXT)")
+        self.conn.execute("INSERT INTO listener_meta VALUES ('spend_month_version', '1')")
+        self.conn.execute("INSERT INTO listener_meta VALUES ('spend_month_cursor', '99')")
+        self.rec("S1", "m1", T0 + H)
+        of_spend.ingest(self.conn, now)
+        self.assertEqual(self.conn.execute("SELECT message_id, config_dir, model FROM view_spend_month").fetchall(),
+                         [("m1", "/h/.claude-a", "claude-opus-5-5")])
+
+    def test_spend_by_day_and_by_hour_by_account_position_work_and_goal(self):
+        """The founder, 2026-11-22, prompt 01a204e5-0acb: of capacity spend by day and by hour."""
+        now = T0 + 3 * 86400
+        self.ev(T0 + H, "of.hook", "S1", "acme_a")
+        self.ev(T0 + 2 * 86400, "of.hook", "S1", "acme_a")
+        self.ev(T0 + H, "of.state_declared", "S1", "acme_a", {"work": "w-retry"})
+        self.ev(T0 + H, "of.hook", "S2", "acme_b")
+        self.rec("S1", "m1", T0 + 2 * H, inp=1_000_000, out=0)                     # day 1, hour 2, account a
+        self.rec("S1", "m2", T0 + 86400 + 5 * H, inp=1_000_000, out=0, acct="b")   # day 2, account b
+        self.rec("S2", "m3", T0 + 86400 + 5 * H, inp=500_000, out=0, model="claude-sonnet-5-5")
+        self.rec("S9", "m4", T0 + 86400 + 6 * H, inp=1_000, out=0)                 # no position held S9
+        of_spend.ingest(self.conn, now)
+        day = of_spend.periods(DOCS, self.conn, T0 + 3 * H, now, by="day", now=now)   # from 03:00: day 1 whole
+        self.assertEqual([p["start"] for p in day["periods"]], [T0, T0 + 86400])
+        d1, d2 = day["periods"]
+        self.assertEqual(d1["total"]["cost_usd"], 4.0)
+        self.assertEqual(d1["accounts"], {"/h/.claude-a": {"fresh": 1_000_000, "cost_usd": 4.0, "responses": 1,
+                                                          "outside_fresh": 0, "outside_runs": 0}})
+        self.assertEqual(d1["works"]["w-retry"]["cost_usd"], 4.0)
+        self.assertEqual(d1["goals"]["g-orders"]["cost_usd"], 4.0)          # a work's spend counts to its goal
+        self.assertEqual(d2["accounts"]["/h/.claude-b"]["cost_usd"], 4.0)
+        self.assertEqual(d2["positions"]["acme_b"]["cost_usd"], 1.0)        # Sonnet's price
+        self.assertEqual(d2["positions"]["(no position)"]["responses"], 1)
+        self.assertEqual(day["positions"]["acme_a"]["cost_usd"], 8.0)
+        self.assertEqual(day["total"]["responses"], 4)
+        hour = of_spend.periods(DOCS, self.conn, T0 + 86400, T0 + 86400 + 7 * H, by="hour", now=now)
+        self.assertEqual([(p["start"] - T0 - 86400) // H for p in hour["periods"]], [5, 6])
+        self.assertEqual(hour["periods"][0]["total"]["responses"], 2)
+        only = of_spend.periods(DOCS, self.conn, T0, now, by="day", org="acme", now=now)
+        self.assertNotIn("(no position)", only["positions"])                 # one organization's positions only
+        text = of_spend.render_periods(day, top=1)
+        self.assertIn("2026-11-02  $5", text)
+        self.assertIn("positions: acme_a $4, 2 more $1", text)
+        self.assertIn("by position: acme_a $8", text)
 
     def test_end_to_end_with_a_declaration_and_the_cache(self):
         now = T0 + 2 * 86400
