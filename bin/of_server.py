@@ -2516,11 +2516,28 @@ def backup(cfg=None, keep=BACKUP_KEEP, ch_post=None, today=None):
         orgs = cfg.get("orgs") or of_route.Router(ship).db_by_org
         dbs = sorted(set(orgs.values()) | {ship.get("vault_database") or ROUTE_DEFAULTS["vault_database"],
                                            ship.get("unassigned_database") or ROUTE_DEFAULTS["unassigned_database"]})
+        failed = []
         for db in dbs:
             if not _DB.fullmatch(db):
                 raise ValueError("a ClickHouse database name that is not a plain name")
-            post(f"BACKUP DATABASE {db} TO Disk('{disk}', '{day}/{db}.zip')")  # names checked above: no quoting gap
+            # BACKUP refuses a name that exists, and the name is the UTC day: a database already backed up today (a run
+            # by hand before the timer's, or a run that failed after it) is left as it is, never a failure, and one
+            # that fails stops none of the others (of_agent-server, 2026-11-22)
+            if b.get("clickhouse_path") and os.path.exists(os.path.join(os.path.expanduser(b["clickhouse_path"]), day,
+                                                                       f"{db}.zip")):
+                out.append(f"{day}: ClickHouse {db} was backed up today already")
+                continue
+            try:
+                post(f"BACKUP DATABASE {db} TO Disk('{disk}', '{day}/{db}.zip')")  # names checked above: no quoting gap
+            except Exception as e:  # noqa: BLE001 - told below, and the unit fails
+                if "BACKUP_ALREADY_EXISTS" in str(e) or "already exists" in str(e):
+                    out.append(f"{day}: ClickHouse {db} was backed up today already")
+                else:
+                    failed.append(f"{db} ({type(e).__name__})")
+                continue
             out.append(f"{day}: ClickHouse {db} backed up to its disk {disk}")
+        if failed:
+            out.append(f"{day}: ClickHouse backup failed for {', '.join(failed)}")
     cutoff = time.strftime("%Y-%m-%d", time.gmtime((today and time.mktime(time.strptime(today, "%Y-%m-%d"))
                                                     or time.time()) - keep * 86400))
     for place in [root] + ([os.path.expanduser(b["clickhouse_path"])] if b.get("clickhouse_path") else []):
@@ -2528,6 +2545,8 @@ def backup(cfg=None, keep=BACKUP_KEEP, ch_post=None, today=None):
             if re.fullmatch(r"\d{4}-\d{2}-\d{2}", name) and name < cutoff:
                 shutil.rmtree(os.path.join(place, name))
                 out.append(f"removed {name} from {place}")
+    if any("ClickHouse backup failed" in x for x in out):
+        raise RuntimeError(next(x for x in out if "ClickHouse backup failed" in x))
     return out
 
 

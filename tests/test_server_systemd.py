@@ -76,6 +76,31 @@ class SystemdTest(unittest.TestCase):
             seen["restart"]()
             self.assertEqual(run.call_args[0][0], ["systemctl", "--user", "restart", "of-server.service"])
 
+    def test_a_database_backed_up_today_is_left_and_one_failure_stops_no_other(self):
+        """of_agent-server, 2026-11-22: BACKUP refuses a name that exists, and the name is the UTC day, so a run by
+        hand before the timer's failed the timer's, and a run that failed half-way could not be retried that day."""
+        with tempfile.TemporaryDirectory() as d:
+            state = os.path.join(d, "state")
+            of_server.Store(state)
+            chdir = os.path.join(d, "ch")
+            os.makedirs(os.path.join(chdir, "2026-11-20"))
+            open(os.path.join(chdir, "2026-11-20", "of_acme.zip"), "w").close()       # made by an earlier run
+            sent = []
+
+            def post(q):
+                sent.append(q)
+                if "of_unassigned" in q:
+                    raise RuntimeError("ClickHouse 500: Code: 598. Backup already exists. (BACKUP_ALREADY_EXISTS)")
+                if "of_vault" in q:
+                    raise RuntimeError("ClickHouse 500: disk full")
+            cfg = {"state_dir": state, "orgs": {"acme": "of_acme", "zeta": "of_zeta"}, "plugins": {"storage": "clickhouse"},
+                   "backup": {"clickhouse_disk": "backups", "clickhouse_path": chdir}}
+            with mock.patch("of_ship.config", return_value={"url": "http://192.0.2.1:8123"}):
+                with self.assertRaisesRegex(RuntimeError, "failed for of_vault"):
+                    of_server.backup(cfg, ch_post=post, today="2026-11-20")
+            self.assertEqual([q.split()[2] for q in sent], ["of_unassigned", "of_vault", "of_zeta"])  # acme skipped,
+            # zeta still tried after vault failed
+
     def test_the_backup_copies_the_store_backs_up_each_database_and_keeps_seven_days(self):
         import sqlite3
         with tempfile.TemporaryDirectory() as d:
