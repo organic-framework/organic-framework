@@ -59,8 +59,10 @@ in the guard or the sandbox away from a session; only another OS user is a wall 
 - **What it allows.** Two actions only: a comment on a pull request, and a review whose event is a comment (never an
   approval, which branch protection could count). Both only on OF's repositories, named in the program and never in
   the registry, since the registry follows agents' pushes (card `OF-266`). It refuses everything else. Whatever the
-  option, it refuses a body, of either kind, in which the merge's reader would find a verdict line, unless the request
-  comes from the reviewers' own user's folder; it tests the body with that reader's own pattern, never a copy of it.
+  option, it never publishes a comment in which the merge's reader would find a verdict line, from any folder, and it
+  publishes a review with one only from the reviewers' own user's folder. It finds that line with the pattern of the
+  copy the owner's sitting installs root-owned beside the gate's, pinned by its sha256, never with the release tools
+  as pushed, which follow agents' pushes; a test fails when that copy's pattern and the merge's differ.
 - **The gate.** The body is publication, so it passes the export gate's checks. The unit runs them from a copy that the
   owner's sitting installs root-owned, pinned by its sha256. It never runs them from organic-framework-build's
   `release/`, which follows pushes.
