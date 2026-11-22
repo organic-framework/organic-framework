@@ -789,8 +789,18 @@ def rule_inbound_backlog(model, rows, a, b, cat, spec):
                                  f"{pos} takes in less than it receives: messages waited over {old_s // 60} min on "
                                  f"{len(hit)} days, {q['depth_avg']} waiting on average", delta_m=n_rel * mpp, part="overload"))
         elif len(hit) >= t.get("unattended_days_gte", 2):
+            # v3 (2026-11-22): a parked position whose successor is held is its unit owner's or structure keeper's to
+            # move to that successor (of inbox move), not the owner's (a user organization's structure keeper: one
+            # backlog reached its owner three times). Depth 0 is no empty queue: the relay writes it too when nobody
+            # presents the position any more (of_review on organic-framework PR 518): an emptied queue cannot be told apart.
             why = "not in the registry" if p is None else (f"status {p.get('status')}" if p.get("status", "active") != "active"
                                                            else "no holder session")
+            succ = (p or {}).get("successor")
+            if succ and live_holder(model["positions"].get(succ)):
+                out.append(issue(cat, "inbound-backlog", [pos], dict(ev, holder=why, successor=succ),
+                                 f"messages wait for {pos} ({why}), whose successor {succ} is held: over {old_s // 60} "
+                                 f"min on {len(hit)} days", delta_m=n_rel * mpp, part="successor"))
+                continue
             out.append(issue(cat, "inbound-backlog", [pos], dict(ev, holder=why),
                              f"messages wait for {pos}, which nobody holds ({why}): over {old_s // 60} min on "
                              f"{len(hit)} days", delta_m=n_rel * mpp, part="unattended"))
