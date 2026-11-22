@@ -715,6 +715,13 @@ class StudioEscalationTest(unittest.TestCase):
                 of_pulse.studio_escalations(pos, conn, log=lambda m: None, run=lambda *a, **k: None)
                 qs = [r[0] for r in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question'")]
                 self.assertTrue(any("evidence: inbound-backlog: ops_a, 2 queued for 30 h." in x for x in qs))
+                of_events.emit("escalation_due", {"delegation": "del-x", "unit": "platform", "condition": "c2",
+                                                  "from_owner": "acme_platform-owner", "evidence": ["iss3"],
+                                                  "evidence_text": "one string, one line"},
+                               position="acme_platform-owner")
+                of_pulse.studio_escalations(pos, conn, log=lambda m: None, run=lambda *a, **k: None)
+                qs = [r[0] for r in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question'")]
+                self.assertTrue(any("evidence: one string, one line." in x for x in qs))   # not letter by letter
             finally:
                 of_events._CONN.clear()
                 of_events.STATE_DIR = saved
