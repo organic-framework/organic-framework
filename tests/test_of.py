@@ -979,7 +979,7 @@ class DeniedPromptNoteTest(AsksActorTest):
         self.assertIn("refused by the owner", sent[0][1])
         self.assertIn("any part this card does not show included", sent[0][1])
         self.assertIn("with `of ask`", sent[0][1])
-        self.assertFalse(self.of._tell_denied(dict(ask, to="founder"), "AC-9", "owner", send=lambda *a: True))
+        self.assertTrue(self.of._tell_denied(dict(ask, to="founder"), "AC-9", "owner", send=lambda *a: True))  # unrouted
 class AsksCitedAnswerTest(AsksActorTest):
     """A user organization's structure keeper, message 01a20320-debb, and of_review on PR 514: an agent closes the
     owner's question only citing a prompt he typed after it, and reads a card with `show`."""
