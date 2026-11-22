@@ -185,6 +185,20 @@ class BeforeFileTest(unittest.TestCase):
         finally:
             shutil.rmtree(bare, ignore_errors=True)
 
+    def test_bench_missing_where_a_lock_names_it_stops_the_card_and_keeps_the_default(self):
+        # of_platform on PR 574: an ImportError (Bench or of_method not at its path) ended `of ask` in a traceback
+        saved = sys.modules.get("of_method")
+        sys.modules["of_method"] = None          # `import of_method` raises ImportError
+        try:
+            g = of_asks_package.before_file(self.org, {"tags": []})
+            self.assertEqual(g["decision"], "stop")
+            self.assertIn("import of of_method", g["reason"])
+            said = []
+            self.assertEqual(of_asks_package.escalate_after(self.org, log=said.append), 2 * 3600)
+            self.assertIn("import of of_method", said[0])
+        finally:
+            sys.modules["of_method"] = saved
+
     def test_a_lock_that_names_it_but_cannot_be_read_stops_the_card(self):
         with open(os.path.join(self.org, bench.LOCK), "a") as f:
             f.write("\nthis is not lua (\n")
