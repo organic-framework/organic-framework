@@ -297,6 +297,39 @@ class LocalCommitsTest(unittest.TestCase):
                 of_events.STATE_DIR = saved
 
 
+class SignatureProgramTest(unittest.TestCase):
+    def test_a_repositorys_own_signature_program_never_runs(self):
+        """of_server, message 01a202d3-e7c8: a .git/config with log.showSignature and gpg.program had the listener's
+        git log run that program; any session's file tools can write a checkout's .git/config."""
+        import stat
+        import subprocess
+        with tempfile.TemporaryDirectory() as root:
+            repo, mark = os.path.join(root, "r"), os.path.join(root, "ran")
+            prog = os.path.join(root, "prog.sh")
+            with open(prog, "w") as fh:
+                fh.write(f"#!/bin/sh\ntouch '{mark}'\nexit 1\n")
+            os.chmod(prog, stat.S_IRWXU)
+            git = lambda *a: subprocess.run(["git", "-C", repo, "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false",  # noqa: E731
+                                             "-c", "user.email=t@t", "-c", "user.name=t", *a],
+                                            capture_output=True, text=True, check=True)
+            os.makedirs(repo)
+            git("init", "-q", "-b", "main")
+            open(os.path.join(repo, "a"), "w").close()
+            git("add", "a")
+            git("commit", "-qm", "unsigned")
+            head = git("cat-file", "commit", "HEAD").stdout
+            hdr, _, _ = head.partition("\n\n")
+            sig = ("gpgsig -----BEGIN PGP SIGNATURE-----\n \n iQEzBAABCAAdFiEE\n -----END PGP SIGNATURE-----")
+            obj = subprocess.run(["git", "-C", repo, "hash-object", "-t", "commit", "-w", "--stdin"],
+                                 input=f"{hdr}\n{sig}\n\none\n", capture_output=True, text=True, check=True)
+            git("update-ref", "refs/heads/main", obj.stdout.strip())   # a signed commit: only one has a check to run
+            git("config", "log.showSignature", "true")
+            git("config", "gpg.program", prog)
+            commits = of_github.local_commits(repo, "2020-01-01")
+            self.assertEqual([c["title"] for c in commits], ["one"])
+            self.assertFalse(os.path.exists(mark))
+
+
 class DefaultBranchTest(unittest.TestCase):
     """The founder, 2026-11-11: of import git read only main; a repository's default may be another branch."""
 
