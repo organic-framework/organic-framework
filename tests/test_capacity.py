@@ -3179,6 +3179,35 @@ class ToolProfiles(unittest.TestCase):
         self.assertEqual(settings["enabledPlugins"], {"slack@anthropic-plugin-directory": True})
         self.assertEqual((settings["permissions"]["deny"], settings["autoMemoryDirectory"]), (["Read(/k/**)"], "/m/aws"))
 
+    def test_its_own_files_in_the_state_folder_never_follow_a_link(self):
+        """of_server's hand-over 58681935 and verdict on PR 545 (through of_platform): its log, lock, replan and
+        injections files in OF's state folder are opened as the other state files are, a regular file of this user's
+        with one name and never through a link."""
+        with tempfile.TemporaryDirectory() as t, mock.patch.object(of_capacity, "STATE_DIR", t), \
+                mock.patch.object(of_capacity.of_events, "emit", lambda *a, **k: None):
+            victim = os.path.join(t, "victim.json")
+            with open(victim, "w") as fh:
+                fh.write('{"keep": true}')
+            os.makedirs(os.path.join(t, "capacity"))
+            for name in ("injections.jsonl", "capacity/tick.lock", "capacity/balance.lock", "capacity/balance.replan"):
+                os.symlink(victim, os.path.join(t, name))
+            with self.assertRaises(OSError):
+                of_capacity._inject("s1", "hello", "test")
+            with self.assertRaises(OSError):
+                of_capacity._tick_lock()
+            with self.assertRaises(OSError):
+                of_capacity.mark_replan(["s2"])
+            self.assertFalse(of_capacity._balance_busy())
+            self.assertEqual(of_capacity.replan_due(set()), set())
+            with open(victim) as fh:
+                self.assertEqual(fh.read(), '{"keep": true}')                  # its target unchanged
+            for name in ("injections.jsonl", "capacity/tick.lock", "capacity/balance.replan"):
+                os.unlink(os.path.join(t, name))
+            of_capacity._inject("s1", "hello", "test")                        # a file of its own: as before
+            self.assertIsNotNone(of_capacity._tick_lock())
+            of_capacity.mark_replan(["s2"])
+            self.assertEqual(of_capacity.replan_due(set()), {"s2"})
+
     def test_a_start_gives_the_settings_its_organization_for_the_work_clone(self):
         """Card OF-265, hand-over ab9ed07b (of_platform, message 01a204ac-af90): of spawn passes the organization to
         session_settings, whose Linux sandbox then lets the session write its organization's work clone; a move, a
