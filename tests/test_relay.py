@@ -152,6 +152,45 @@ class RelayTest(unittest.TestCase):
             of_relay.PRESENCE_EVERY = saved
         self.assertGreater(sent["b"], 0)                                     # "a" sorts first and is down
 
+    def test_a_hung_server_holds_back_no_presence_and_a_failed_one_keeps_its_counts(self):
+        """of_review on organic-framework PR 530: a server that hangs held the others' presence past the TTL, and a
+        failed server's queues were recorded as depth 0."""
+        import threading
+        sent, rounds = {"b": 0}, {"a": 0}
+        release = threading.Event()
+
+        class C:
+            def __init__(self, url):
+                self.url = url
+
+            def put_presence(self, body):
+                if self.url == "a":
+                    rounds["a"] += 1
+                    if rounds["a"] == 1:
+                        return {"queued": {"ofa:of_a": {"n": 4, "oldest": "2026-11-22T10:00:00Z"}}}
+                    release.wait(5)                                       # hangs from its second round on
+                    raise ConnectionRefusedError("down")
+                sent["b"] += 1
+                return {}
+
+            def poll_messages(self, t):
+                stop.wait(0.05)
+                return {}
+        saved = (of_relay.PRESENCE_EVERY, of_relay.PRESENCE_WAIT, of_relay.PRESENCE_CHECK)
+        of_relay.PRESENCE_EVERY, of_relay.PRESENCE_WAIT, of_relay.PRESENCE_CHECK = 0.01, 0.05, 0.02
+        stop = threading.Event()
+        local = {"ofa:of_a": dict(LOCAL["ofb:of_a"], org="ofa"), "ofb:of_a": LOCAL["ofb:of_a"]}
+        try:
+            of_relay.run(lambda: local, C, {"ofa": "a", "ofb": "b"}, "b", log=lambda m: None, stop=stop)
+            stop.wait(0.6)
+            counts = of_relay.read_queues()
+        finally:
+            stop.set()
+            release.set()
+            of_relay.PRESENCE_EVERY, of_relay.PRESENCE_WAIT, of_relay.PRESENCE_CHECK = saved
+        self.assertGreater(sent["b"], 3)                                  # b kept being told while a hung
+        self.assertEqual(counts["ofa:of_a"]["n"], 4)                      # a's last count stands, never 0
+
     def test_a_holder_change_is_published_at_once(self):
         """of_capacity, 2026-11-07: after an account move the server said not_holder for minutes; a changed
         session (or pane, or kind) goes out on the next check, an unchanged set only every PRESENCE_EVERY."""
