@@ -238,6 +238,10 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
     `shell_mode_uses_login_shell`): they read the shell's rc file and never its profile. The `PATH` does not depend
     on the shell the install runs from. So a host's setup script that writes the same text and a later install
     write the same file: one writer of one unit text (`of_architect`, msg `01a1fab3-ecf5`).
+  - **Its output appends to `~/.local/log/of/herdr-server.log`,** never to OF's state folder. systemd opens that
+    path itself, as the user and outside any sandbox, and agents' sandboxed sessions write in the state folder, so a
+    link or a pipe planted there would act on herdr's start (`of_server`, 2026-11-22). The folder is the one
+    `of_platform`'s hand-over `58681935` names for every log OF writes from outside the sandbox.
   - **`Restart=on-failure`, except on exit status 1.** herdr exits with 1 when another server holds its socket, and
     a restart could only fail again.
   - **`Slice=session.slice` and `OOMPolicy=continue`, so that one out-of-memory event does not end every agent of
