@@ -1064,8 +1064,8 @@ class CardIdTest(unittest.TestCase):
     def test_the_ref_else_the_hex_tail_and_none_for_a_registry_wait(self):
         self.assertEqual(T.card_ref({"ref": "OF-57"}), "OF-57")
         self.assertEqual(T.card_ref(item("019a5c1e-77c3-7d2e-9b10-4c5d6e7fa1b2", "q?",
-                                         first={"ref": "MT-412", "event_id": "019a5c1e-77c3-7d2e-9b10-4c5d6e7fa1b2"})),
-                         "MT-412")
+                                         first={"ref": "AS-412", "event_id": "019a5c1e-77c3-7d2e-9b10-4c5d6e7fa1b2"})),
+                         "AS-412")
         self.assertEqual(T.card_ref(item("019a5c1e-77c3-7d2e-9b10-4c5d6e7fa1b2", "q?")), "6e7fa1b2")  # no ref yet
         self.assertEqual(T.card_ref({"event_id": "019a5c1e-77c3-7d2e-9b10-4c5d6e7fa1b2"}), "6e7fa1b2")
         self.assertEqual(T.card_ref({"who": ["of_a"], "ids": [], "kind": "registry", "first": None}), "")

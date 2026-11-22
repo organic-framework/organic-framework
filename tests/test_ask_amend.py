@@ -505,7 +505,7 @@ class CliTest(unittest.TestCase):
 
 
     def test_an_answer_the_late_view_has_not_folded_refuses_the_amend(self):
-        """of_conductor, message 01a1ea94-7796: card MT-31 was answered in the popup at version 6 at 17:12:05Z and
+        """of_conductor, message 01a1ea94-7796: card AS-31 was answered in the popup at version 6 at 17:12:05Z and
         amended to version 7 at 17:18:51Z. The listener's view had stood since 17:11:02Z and still showed it open, and
         the log's last 15 minutes on top of a late view do not hold an ask filed before them."""
         import time
