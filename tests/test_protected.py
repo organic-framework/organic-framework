@@ -637,6 +637,25 @@ class ProtectedFfTest(unittest.TestCase):
             fh.write("positions: []\n")
         self.assertIn(os.path.realpath(self.wt), [os.path.realpath(x) for x in
                                                   of_credentials.load(orgs)["acme"]["protected_code"]])
+        org_dir = os.path.join(self.d, 'org')
+        for listed in (f"  - path: {org_dir}\n    protected_code: []\n",       # named by its folder
+                       f"  - name: acme\n    path: {org_dir}\n    protected_code:\n",            # a bare key
+                       f"  - name: acme\n    path: {org_dir}\n    protected_code: {{path: x}}\n"):  # no dash
+            with open(os.path.join(reg, "positions.yaml"), "w") as fh:   # the pushed registry vouches again
+                fh.write(f"positions: []\nprotected_code:\n  - path: \"{self.wt}\"\n    ff:\n"
+                         "      repo: someone/fork\n      branch: other\n      human: [README]\n")
+            with open(orgs, "w") as fh:
+                fh.write("orgs:\n" + listed)
+            self.assertEqual(P.entries(orgs), [], listed)                      # never the registry's
+        other = os.path.join(self.d, "other-org", "registry")              # another organization's registry
+        os.makedirs(other)
+        with open(os.path.join(other, "positions.yaml"), "w") as fh:
+            fh.write(f"positions: []\nprotected_code:\n  - path: \"{self.wt}\"\n    ff:\n"
+                     "      repo: someone/fork\n      branch: other\n      human: [README]\n")
+        with open(orgs, "w") as fh:
+            fh.write(f"orgs:\n  - name: acme\n    path: {org_dir}\n    protected_code: []\n"
+                     f"  - name: zeta\n    path: {os.path.join(self.d, 'other-org')}\n")
+        self.assertEqual(P.entries(orgs), [])                              # it vouches for nothing either
         with open(orgs, "w") as fh:                                          # an empty list: no ff entry at all
             fh.write(f"orgs:\n  - name: acme\n    path: {os.path.join(self.d, 'org')}\n    protected_code: []\n")
         self.assertEqual(P.entries(orgs), [])

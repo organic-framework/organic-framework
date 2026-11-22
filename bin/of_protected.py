@@ -101,23 +101,36 @@ def _rel_ok(p):
 
 def owner_entries(orgs_file=None):
     """{org: [protected_code item, ...]} the owner wrote into orgs.yaml, the machine's file only he writes (docs/guard.md
-    G33). An organization named here takes its ff entries from here alone: on the agent host its registry follows what
-    any session pushes (the founder's card OF-266), so a registry's `ff:` could change what vouches for the fast-forward
-    of the code the guard runs (of_server's proposal, of_architect's yes, msg 01a20462-349f)."""
+    G33). The key's presence decides: anything but a list there is an empty list, never a fall back to the registry. An
+    entry with no `name:` is named after its path's folder, as the registry list names it. On the agent host the
+    registry follows what any session pushes (the founder's card OF-266), so a registry's `ff:` could change what vouches
+    for the fast-forward of the code the guard runs (of_server's proposal, of_architect's yes, msg 01a20462-349f;
+    of_review on organic-framework PR 546)."""
     import yaml
     import of_credentials
+    f = of_credentials._orgs_file(orgs_file)
     try:
-        with open(of_credentials._orgs_file(orgs_file)) as fh:
+        with open(f) as fh:
             doc = yaml.safe_load(fh) or {}
     except (OSError, yaml.YAMLError):
         return {}
-    return {o["name"]: o["protected_code"] for o in doc.get("orgs") or []
-            if isinstance(o, dict) and o.get("name") and isinstance(o.get("protected_code"), list)}
+    base, out = os.path.dirname(f), {}
+    for o in (doc.get("orgs") if isinstance(doc, dict) else None) or []:
+        if not isinstance(o, dict) or "protected_code" not in o:
+            continue
+        name = o.get("name") or (os.path.basename(os.path.join(base, os.path.expanduser(str(o["path"]))))
+                                 if o.get("path") else None)
+        if name:
+            items = o["protected_code"]
+            out[str(name)] = items if isinstance(items, list) else []
+    return out
 
 
 def entries(orgs_file=None):
-    """[(org, absolute path, ff mapping)] of every protected_code entry that names `ff:` and has no problem: an
-    organization's own list in orgs.yaml when the owner wrote one there, else its registry's."""
+    """[(org, absolute path, ff mapping)] of every protected_code entry that names `ff:` and has no problem. Once the
+    owner lists protected_code for any organization in orgs.yaml, those lists alone vouch on this machine and no
+    registry's ff entry is read, so neither an unlisted organization's registry nor another's can vouch for a path
+    (of_review on organic-framework PR 546); with no list anywhere, the registries vouch as before."""
     import yaml
     import of_credentials
     out, own = [], owner_entries(orgs_file)
@@ -128,11 +141,11 @@ def entries(orgs_file=None):
             if isinstance(item, dict) and item.get("ff") and p and of_credentials._code_path_ok(p) \
                     and not ff_problems(item):
                 out.append((org, of_credentials._abs(p), item["ff"]))
-    for org, items in own.items():
-        take(org, items)
+    if own:
+        for org, items in own.items():
+            take(org, items)
+        return out
     for org, reg in of_credentials._registries(orgs_file):
-        if org in own:
-            continue   # the owner's list stands for this organization: its registry's ff entries are not read
         try:
             with open(reg) as fh:
                 doc = yaml.safe_load(fh) or {}
@@ -888,7 +901,7 @@ def run(entry, target, position=None, orgs_file=None, api=default_api, emit=None
         raise Refused(f"{entry} is no protected_code entry with ff: in orgs.yaml or any registry here (docs/registry.md, "
                       "Protected code): its fast-forward is the owner's")
     org, path, spec = found
-    if org not in owner_entries(orgs_file):   # an entry from orgs.yaml rests on that file, checked above
+    if not owner_entries(orgs_file):   # an entry from orgs.yaml rests on that file, checked above
         _trusted(dict(of_credentials._registries(orgs_file))[org])
     res = ff(path, spec, target, api=api)
     (emit or of_events.emit)("protected_ff", {"entry": path.replace(os.path.expanduser("~"), "~", 1), "from": res["from"],
