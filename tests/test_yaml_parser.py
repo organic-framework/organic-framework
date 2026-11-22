@@ -41,6 +41,22 @@ class BothParsersTest(unittest.TestCase):
                 self.assertNotEqual(self.read(yaml.SafeLoader, t)[0], self.read(of_yaml.FAST, t)[0])
                 self.assertIn("parser", of_yaml.disagreement(t))
 
+    def test_the_hooks_own_entry_starts_on_the_same_parser(self):
+        """of_server on PR 572: the hooks run bin/of-hook, which imports of_hook directly; of_hook must already see
+        libyaml's parser when it is imported, before the guard parses anything."""
+        import shutil
+        import tempfile
+        d = tempfile.mkdtemp(prefix="ofyh-")
+        self.addCleanup(shutil.rmtree, d, True)
+        for name in ("of-hook", "of_yaml.py"):
+            shutil.copy(os.path.join(HERE, "..", "bin", name), os.path.join(d, name))
+        with open(os.path.join(d, "of_hook.py"), "w") as fh:   # a stand-in that says which parser it found
+            fh.write("import yaml\nFAST = getattr(yaml.safe_load, '_of_fast', False)\n"
+                     "def main(argv):\n    print('fast' if FAST else 'pure')\n    return 0\n")
+        r = subprocess.run([sys.executable, os.path.join(d, "of-hook"), "Stop"], capture_output=True, text=True,
+                           timeout=60, stdin=subprocess.DEVNULL)
+        self.assertEqual(r.stdout.strip(), "fast", r.stderr[-500:])
+
     def test_the_hook_starts_on_the_same_parser(self):
         code = ("import sys, runpy; sys.argv = ['of', 'hook', 'Nothing']; import yaml\n"
                 "try:\n    runpy.run_path(sys.argv[0] if False else %r, run_name='__main__')\n"
