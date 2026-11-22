@@ -874,10 +874,13 @@ class NoWriteThroughALinkTest(unittest.TestCase):
                     os.symlink(target, q)
                     with self.assertRaises(OSError):
                         of_events.read_own(q)
-                self.assertEqual(of_hook.load_session("s9"), {})
                 self.assertNotEqual(of_events.machine_id(wait_s=0.1), "TARGET")
-                of_events._with_refs(lambda c: c.update(x=1))                   # replaced, never read through
-                self.assertFalse(os.path.islink(os.path.join(state, "ask-refs.json")))
+                with self.assertRaises(OSError):                                # refused: nothing written, no
+                    of_events._with_refs(lambda c: c.update(x=1))               # number given (of_review, PR 545)
+                self.assertIsNone(of_events.next_ref("acme"))
+                self.assertEqual(of_hook.load_session("s9"), {"_refused": True})
+                of_hook.save_session("s9", of_hook.load_session("s9"))           # never saved over
+                self.assertTrue(os.path.islink(os.path.join(state, "sessions", "s9.json")))
                 with open(target) as fh:
                     self.assertEqual(fh.read(), "TARGET\n")
                 # a file unlinked between the open and the fstat (count 0) is still ours (of_review on PR 545, as

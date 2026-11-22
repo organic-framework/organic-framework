@@ -110,13 +110,12 @@ def connect(path=None, timeout=10.0):
         except FileExistsError:
             pass   # another process made it first
     conn = sqlite3.connect(path, timeout=timeout, isolation_level=None)
-    try:   # what SQLite opened is the file checked above, not one swapped in between (of_server on PR 545)
-        opened = conn.execute("PRAGMA database_list").fetchone()[2]
-        st, op = os.lstat(path), os.stat(opened)
-        if os.path.islink(path) or (st.st_dev, st.st_ino) != (op.st_dev, op.st_ino):
+    try:   # the path checked again after the open, by name: a change during the open itself is not caught
+        st = os.lstat(path)
+        if os.path.islink(path) or st.st_nlink > 1:
             conn.close()
             raise sqlite3.OperationalError(f"{path} changed while the store opened it: not opened")
-    except (OSError, TypeError):
+    except OSError:
         pass
     conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)}")
     conn.execute("PRAGMA journal_mode = WAL")
