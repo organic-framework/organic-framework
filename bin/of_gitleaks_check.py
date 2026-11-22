@@ -15,7 +15,6 @@ keeper's terms through its structure keeper, 2026-11-18: "a pinned gitleaks run,
 closed on any finding or scanner error").
 """
 
-import hashlib
 import json
 import os
 import re
@@ -229,73 +228,22 @@ def held(run, path):
 SCAN_TIMEOUT_S = 300
 
 
-# Clean content is remembered, so a run scans only what it has not seen clean: a repository too large to scan within
-# SCAN_TIMEOUT_S on a loaded machine refused every review (a user organization's structure keeper, message
-# 01a20537-12ad: twice in one day on one repository). A key is the pinned version, the rules, the file's path in the
-# snapshot and its content, so a rule or a path change scans again. The file lives under ~/.cache/of, which no
-# session's sandbox writes, and is read and appended to without following a link; when it cannot be, nothing is
-# remembered and every file is scanned. A run that runs out of time keeps what it scanned clean and fails closed.
-CACHE = os.path.join(os.path.expanduser("~"), ".cache", "of", "gitleaks-clean")
+# A run scans the snapshot in batches, each copied at its paths into a fresh folder and given SCAN_TIMEOUT_S of its own,
+# so a large snapshot completes while one stalled batch still fails closed; nothing is remembered between runs, since
+# a record of clean content would be a pass the agents' own user could write (of_server and of_review on
+# organic-framework PR 571; a user organization's structure keeper, message 01a20537-12ad: a large repository's
+# scans did not finish within one 300 s total on a loaded machine).
 BATCH_BYTES = 8 * 1024 * 1024
 BATCH_FILES = 2000
 
 
-def _rules_key():
-    h = hashlib.sha256(PINNED.encode() + b"\0" + ALLOW.encode() + b"\0")
-    try:
-        with open(RULES, "rb") as fh:
-            h.update(fh.read())
-    except OSError:
-        return None
-    return h.hexdigest()
-
-
-def _key(rules, rel, path):
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 16), b""):
-            h.update(chunk)
-    return hashlib.sha256(f"{rules}\0{rel}\0{h.hexdigest()}".encode()).hexdigest()
-
-
-def _cache_fd(path, flags):
-    import stat
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-    fd = os.open(path, flags | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0), 0o600)
-    st = os.fstat(fd)
-    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_nlink != 1:
-        os.close(fd)
-        raise OSError("not a regular file of this user with one name")
-    return fd
-
-
-def load_clean(path):
-    try:
-        fd = _cache_fd(path, os.O_RDONLY | os.O_CREAT)
-    except OSError:
-        return set()
-    with os.fdopen(fd, "r") as fh:
-        return {ln.strip() for ln in fh if len(ln.strip()) == 64}
-
-
-def remember(path, keys):
-    if not keys:
-        return
-    try:
-        fd = _cache_fd(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
-    except OSError:
-        return
-    with os.fdopen(fd, "a") as fh:
-        fh.write("".join(k + "\n" for k in keys))
-
-
-def check(folder, exe=None, run=subprocess.run, out=sys.stdout, cache=None):
+def check(folder, exe=None, run=subprocess.run, out=sys.stdout):
     """0 when FOLDER is clean by the pinned gitleaks, else 1 (printed: why, or each finding's file, line, rule). The
     program comes from OF_GITLEAKS when set (a runner whose root filesystem is read-only puts it in its own folder),
     else from the platform's pinned path; either way it is copied into a fresh 0700 folder, hashed there and run
     from there."""
     if exe is not None:
-        return _check(folder, exe, run, out, cache)
+        return _check(folder, exe, run, out)
     if not PINNED_PATH:
         import platform
         print(f"no gitleaks is pinned for {sys.platform}/{platform.machine()}: fail closed", file=out)
@@ -306,10 +254,10 @@ def check(folder, exe=None, run=subprocess.run, out=sys.stdout, cache=None):
         if why:
             print(f"{why}: fail closed", file=out)
             return 1
-        return _check(folder, copy, held(run, copy), out, CACHE if cache is None else cache)
+        return _check(folder, copy, held(run, copy), out)
 
 
-def _check(folder, exe, run=subprocess.run, out=sys.stdout, cache=None):
+def _check(folder, exe, run=subprocess.run, out=sys.stdout):
     if not os.path.isfile(RULES):
         print(f"the pinned rules {os.path.basename(RULES)} are missing: fail closed", file=out)
         return 1
@@ -334,38 +282,7 @@ def _check(folder, exe, run=subprocess.run, out=sys.stdout, cache=None):
     if ign:
         print(f"{ign[0]}: an ignore file in the scanned folder: fail closed", file=out)
         return 1
-    if cache:
-        return _check_cached(root, exe, run, out, env, cache)
-    with tempfile.TemporaryDirectory(prefix="of-gitleaks-") as t:
-        report, cfg = os.path.join(t, "report.json"), os.path.join(t, "gitleaks.toml")
-        with open(cfg, "w") as fh:
-            fh.write(f"[extend]\npath = {json.dumps(RULES)}\n" + ALLOW)
-        try:
-            r = run([exe, "dir", root, "--config", cfg, "--gitleaks-ignore-path", t, "--ignore-gitleaks-allow",
-                     "--max-archive-depth", "3", "--no-banner", "--redact", "--log-level", "error",
-                     "--report-format", "json", "--report-path", report, "--exit-code", "0"],
-                    cwd=t, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-                    timeout=SCAN_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
-            print(f"gitleaks did not finish within {SCAN_TIMEOUT_S} s: fail closed", file=out)
-            return 1
-        except OSError as e:
-            print(f"gitleaks: {e}: fail closed", file=out)
-            return 1
-        if r.returncode != 0 or not os.path.exists(report):
-            print(f"gitleaks failed (exit {r.returncode}): fail closed", file=out)
-            return 1
-        try:
-            with open(report) as fh:
-                findings = json.load(fh) or []
-        except ValueError:
-            print("gitleaks' report is unreadable: fail closed", file=out)
-            return 1
-    findings = [f for f in findings if not checksummed_address(f.get("File") or "", f)]
-    for f in findings:
-        print(f"{os.path.relpath(f.get('File', '?'), root)}:{f.get('StartLine') or 0}:{f.get('RuleID') or '?'}",
-              file=out)
-    return 1 if findings else 0
+    return _check_batches(root, exe, run, out, env)
 
 
 def _scan(exe, run, env, root, timeout, out):
@@ -396,59 +313,47 @@ def _scan(exe, run, env, root, timeout, out):
             return None
 
 
-def _check_cached(root, exe, run, out, env, cache):
-    """Scan only the files of ROOT not remembered clean, in batches within SCAN_TIMEOUT_S, each copied at its path
-    into a fresh folder; every clean batch is remembered at once, so a run that runs out of time leaves less to the
-    next. Fails closed on a finding, a failed scan or time left over."""
+def _check_batches(root, exe, run, out, env):
+    """Scan every file of ROOT in batches, each copied at its path into a fresh folder and given SCAN_TIMEOUT_S. Fails
+    closed on a finding, a failed scan or a batch that does not finish."""
     import shutil
-    import time
-    rules = _rules_key()
-    if not rules:
-        print(f"the pinned rules {os.path.basename(RULES)} are missing: fail closed", file=out)
-        return 1
-    seen = load_clean(cache)
-    todo, size = [], {}
+    todo = []
     for d, _, fs in os.walk(root):
-        for f in fs:
+        for f in sorted(fs):
             p = os.path.join(d, f)
             if os.path.islink(p) or not os.path.isfile(p):
                 continue
-            rel = os.path.relpath(p, root)
-            k = _key(rules, rel, p)
-            if k not in seen:
-                todo.append((rel, p, k))
-                size[rel] = os.path.getsize(p)
-    deadline = time.monotonic() + SCAN_TIMEOUT_S
-    findings, left = [], list(todo)
-    while left:
+            todo.append((os.path.relpath(p, root), p, os.path.getsize(p)))
+    todo.sort()
+    findings, seen, done = [], set(), 0
+    while todo:
         batch, total = [], 0
-        while left and len(batch) < BATCH_FILES and (not batch or total + size[left[0][0]] <= BATCH_BYTES):
-            batch.append(left.pop(0))
-            total += size[batch[-1][0]]
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            left = batch + left
-            break
+        while todo and len(batch) < BATCH_FILES and (not batch or total + todo[0][2] <= BATCH_BYTES):
+            batch.append(todo.pop(0))
+            total += batch[-1][2]
         with tempfile.TemporaryDirectory(prefix="of-gitleaks-batch-") as b:
             for rel, p, _ in batch:
                 os.makedirs(os.path.dirname(os.path.join(b, rel)), exist_ok=True)
                 shutil.copyfile(p, os.path.join(b, rel), follow_symlinks=False)
-            got = _scan(exe, run, env, b, remaining, out)
+            got = _scan(exe, run, env, b, SCAN_TIMEOUT_S, out)
             if got is None:
                 return 1
             if got == "timeout":
-                left = batch + left
-                break
-            got = [f for f in got if not checksummed_address(f.get("File") or "", f)]
-            bad = {os.path.relpath(f.get("File", "?"), b) for f in got}
-            findings += [(os.path.relpath(f.get("File", "?"), b), f) for f in got]
-            remember(cache, [k for rel, _, k in batch if rel not in bad])
-    for rel, f in findings:
-        print(f"{rel}:{f.get('StartLine') or 0}:{f.get('RuleID') or '?'}", file=out)
-    if left:
-        print(f"gitleaks did not finish within {SCAN_TIMEOUT_S} s: {len(left)} of {len(todo)} files not scanned yet "
-              f"(the scanned ones are remembered clean; run again): fail closed", file=out)
-        return 1
+                print(f"gitleaks did not finish within {SCAN_TIMEOUT_S} s on a batch of {len(batch)} files "
+                      f"({done} files scanned before it): fail closed", file=out)
+                return 1
+            for f in got:
+                if checksummed_address(f.get("File") or "", f):
+                    continue
+                path = f.get("File", "?")
+                rel = os.path.relpath(path, b if path.startswith(b + os.sep) else root)
+                line = f"{rel}:{f.get('StartLine') or 0}:{f.get('RuleID') or '?'}"
+                if line not in seen:
+                    seen.add(line)
+                    findings.append(line)
+        done += len(batch)
+    for line in findings:
+        print(line, file=out)
     return 1 if findings else 0
 
 

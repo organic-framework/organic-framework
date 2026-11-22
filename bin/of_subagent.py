@@ -566,14 +566,17 @@ def run_check(check, folder, org_root, popen=subprocess.run):
         path, cwd = os.path.join(org_root or "", name), org_root
         if not org_root or not os.path.isfile(path):
             return f"the organization's check {name!r} is not found in its repository"
-    try:   # a check that does not end refuses the run (message 01a20384-b7a8: scans hung 80 to 100 minutes)
+    # a check that does not end refuses the run (message 01a20384-b7a8: scans hung 80 to 100 minutes); the built-in
+    # scan bounds each of its batches itself, so its total follows the snapshot (of_server on organic-framework PR 571)
+    limit = None if name in BUILTIN_CHECKS else CHECK_TIMEOUT_S
+    try:
         return popen([sys.executable, path, folder], capture_output=True, text=True, cwd=cwd, stdin=subprocess.DEVNULL,
-                     timeout=CHECK_TIMEOUT_S, env={k: v for k, v in os.environ.items() if k != "SSH_AUTH_SOCK"})
+                     timeout=limit, env={k: v for k, v in os.environ.items() if k != "SSH_AUTH_SOCK"})
     except subprocess.TimeoutExpired:
-        return f"the check {name!r} did not finish within {CHECK_TIMEOUT_S} s; nothing left"
+        return f"the check {name!r} did not finish" + (f" within {limit} s" if limit else "") + "; nothing left"
 
 
-CHECK_TIMEOUT_S = 360   # above of_gitleaks_check.SCAN_TIMEOUT_S, so its own fail-closed line is the one said
+CHECK_TIMEOUT_S = 360   # an organization's own check; the built-in scan bounds each batch at SCAN_TIMEOUT_S
 
 
 def prompt_checks(prompt_file, schema, registry, org_root, harness, reading, popen=subprocess.run):
