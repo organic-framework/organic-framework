@@ -401,6 +401,21 @@ class StatusAndTarget(unittest.TestCase):
         self.assertEqual(got, ["sleep 60", "socat UNIX-LISTEN:/var/run/x.sock TCP:localhost:9",
                                "socat UNIX-LISTEN:/tmp/claude-relay.sock,fork TCP:localhost:7"])
 
+    def test_the_probes_run_outside_the_state_folder(self):
+        """of_platform, message 01a20515-b293: the probes ran claude -p (and claude mcp list, which starts a working
+        folder's .mcp.json servers) from a folder in OF's state folder, which a session's sandbox can write on Linux."""
+        seen = []
+
+        def runner(argv, cwd=None, **kw):
+            seen.append(cwd)
+            return type("R", (), {"stdout": "", "stderr": "", "returncode": 1})()
+        of_capacity.probe("/h/.claude-a", runner=runner)
+        of_capacity.token_probe("t", runner=runner)
+        state = os.path.realpath(of_capacity.STATE_DIR)
+        for cwd in seen:
+            self.assertFalse(os.path.realpath(cwd).startswith(state + os.sep), cwd)
+            self.assertTrue(os.path.realpath(cwd).startswith(os.path.realpath(os.path.expanduser("~/.cache/of"))), cwd)
+
     def test_a_failed_probe_waits_and_a_spent_week_is_probed_seldom(self):
         """2026-11-22, load 190: seven probes passed their 120 s, and each pulse, every 5 minutes, started all seven
         again. A failed probe stays a reading of nothing, never the last good one with room (of_review on PR 526)."""

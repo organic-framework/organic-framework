@@ -243,10 +243,12 @@ def parse_probe(lines, stderr, returncode):
 
 
 def probe(d, now=None, runner=subprocess.run):
-    """One minimal call on the cheapest model, from a neutral cwd (no project instructions to load)."""
+    """One minimal call on the cheapest model, from a neutral cwd (no project instructions to load): a fresh folder
+    of its own process outside OF's state folder, which a session's sandbox can write on Linux, so no project settings
+    or instructions are planted where the probe reads them (of_events.model_cwd; of_platform, message
+    01a20515-b293)."""
     now = now or time.time()
-    cwd = os.path.join(STATE_DIR, "capacity", "probe")
-    os.makedirs(cwd, mode=0o700, exist_ok=True)
+    cwd = of_events.model_cwd()
     try:
         out = runner(probe_command(), cwd=cwd, env=probe_env(d), capture_output=True, text=True,
                      timeout=PROBE_TIMEOUT_S)
@@ -805,7 +807,9 @@ def codex_status(now=None, probe=True, fresh=False, home=None, runner=subprocess
     seen = _ts((r or {}).get("observed_at") or "") or 0
     exe = codex_bin()
     if probe and exe and (fresh or now - seen > PROBE_EVERY_MIN * 60):
-        work = os.path.join(STATE_DIR, "capacity", "probe", "codex")
+        # outside OF's state folder, which a session's sandbox can write on Linux: Codex reads AGENTS.md from its
+        # working folder (of_events.model_cwd; of_platform, message 01a20515-b293)
+        work = os.path.join(of_events.model_cwd(), "codex")
         os.makedirs(work, mode=0o700, exist_ok=True)
         env = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_")}
         env.update(OF_AUTOMATION="1", OF_PROBE="1", SSH_AUTH_SOCK="", CODEX_HOME=os.path.abspath(home))
@@ -4583,8 +4587,7 @@ def _setup_token_pty(d, log=print, timeout=SETUP_TOKEN_TIMEOUT_S):
     import pty
     import select
     master, slave = pty.openpty()
-    cwd = os.path.join(STATE_DIR, "capacity", "probe")
-    os.makedirs(cwd, mode=0o700, exist_ok=True)
+    cwd = of_events.model_cwd()  # outside OF's state folder, as the probes (of_platform, message 01a20515-b293)
     proc = subprocess.Popen([claude_bin(), "setup-token"], stdin=slave, stdout=slave, stderr=slave, env=probe_env(d),
                             cwd=cwd, close_fds=True)
     os.close(slave)
@@ -4615,9 +4618,7 @@ def _setup_token_pty(d, log=print, timeout=SETUP_TOKEN_TIMEOUT_S):
 def token_probe(token, runner=subprocess.run):
     """A probe that can only authenticate by `token`: an empty config dir, CLAUDE_CODE_OAUTH_TOKEN set."""
     import tempfile
-    base = os.path.join(STATE_DIR, "capacity")
-    os.makedirs(base, mode=0o700, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=base) as empty:
+    with tempfile.TemporaryDirectory(dir=of_events.model_cwd()) as empty:  # outside the state folder (as probe)
         env = probe_env(empty)
         env["CLAUDE_CODE_OAUTH_TOKEN"] = token
         env.pop("ANTHROPIC_API_KEY", None)
@@ -5926,8 +5927,9 @@ def connectors_seen(d, now=None, run=None):
     if c and "servers" in c and now - c.get("at", 0) < CONNECTORS_MAX_AGE_S and \
             plugins_changed_at(d) <= c.get("at", 0):
         return set(c.get("names") or [])
-    probe_dir = os.path.join(STATE_DIR, "capacity", "probe")
-    os.makedirs(probe_dir, mode=0o700, exist_ok=True)
+    # `claude mcp list` reads the working folder's .mcp.json and starts its servers to check them: never in OF's state
+    # folder, which a session's sandbox can write on Linux (of_events.model_cwd; of_platform, message 01a20515-b293)
+    probe_dir = of_events.model_cwd()
     try:
         if run:
             text = run(d)
