@@ -254,6 +254,18 @@ class SubagentTest(unittest.TestCase):
         self.assertEqual(out.getvalue().strip(), "k:3:r1")                   # never the match
         self.assertEqual(g.check(d, exe="/bin/true", run=runner(version="8.31.0"), out=io.StringIO()), 1)
         self.assertEqual(g.check(d, exe="/bin/true", run=runner(rc=2), out=io.StringIO()), 1)
+
+        def hangs(argv, **kw):   # message 01a20384-b7a8: a scan that never ends fails closed, by its timeout
+            if argv[1] == "version":
+                return subprocess.CompletedProcess(argv, 0, stdout="8.30.1\n")
+            self.assertEqual(kw.get("timeout"), g.SCAN_TIMEOUT_S)
+            raise subprocess.TimeoutExpired(argv, kw["timeout"])
+        out = io.StringIO()
+        self.assertEqual(g.check(d, exe="/bin/true", run=hangs, out=out), 1)
+        self.assertIn("did not finish", out.getvalue())
+        def slow(argv, **kw):
+            raise subprocess.TimeoutExpired(argv, kw["timeout"])
+        self.assertIn("did not finish", of_subagent.run_check("of:gitleaks", d, None, popen=slow))
         self.assertEqual(g.check(d, exe=None, run=runner(), out=io.StringIO()) if not __import__("shutil").which(
             "gitleaks") else 1, 1)
 
