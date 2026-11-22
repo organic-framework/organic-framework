@@ -47,10 +47,14 @@ in the guard or the sandbox away from a session; only another OS user is a wall 
 - **Who runs it.** A root-owned program, `/usr/local/libexec/of-gh-post`, run by root's units as its own OS user,
   `of-gh`. That user's home, mode 700, holds the token.
 - **The door.** A session writes a request, then touches a signal file, and a path unit starts the service. The request
-  names the repository, the pull request, the kind and a body file. It lies in a folder of its own outside OF's state
-  folder, which is mode 700 and so closed to `of-gh`: owned by the agents' user, group `of-gh`, setgid, so that what a
-  session writes there the service can read and nothing else can. The service reads it as data: no link, regular files
-  only, a size bound. It writes the result where the session reads it, in a folder only the service writes.
+  names the repository, the pull request, the kind and a body file. It cannot lie in OF's state folder, which is mode
+  700 and so closed to `of-gh`. It lies in `/srv/of-gh-post/requests`, outside any home: owner the agents' user, group
+  `of-gh`, mode 2750, so the setgid bit passes the group on. A session writes each request file with mode 640 itself
+  (an explicit `fchmod`, since its umask gives 600). A sandboxed session's Bash may write only its working folders and
+  OF's state folder, so this folder is a second writable folder in every sandbox that posts: a change of spawn's
+  sandbox block, and a widening to name on the owner's card. The service reads a request as data: no link, regular
+  files only, a size bound. It writes the result in `/var/lib/of-gh-post/results`, which only it writes and the
+  agents' user reads.
 - **What it allows.** Two actions only: a comment on a pull request, and a review whose event is a comment (never an
   approval, which branch protection could count). Both only on OF's repositories, named in the program and never in
   the registry, since the registry follows agents' pushes (card `OF-266`). It refuses everything else.
@@ -60,11 +64,14 @@ in the guard or the sandbox away from a session; only another OS user is a wall 
 - **Attribution.** The body is posted as written, followed by the session id the request names. That id is the
   writer's own claim: every position is `of`, so neither the id nor a verdict's `Position:` line is checked by
   anything (card `379274c4`, third flaw).
-- **The cost, stated.** Any session on the host can then post a comment or a review verdict on OF's pull requests,
-  under any position's name, and a verdict is what the release process reads before a merge. That is no wider than
-  today's `gh` on the laptop, where every session posts as the owner, but on the host today no session can post at
-  all, so the unit opens that path there. What still stands between a forged verdict and a merge is `of_release`, who
-  merges, and the owner's review of what he approves.
+- **The cost, stated.** As specified so far, any session on the host could post a comment or a review verdict on OF's
+  pull requests under any position's name. Nothing in today's merge path tells a forged verdict from a real one: the
+  merge takes the newest `Verdict:` line with each `Position:` line, and the owner reviews no pull request before it.
+  So the unit carries no verdict on its own. It carries verdicts only with the owner's card's first option: the
+  reviewers post from an OS user of their own; the unit makes a pull request review only from that user's request
+  folder, and refuses a body with a `Verdict:` line from any other; and the merge counts only reviews, never a
+  comment. Without that option, the unit carries comments, and verdicts stay where they are posted today. The two
+  reviewers share that user, so each could post as the other.
 - **Reads.** Reads take no token. A diff comes by fetching the pull request's refs over HTTPS, which the API limit
   does not count, and the rest comes through `gh`'s unauthenticated reads. If the shared limit bites, sessions get a
   second token that can only read public data: leaked, it gives away nothing but a rate limit.
@@ -107,7 +114,6 @@ in the guard or the sandbox away from a session; only another OS user is a wall 
 ## 7. Open
 
 - **Caller identity (above).** Telling positions apart needs either one OS user per position or an identity no session
-  can forge. Neither is designed here, and until one is, a verdict posted through the unit carries no more weight than
-  one typed today.
+  can forge. Neither is designed here beyond the reviewers' own user (§4).
 - **The gate's copy** changes only in the owner's sitting, so the posting unit runs the gate as it stood at the last
   sitting.
