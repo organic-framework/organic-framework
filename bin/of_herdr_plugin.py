@@ -22,6 +22,7 @@ OF_AUTOMATION=1 (AGENTS.md: automation never touches the owner's SSH agent).
 
 import fcntl
 import json
+import stat
 import re
 import os
 import subprocess
@@ -48,7 +49,11 @@ def _open_own(path, flags):
     """Open a file of ours, never through a link. OF's state folder is writable by the agents' sandboxed sessions,
     while these files are opened by herdr's hooks and by configure, outside any sandbox: a link planted there would
     make us write where it points (of_agent-server's finding, 2026-11-22, msg 01a20452-0396)."""
-    return os.open(path, flags | NOFOLLOW, 0o600)
+    fd = os.open(path, flags | NOFOLLOW | getattr(os, "O_NONBLOCK", 0), 0o600)  # a FIFO there would hang the open
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise OSError(f"{path} is not a regular file")
+    return fd
 
 
 def own_dir(path=None):
@@ -241,9 +246,10 @@ def configure(of_home=None, python=None, path=None, run=None, backups=None, now=
     config.toml. Until 2026-11-17 it also added a red per-workspace question counter to the Spaces sidebar; the founder
     had it removed ("Please remove the questions in the panel at the top left", ~17:15Z via of_conductor, msg
     01a1ea7d-76e1), and bin/of_herdr_asks.py no longer sets its token, so it is not added. Idempotent; it never
-    replaces a binding of prefix+a the person already has, and says so. It backs the file up first, runs `herdr config
-    check`, puts the backup back if the check fails, and reloads a running server. Returns (True, [notes]) or
-    (False, reason)."""
+    replaces a binding of prefix+a the person already has, and says so. The popup's log and the backups live in
+    `of-state` beside config.toml, a folder no agent session writes; a binding OF wrote earlier with its log in OF's
+    state folder is moved there. It backs the file up first, runs `herdr config check`, writes the text it read back
+    byte for byte if the check fails, and reloads a running server. Returns (True, [notes]) or (False, reason)."""
     import tomllib
     run = run or subprocess.run
     of_home = os.path.abspath(of_home or os.path.join(HERE, ".."))
@@ -255,12 +261,12 @@ def configure(of_home=None, python=None, path=None, run=None, backups=None, now=
     bad = [x for x in (python, of_home, log_file) if re.search(r"['\"\\\x00-\x1f\x7f]", x)]
     if bad:
         return False, f"a path holds a quote, an apostrophe, a backslash or a control character: {bad[0]!r}"
-    text = open(path).read() if os.path.exists(path) else ""
+    text = open(path, newline="").read() if os.path.exists(path) else ""
     try:
         cfg = tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
         return False, f"{path} is not valid TOML ({e}); left alone"
-    notes, add = [], []
+    notes, add, new = [], [], None
     keys = [k for k in ((cfg.get("keys") or {}).get("command") or []) if k.get("key") == QUESTIONS_KEY]
     if not keys:
         command = (f"sh -c 'env OF_AUTOMATION=1 {python} {of_home}/bin/of asks --watch 2>>{log_file}; rc=$?; "
@@ -271,11 +277,18 @@ def configure(of_home=None, python=None, path=None, run=None, backups=None, now=
                    "width = \"90%\"\nheight = \"85%\"\n")
         notes.append(f"{QUESTIONS_KEY} opens the questions screen")
     elif "asks --watch" in str(keys[0].get("command")):
-        notes.append(f"{QUESTIONS_KEY} already opens the questions screen")
+        old = re.search(r"bin/of asks --watch 2>>([^;'\"\\\s]+);", str(keys[0].get("command")))
+        if old and old.group(1) != log_file:  # OF's own binding, its log still where sessions write (PR 540 review)
+            new = text.replace(old.group(1), log_file)
+            notes.append(f"{QUESTIONS_KEY}: the questions screen's log moved from {old.group(1)} to {log_file}")
+        else:
+            notes.append(f"{QUESTIONS_KEY} already opens the questions screen")
     else:
         notes.append(f"{QUESTIONS_KEY} is bound to something else; left alone (bind the questions screen by hand)")
-    if not add:
+    if not add and new is None:
         return True, notes
+    if new is None:
+        new = text + ("" if not text or text.endswith("\n") else "\n") + "".join(add)
     backup = None
     if text:
         bdir = backups or own_dir(path)
@@ -291,11 +304,11 @@ def configure(of_home=None, python=None, path=None, run=None, backups=None, now=
                     raise
         else:
             return False, f"no free backup name in {bdir}; left alone"
-        with open(fd, "w") as fh:
+        with open(fd, "w", newline="") as fh:
             fh.write(text)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as fh:
-        fh.write(text + ("" if not text or text.endswith("\n") else "\n") + "".join(add))
+    with open(path, "w", newline="") as fh:
+        fh.write(new)
     herdr = os.environ.get("OF_HERDR", "herdr")
     try:
         chk = run([herdr, "config", "check"], capture_output=True, text=True, timeout=30)
@@ -304,7 +317,7 @@ def configure(of_home=None, python=None, path=None, run=None, backups=None, now=
         notes.append(f"herdr config check did not run ({type(e).__name__})")
     if chk is not None and (chk.returncode != 0 or "ok" not in (chk.stdout or "").lower()):
         if text:
-            with open(path, "w") as fh:  # what was read, held in memory: a file can be swapped under us
+            with open(path, "w", newline="") as fh:  # what was read, held in memory: a file can be swapped under us
                 fh.write(text)
         else:
             os.unlink(path)

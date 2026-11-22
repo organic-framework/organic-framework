@@ -154,8 +154,13 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
   is gone: the founder had it and the tabs' `❓N` removed, and herdr now shows a question only on its asker).
   `of_herdr_plugin.configure()` (or `python3 bin/of_herdr_plugin.py configure`), which `of init` calls beside
   `install()`, adds the key when it is missing. It is idempotent and leaves a person's own prefix+a binding alone,
-  saying so. It backs the file up first, runs `herdr config check` and puts the backup back if
-  the check fails, then reloads a running server. Its CLI cannot open a
+  saying so. It backs the file up first, runs `herdr config check`, writes the text it read back byte for byte if
+  the check fails, then reloads a running server. The popup's log (`asks-popup.err`) and the backups live in
+  `of-state` beside `config.toml`, never in OF's state folder: agents' sandboxed sessions write there, and
+  `configure` and the plugin's hooks run outside the sandbox, so a link planted there would make them write where it
+  points (`of_agent-server`, 2026-11-22). A machine configured earlier gets the move by running `configure` again
+  (`python3 bin/of_herdr_plugin.py configure`, or `of init`): it rewrites only the log path in OF's own binding. Its
+  CLI cannot open a
   plugin pane as a popup (`--placement` lacks `popup`), although the socket API and the manifest can.
 - **Keys and popups with a saved machine** (`herdr machine add`; read in herdr 0.9.5's source, not run: hand-over
   830275c0). One herdr window shows one server's tab at a time: the laptop's own or one saved machine's. The sidebar

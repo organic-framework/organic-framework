@@ -219,6 +219,39 @@ class HookTest(unittest.TestCase):
             self.assertEqual(open(victim).read(), "untouched\n")
             self.assertEqual(open(path).read(), "onboarding = false\n")  # nothing written before the backup
 
+    def test_configure_moves_the_log_of_its_own_earlier_binding(self):
+        """of_review on PR 540: a binding OF wrote before keeps its log in OF's state folder unless configure moves it."""
+        import tomllib
+        with tempfile.TemporaryDirectory() as d:
+            path, old = os.path.join(d, "config.toml"), "/Users/alex/.local/state/of/asks-popup.err"
+            cmd = (f"sh -c 'env OF_AUTOMATION=1 /py/python3 /of/bin/of asks --watch 2>>{old}; rc=$?; if [ $rc -ne 0 ]; "
+                   f"then echo; echo \\\"of asks exited with $rc; see {old}. Press Enter.\\\"; read x; fi'")
+            with open(path, "w") as fh:
+                fh.write(f'[[keys.command]]\nkey = "prefix+a"\ntype = "popup"\ncommand = "{cmd}"\n')
+            ok, notes = plugin.configure("/of", python="/py/python3", path=path, run=self._check(), now=0)
+            self.assertTrue(ok, notes)
+            command = tomllib.load(open(path, "rb"))["keys"]["command"][0]["command"]
+            self.assertNotIn(old, command)
+            self.assertEqual(command.count(os.path.join(d, "of-state", "asks-popup.err")), 2)
+            self.assertTrue(any("moved from" in n for n in notes))
+            before = open(path).read()
+            self.assertTrue(plugin.configure("/of", python="/py/python3", path=path, run=self._check())[0])
+            self.assertEqual(open(path).read(), before)  # once
+
+    def test_a_refused_change_puts_back_the_exact_bytes(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "config.toml")
+            with open(path, "wb") as fh:
+                fh.write(b"onboarding = false\r\n")
+            self.assertFalse(plugin.configure("/of", path=path, run=self._check(ok=False), now=0)[0])
+            self.assertEqual(open(path, "rb").read(), b"onboarding = false\r\n")
+
+    def test_a_fifo_is_refused_at_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.mkfifo(os.path.join(d, "herdr-plugin.pending"))
+            with self.assertRaises(OSError):
+                plugin.coalesced(lambda: None, state=d)
+
     def test_hook_files_are_never_opened_through_a_link(self):
         with tempfile.TemporaryDirectory() as d:
             victim = os.path.join(d, "victim")
