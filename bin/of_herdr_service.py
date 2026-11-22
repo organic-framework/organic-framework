@@ -19,6 +19,15 @@ What the unit does, and why:
   `shell_mode_uses_login_shell`), so they read the shell's rc file and never its profile. The PATH does not depend
   on the shell the install runs from, so a setup script that writes this text and a later install write the same
   file (one writer of one unit text: of_architect, msg 01a1fab3-ecf5).
+- Slice=session.slice and OOMPolicy=continue (of_agent-server's hand-over e8a57731). The unit is one cgroup that
+  holds every pane and agent. systemd-oomd kills a whole cgroup (systemd-oomd.service(8)), and a desktop distribution
+  may mark app.slice, the default slice of a user's services, for it (ManagedOOMMemoryPressure=kill,
+  ManagedOOMSwap=kill), as the agent host's does. On a host that marks only app.slice, session.slice takes the unit
+  out of oomd's candidates. It does not where session.slice or one of its ancestors is marked, as Fedora's and
+  Debian's oomd defaults do (of_review, PR 534); `oomctl` lists what a host monitors. The kernel's OOM killer takes
+  one process, and under the default OOMPolicy=stop systemd would then stop the unit and every other pane with it
+  (systemd.service(5)). continue keeps the unit, unless that process is herdr's server, the unit's main process. The
+  slice applies at the unit's next start, so a server under the unit in another slice is not done yet.
 - Restart=on-failure, but not on exit status 1. That is how herdr exits when another server holds its socket, and a
   restart could only fail again.
 - A live handoff (`herdr update --handoff`) does not survive under the unit. It starts the new server as a child and
@@ -42,6 +51,7 @@ import of_events
 import of_systemd
 
 UNIT = "of-herdr.service"
+SLICE = "session.slice"
 UNITS_DIR = "~/.config/systemd/user"
 RESTART = f"systemctl --user restart {UNIT}"
 
@@ -60,6 +70,11 @@ def unit_text(herdr, path=None, log=None):
     log = (log or os.path.join(of_events.STATE_DIR, "herdr-server.log")).replace("%", "%%")
     return ("[Unit]\nDescription=Organic Framework: this user's herdr server\n\n[Service]\n"
             "WorkingDirectory=%h\n"
+            # one cgroup holds every agent: out of the slice a desktop marks for systemd-oomd, which kills whole cgroups
+            f"Slice={SLICE}\n"
+            # the kernel's OOM killer takes one process; the default (stop) would then end every other agent. continue
+            # cannot help when that process is herdr's server, the unit's main process
+            "OOMPolicy=continue\n"
             f"ExecStart={w(herdr)} server\n"
             f"ExecStop={w(herdr)} server stop\n"
             "Restart=on-failure\nRestartSec=10\n"
@@ -131,6 +146,21 @@ def under_unit(cgroup):
     return cgroup.rstrip("/").endswith("/" + UNIT)
 
 
+def slice_of(cgroup):
+    """The slice a unit's cgroup sits in: `.../user@1001.service/app.slice/of-herdr.service` gives app.slice."""
+    parts = cgroup.rstrip("/").split("/")
+    return parts[-2] if len(parts) > 1 else ""
+
+
+def _stale_slice(cgroup):
+    """"" when a server under the unit sits in the unit's slice, else what to say. The slice applies only at the unit's
+    next start, so a server still in another slice runs the old text (of_review, PR 534)."""
+    if slice_of(cgroup) == SLICE:
+        return ""
+    return (f", but in {slice_of(cgroup)}, not {SLICE}. The unit's text applies at its next restart: `{RESTART}` ends "
+            "every pane")
+
+
 def linger(run, user=None):
     """"yes", "no", or None when loginctl cannot tell."""
     try:
@@ -199,8 +229,8 @@ def install(run=subprocess.run, units_dir=None, herdr=None, proc="/proc", wait_s
         pid, cg = server
         if cg is not None and under_unit(cg):
             lines.append(f"herdr's server runs under the unit (pid {pid})"
-                         + (f". The new unit applies at its next restart: `{RESTART}` ends every pane" if changed
-                            else ""))
+                         + (_stale_slice(cg) or (f". The new unit applies at its next restart: `{RESTART}` ends every "
+                                                 "pane" if changed else "")))
         else:
             where = f"(pid {pid}) runs outside the unit, in {cg}," if pid else "runs, but its process could not be read,"
             lines.append(f"herdr's server {where} and ends with that session. The unit takes it over at the next "
@@ -255,9 +285,12 @@ def status(run=subprocess.run, units_dir=None, herdr=None, proc="/proc"):
         lines.append("no herdr server answers for this user")
         return lines, False
     pid, cg = server
-    inside = cg is not None and under_unit(cg)
-    lines.append(f"herdr's server pid {pid}: " + ("under the unit" if inside else f"outside the unit, in {cg}"))
-    return lines, target.exists() and inside
+    if cg is None or not under_unit(cg):
+        lines.append(f"herdr's server pid {pid}: outside the unit, in {cg}")
+        return lines, False
+    stale = _stale_slice(cg)
+    lines.append(f"herdr's server pid {pid}: under the unit{stale}")
+    return lines, target.exists() and not stale
 
 
 def main(action):

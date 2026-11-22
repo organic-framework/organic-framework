@@ -53,8 +53,9 @@ def fake_proc(root, cgroup, sock=SOCK, pid=4321, inode=777):
     return pid
 
 
-UNDER = "/user.slice/user-1001.slice/user@1001.service/app.slice/of-herdr.service"
+UNDER = "/user.slice/user-1001.slice/user@1001.service/session.slice/of-herdr.service"
 OUTSIDE = "/user.slice/user-1001.slice/session-161.scope"
+OLD_SLICE = "/user.slice/user-1001.slice/user@1001.service/app.slice/of-herdr.service"
 
 
 class HerdrServiceTest(unittest.TestCase):
@@ -87,6 +88,14 @@ class HerdrServiceTest(unittest.TestCase):
         self.assertIn("Environment=SSH_AUTH_SOCK=\n", unit)
         self.assertIn("Environment=PATH=/home/alex/.local/bin:/usr/bin\n", unit)
         self.assertIn("WorkingDirectory=%h\n", unit)
+        self.assertTrue(unit.endswith("[Install]\nWantedBy=default.target\n"))
+
+    def test_one_out_of_memory_event_does_not_end_every_agent(self):
+        """of_agent-server's hand-over e8a57731: the unit is one cgroup holding every agent."""
+        unit = hs.unit_text("/usr/bin/herdr", path="/usr/bin", log="/tmp/herdr-server.log")
+        service = unit.split("[Service]\n")[1].split("\n[Install]")[0]
+        self.assertIn("Slice=session.slice\n", service)  # systemd-oomd kills whole cgroups in app.slice
+        self.assertIn("OOMPolicy=continue\n", service)  # the kernel kills one process; stop would end the rest
         self.assertTrue(unit.endswith("[Install]\nWantedBy=default.target\n"))
 
     def test_the_path_does_not_depend_on_the_callers_path(self):
@@ -173,6 +182,23 @@ class HerdrServiceTest(unittest.TestCase):
         lines, ok = hs.status(run=Host(running=True), units_dir=self.units, herdr="/usr/bin/herdr", proc=self.proc)
         self.assertFalse(ok)
         self.assertIn("outside the unit", lines[-1])
+
+    def test_a_server_still_in_the_old_slice_is_not_done(self):
+        """A setup script wrote today's text, but the server started under the old one, in app.slice (of_review,
+        PR 534): the slice applies only at the unit's next start."""
+        fake_proc(self.proc, OLD_SLICE)
+        os.makedirs(self.units)
+        with open(os.path.join(self.units, hs.UNIT), "w") as fh:
+            fh.write(hs.unit_text("/usr/bin/herdr"))
+        host = Host(running=True)
+        lines, ok = self.install(host)
+        self.assertEqual(host.ctl(), ["enable"])  # the text is today's; nothing to write
+        said = " ".join(lines)
+        self.assertIn("(pid 4321), but in app.slice, not session.slice", said)
+        self.assertIn(f"`{hs.RESTART}` ends every pane", said)
+        lines, ok = hs.status(run=Host(running=True), units_dir=self.units, herdr="/usr/bin/herdr", proc=self.proc)
+        self.assertFalse(ok)
+        self.assertIn("under the unit, but in app.slice", lines[-1])
 
     def test_with_no_login_systemctl_finds_the_lingering_user_manager(self):
         """A cron or `runuser` has no XDG_RUNTIME_DIR (of_lab's Lab VM run, hand-over 6759dc6d)."""
