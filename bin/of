@@ -5299,10 +5299,25 @@ def _drain_spool_now(conn, wait_s=2.0):
 
 
 def _diff_registry(org):
+    """The registry file a structural diff reads and writes: the organization's (orgs.yaml path), or, where the owner
+    names a work clone of that repository (of_spawn.work_clones; card OF-265), the clone's. On the agent host the
+    path's copy follows its origin and is read-only to sessions, and an edit in place stops the follower: the change
+    goes into the clone, and the structure keeper commits and pushes it from there (of_architect, hand-over 2581ca5a).
+    Where no clone is named (the laptop) nothing changes."""
     regs = {o: (p, w) for o, p, w in org_registries()}
     if org not in regs:
         raise OfError(f"organization {org!r} is not in orgs.yaml")
-    return regs[org][0]
+    path = regs[org][0]
+    try:
+        import of_spawn
+        svc = os.path.realpath(os.path.dirname(os.path.dirname(path)))
+        for clone, copy in of_spawn.work_clones(ORGS_FILE):
+            alt = os.path.join(clone, "registry", "positions.yaml")
+            if copy == svc and os.path.isfile(alt):
+                return alt
+    except Exception:  # noqa: BLE001 - no clone to read: the organization's own path
+        pass
+    return path
 
 
 def _diff_check(d):
@@ -5687,6 +5702,10 @@ def cmd_diff(args):
         except Exception as e2:
             print(f"model: not recorded ({e2})", file=sys.stderr)
         print(f"applied {d['id']}: " + ", ".join(os.path.relpath(w, repo) for w in written) + f" in {repo}")
+        if os.path.realpath(repo) != os.path.realpath(os.path.dirname(os.path.dirname(
+                {o: p for o, p, _ in org_registries()}.get(d["org"]) or path))):
+            print(f"{repo} is the organization's work clone: commit the change there and push it; the copy the "
+                  "services read follows its origin (hand-over 2581ca5a)")
         print((f"review due {due}. " if due else "") +
               "The structure keeper commits it there (git add those files; Position trailer).")
         if d.get("continuation"):

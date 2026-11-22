@@ -293,6 +293,48 @@ class EndToEndTest(unittest.TestCase):
             self.assertIn("applied", run("diff", "list").stdout)
 
 
+class WorkCloneApplyTest(unittest.TestCase):
+    def test_apply_writes_into_the_work_clone_and_leaves_the_copy(self):
+        """of_architect, hand-over 2581ca5a: on the agent host the registry copy follows its origin and is read-only
+        to sessions; a diff goes into the work clone the owner named (card OF-265). Without one nothing changes."""
+        import subprocess
+        import tempfile
+        of = os.path.join(HERE, "..", "bin", "of")
+        with tempfile.TemporaryDirectory() as t:
+            t = os.path.realpath(t)
+            for repo in ("copy", "clone"):
+                os.makedirs(os.path.join(t, repo, "registry"))
+                with open(os.path.join(t, repo, "registry", "positions.yaml"), "w") as fh:
+                    fh.write(REG)
+            os.makedirs(os.path.join(t, "clone", ".git"))
+            os.makedirs(os.path.join(t, "state"))
+            orgs = os.path.join(t, "orgs.yaml")
+            diff_file = os.path.join(t, "sd.yaml")
+            with open(diff_file, "w") as fh:
+                fh.write("diff:\n  id: sd-2026-11-22-clone\n  kind: mandate_rewrite\n  tier: low\n"
+                         "  author: of_a\n  org: ofb\n  hypothesis: h\n  approvals: [owner]\n"
+                         "  predicted: [{metric: m, to: 0}]\n  review: {after: 7 days}\n  reversal: back\n"
+                         "  changes:\n    registry:\n      - op: set\n        name: of_b\n        fields:\n"
+                         "          mandate_exit: {done_when: done, review: 2026-12-01}\n")
+            env = dict(os.environ, OF_STATE=os.path.join(t, "state"), OF_ORGS=orgs, OF_CONFIG_DIR=t,
+                       PATH="/usr/bin:/bin")
+            env.pop("CLAUDE_CODE_SESSION_ID", None)
+            run = lambda *a: subprocess.run([sys.executable, of, *a], env=env, capture_output=True, text=True,  # noqa: E731
+                                            timeout=60)
+            with open(orgs, "w") as fh:
+                fh.write(f"orgs:\n  - name: ofb\n    path: {t}/copy\n    workspace: ofb\n"
+                         f"    work_clone: {t}/clone\n")
+            r = run("diff", "propose", diff_file, "--from", "of_a")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            r = run("diff", "apply", "sd-2026-11-22-clone")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("work clone", r.stdout)
+            clone = yaml.safe_load(open(os.path.join(t, "clone", "registry", "positions.yaml")))
+            self.assertEqual(clone["positions"][1]["mandate_exit"], {"done_when": "done", "review": "2026-12-01"})
+            with open(os.path.join(t, "copy", "registry", "positions.yaml")) as fh:
+                self.assertEqual(fh.read(), REG)                                   # the copy is never written
+
+
 class ReproposeTest(unittest.TestCase):
     def test_a_yes_holds_across_a_reproposal_of_the_same_digest(self):
         """A user organization's keeper, msg 01a1d68f-7bcc, 2026-11-14: the founder approved a diff, it was proposed
