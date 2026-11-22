@@ -924,6 +924,14 @@ def shown(key, session):
     return set(_shown_load().get(f"{key}|{session}") or {})
 
 
+LISTING_SLACK_S = 60
+
+
+def last_listing(key, session):
+    """When a listing last showed this session of this position a message (epoch seconds), or 0."""
+    return max((_shown_load().get(f"{key}|{session}") or {}).values(), default=0)
+
+
 def keep_taken(key, session, m, now=None):
     """The taken message's fields as the server gave them (text already masked there), so `of inbox --mine
     --taken` can show it again: a take never loses a text, whatever happened to its output."""
@@ -974,14 +982,21 @@ def pull(client, key, session, take=None, pane_busy=False, newest=False):
         # (of_review on organic-framework PR 527: a take of what --newest listed exited 2)
         more = (client.queued_messages(key, session, newest=not newest) or {}).get("messages") or []
         have = {m.get("msg_id") for m in msgs}
-        msgs = msgs + [m for m in more if m.get("msg_id") not in have]
+        # --take all adds from the other order only what the listing showed, never the rest of a backlog
+        keep = shown(key, session) if take == "all" else None
+        msgs = msgs + [m for m in more if m.get("msg_id") not in have and (keep is None or m.get("msg_id") in keep)]
     if take is None:
         mark_shown(key, session, [m["msg_id"] for m in msgs])
     listed = shown(key, session) if take == "all" else set()
+    listed_at = last_listing(key, session) if take == "all" else 0
     out, here = [], 0
     for m in msgs:
         if take == "all" and m["msg_id"] not in listed and not seen(m["msg_id"]):
-            out.append((dict(m, _new=NEW_SINCE_LISTING), False))
+            # printed as new only when it reached the server after that listing (a minute's slack for the two clocks):
+            # an older one the listing did not reach, a backlog past its limit, is neither taken nor printed, and stays
+            # queued for the relay (of_review on organic-framework PR 527: up to a hundred old ones printed as new)
+            if (_iso_ts(m.get("created_at")) or 0) >= listed_at - LISTING_SLACK_S:
+                out.append((dict(m, _new=NEW_SINCE_LISTING), False))
             continue
         want = take == "all" or (take and m["msg_id"].startswith(take))
         if seen(m["msg_id"]):  # taken here already (a busy pane under a lease): the server learns it from the

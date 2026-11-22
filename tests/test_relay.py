@@ -306,6 +306,27 @@ class RelayTest(unittest.TestCase):
         got = of_relay.pull(Server(), "ofb:of_a", "S", take="N9")
         self.assertEqual(([m["msg_id"] for m, t in got if t], taken), (["N9"], ["N9"]))
 
+    def test_take_all_after_newest_takes_the_listed_and_prints_no_backlog_as_new(self):
+        """of_review on organic-framework PR 527: with a backlog past the limit, --take all printed up to a hundred
+        old queued messages from the other order as new."""
+        old_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3600))
+
+        class Server:
+            def queued_messages(self, to, session, newest=False):
+                old = [{"msg_id": f"O{i}", "to": to, "from": "zeta:x", "text": "o", "created_at": old_at}
+                       for i in range(3)]
+                new = [{"msg_id": "N9", "to": to, "from": "zeta:x", "text": "n", "created_at": old_at}]
+                return {"messages": new if newest else old, "total": 4, "urgent": 0}
+
+            def take_message(self, msg_id, to, session):
+                taken.append(msg_id)
+                return {}
+        taken = []
+        of_relay.pull(Server(), "ofb:of_a", "S", newest=True)               # the listing showed N9 alone
+        got = of_relay.pull(Server(), "ofb:of_a", "S", take="all")
+        self.assertEqual(taken, ["N9"])
+        self.assertEqual([m["msg_id"] for m, _ in got if m.get("_new")], [])  # old and unlisted: not printed as new
+
     def test_a_take_under_a_live_lease_leaves_it_to_the_pane(self):
         class Leased(Exception):
             status = 409
@@ -356,8 +377,8 @@ class RelayTest(unittest.TestCase):
                 taken.append(msg_id)
                 return {"msg_id": msg_id, "state": "delivered"}
         of_relay.pull(Server(), "ofb:of_a", "S")                                   # the agent reads a1
-        queue.append({"msg_id": "b2", "to": "ofb:of_a", "from": "zeta:y", "text": "delete node-3",
-                      "created_at": "2026-11-08T10:01Z"})                           # arrives meanwhile
+        queue.append({"msg_id": "b2", "to": "ofb:of_a", "from": "zeta:y", "text": "delete node-3",   # arrives meanwhile
+                      "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 5))})
         got = of_relay.pull(Server(), "ofb:of_a", "S", take="all")                 # output thrown away
         self.assertEqual(taken, ["a1"])
         self.assertEqual([(m["msg_id"], t, m.get("_new")) for m, t in got],
