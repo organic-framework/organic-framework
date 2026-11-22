@@ -650,12 +650,14 @@ def file_pane_ask(c, verdict):
 
 
 def note_text(question, ask_id, to):
-    where = "the founder's list" if to in ("founder", "owner", None) else f"the list of {to}, your unit owner"
+    owner = to in ("founder", "owner", None)
+    where = "the founder's list" if owner else f"the list of {to}, your unit owner"
     a = ask_id[-8:]
+    cite = " --prompt <his prompt's event id>" if owner else ""   # his answer cited (of asks answered, 2026-11-22)
     return (f"OF: your last message asks for a decision: «{question}». OF put it on {where} as ask {a}, so you need "
             f"not file it. If it does not need an answer, withdraw it: of asks withdraw {a} \"<why>\". If you were "
-            f"answered here, run: of status working --answered {a}. If it needs more context than that line, file it "
-            "with of ask (AGENTS.md, \"Asking the founder\"); your ask replaces this one.")
+            f"answered here, run: of status working --answered {a}{cite}. If it needs more context than that line, "
+            "file it with of ask (AGENTS.md, \"Asking the founder\"); your ask replaces this one.")
 
 
 def note(conn, c, ask_id, to, question, deliver=None, log=print):

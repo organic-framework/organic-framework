@@ -883,6 +883,87 @@ class AsksActorTest(unittest.TestCase):
         self.assertEqual(self.actor({"OF_POSITION": "x"}, True), "agent")          # a position never is the owner
 
 
+class AsksCitedAnswerTest(AsksActorTest):
+    """A user organization's structure keeper, message 01a20320-debb, and of_review on PR 514: an agent closes the
+    owner's question only citing a prompt he typed after it, and reads a card with `show`."""
+
+    def test_an_agent_closes_the_owners_question_only_citing_his_answer(self):
+        import contextlib
+        import io
+        import json
+        import of_events
+        import of_store
+        from unittest import mock
+        conn = of_store.connect()
+
+        def add(kind, payload, at, position="ops_a", source="of", eid=None):
+            rec = of_events.record(kind, payload, position=position, session="S-" + (position or "owner"), source=source)
+            rec["timestamp"] = at
+            if eid:
+                rec["of.event.id"] = eid
+            of_store.add_event(conn, rec)
+            conn.commit()
+            return rec["of.event.id"]
+        q = add("agent_question", {"detected_by": "declared", "to": "founder", "options": ["yes", "no"],
+                                   "questions": [{"question": "rotate the key?", "options": [{"label": "yes"},
+                                                                                            {"label": "no"}]}]},
+                "2026-11-22T11:00:00Z", eid="01a20301-a075-7000-8000-00000000aaaa")
+        said = add("human_prompt", {"origin": "human", "text": "yes, rotate"}, "2026-11-22T12:00:00Z",
+                   position="of_conductor", source="hook", eid="01a20330-1111-7000-8000-000000000001")
+        relayed = add("human_prompt", {"origin": "peer", "text": "yes"}, "2026-11-22T12:01:00Z", position="ops_a",
+                      source="hook", eid="01a20330-2222-7000-8000-000000000002")
+        early = add("human_prompt", {"origin": "human", "text": "hm"}, "2026-11-22T10:00:00Z", position="of_conductor",
+                    source="hook", eid="01a20330-3333-7000-8000-000000000003")
+
+        def run(*argv):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = self.of.main(list(argv))
+            return rc, out.getvalue() + err.getvalue()
+        with mock.patch.object(self.of, "_asks_actor", lambda *a, **k: "ops_a"), \
+                mock.patch.object(self.of, "_reconcile_ask_tokens", lambda *a: None), \
+                mock.patch.object(self.of, "_load_quiet", lambda: []), \
+                mock.patch.object(self.of, "live_agents", lambda: []):
+            rc, out = run("asks", "show", "aaaa")
+            self.assertEqual(rc, 0, out)
+            self.assertIn("question: rotate the key?", out)
+            self.assertIn("1. yes", out)                                        # its options, from the payload
+            rc, out = run("asks", "answered", "aaaa")
+            self.assertEqual(rc, 2)
+            self.assertIn("of asks show", out)
+            for bad in (relayed[:13], early[:13], "01a20330-9999"):              # relayed, too early, none
+                self.assertEqual(run("asks", "answered", "aaaa", "--prompt", bad)[0], 2, bad)
+            self.assertEqual(run("asks", "answered", "aaaa", "--prompt", said[:13])[0], 0)
+            p = json.loads(conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered'")
+                           .fetchone()[0])
+            self.assertEqual((p["prompt"], p["by"], p["ask_ids"]), (said, "ops_a", [q]))
+            rc, out = run("asks", "show", "aaaa")
+            self.assertIn("closed by ops_a, citing prompt 01a20330-1111", out)
+        # exempt: the position the owner handed the card to, and a founder copy's routed asker
+        q2 = add("agent_question", {"detected_by": "declared", "to": "founder", "questions": [{"question": "b?"}]},
+                 "2026-11-22T11:10:00Z", eid="01a20301-b065-7000-8000-00000000bbbb")
+        add("ask_handed", {"ask_id": q2, "ask_ids": [q2], "to": "acme:ops_b", "by": "owner"}, "2026-11-22T11:20:00Z",
+            position=None)
+        with mock.patch.object(self.of, "_asks_actor", lambda *a, **k: "ops_b"), \
+                mock.patch.object(self.of, "_reconcile_ask_tokens", lambda *a: None), \
+                mock.patch.object(self.of, "_load_quiet", lambda: []):
+            self.assertEqual(run("asks", "answered", "bbbb", "settled it")[0], 0)
+
+
+class NeedsOwnerAnswerTest(AsksActorTest):
+    def test_a_founder_copy_is_exempt_only_for_whom_may_settle_its_routed_ask(self):
+        """of_review on PR 514, point 4: a third position closed the founder's copy of an escalated card for good."""
+        import of_store
+        conn = of_store.connect()
+        src = {"event_id": "s1", "ts": "2026-11-22T10:00:00Z", "position": "ops_a", "to": "ops_lead",
+               "state": "escalated"}
+        copy = {"event_id": "c1", "ts": "2026-11-22T10:01:00Z", "position": "ops_lead", "to": "founder",
+                "escalated_from": "s1", "state": "open"}
+        asks = [src, copy]
+        for by, need in (("ops_lead", []), ("ops_a", []), ("owner", []), ("ops_x", [copy])):
+            self.assertEqual(self.of._needs_owner_answer(conn, [copy], by, asks), need, by)
+
+
 class AsksDeliverNowTest(AsksActorTest):
     def test_deliver_now_reaches_its_handler_with_the_ids(self):
         got = []
