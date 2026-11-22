@@ -8,6 +8,7 @@ type and a hook on a module that may not be extended, and gives Bench what the l
 package's settings as installed, and calls the organization's hooks before a module, each returning a decision.
 """
 
+import hashlib
 import os
 import re
 
@@ -221,7 +222,10 @@ def on_install(project, name, folder, spec):
     values, digest = read_settings(project, name, method)
     entry = {}
     if digest or values:
-        entry["settings"] = {"values": values}
+        # the names of the duration settings: at work only those are read as seconds (of_bench on PR 575: a text
+        # setting set to "5m" read as 300)
+        entry["settings"] = {"values": values,
+                             "durations": sorted(k for k, d in method["settings"].items() if d["type"] == "duration")}
         if digest:   # as the lock reads back: no key without a value
             entry["settings"].update(file=f"{SETTINGS_DIR}/{name}.lua".replace(os.sep, "/"), digest=digest)
     hooks = read_hooks(project, name, method, spec["version"])
@@ -274,7 +278,8 @@ def settings(project, package, parsed=True):
                          f"checks it")
     values = dict(s.get("values") or {})
     if parsed:
-        for k, v in values.items():
+        for k in s.get("durations") or []:
+            v = values.get(k)
             if isinstance(v, str) and DURATION.fullmatch(v):
                 values[k] = seconds(v)
     return values
@@ -323,12 +328,17 @@ def _run_hooks(project, package, when, module, value, ctx):
     for h in hooks:
         p = os.path.join(project, h["file"])
         by = f"{h['file']}: {when} \"{module}\""
-        if not os.path.isfile(p) or bench.file_digest(p) != h["digest"]:
-            return {"decision": "stop", "by": by, "reason": f"{h['file']} changed since the install; run bench "
+        # read once: the text whose digest is checked is the text evaluated (of_bench on PR 575)
+        try:
+            text = bench._read_text(p)
+        except (OSError, BenchError):
+            text = None
+        if text is None or "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest() != h["digest"]:
+            return {"decision": "stop", "by": by, "reason": f"{h['file']} changed since the install; run of bench "
                                                             f"install, which checks it"}
         try:
-            r = bench.evaluate({"hook.lua": bench._read_text(p)}, "hook.lua", HOOK_WORDS, mode="call",
-                                  path=h["at"], args=(value, ctx), name=h["file"])
+            r = bench.evaluate({"hook.lua": text}, "hook.lua", HOOK_WORDS, mode="call",
+                               path=h["at"], args=(value, ctx), name=h["file"])
         except BenchError as err:
             return {"decision": "stop", "by": by, "reason": str(err)}
         d = decision(r.get("value"), h)
