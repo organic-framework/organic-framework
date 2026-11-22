@@ -44,6 +44,7 @@ PRESENCE_EVERY = 60
 # moved to another account, a pane or kind changed), else every PRESENCE_EVERY. After an account move the
 # server answered 403 not_holder to `of inbox --mine` for minutes (of_capacity, 2026-11-07).
 PRESENCE_CHECK = 10
+PRESENCE_WAIT = 15   # the longest a presence round waits on one server: a hung one never outlasts the others' TTL
 INBOX_DDL = """
 CREATE TABLE IF NOT EXISTS relay_seen (msg_id TEXT PRIMARY KEY, at TEXT, outcome TEXT);
 CREATE TABLE IF NOT EXISTS inbox (msg_id TEXT PRIMARY KEY, received_at TEXT, to_position TEXT, sender TEXT,
@@ -723,7 +724,7 @@ def read_unsent():
         return {}
 
 
-def record_queues(queued, now=None, unsent=None):
+def record_queues(queued, now=None, unsent=None, keep_orgs=()):
     """Write the servers' queue counts for this machine's holders (the PUT /v1/presence answer) to a
     file the hooks and `of status` read without a network call, and declare each change as
     of.inbound_queue {position, org, depth, oldest_created_at} (the inbound-load measure). `unsent`: the
@@ -740,6 +741,11 @@ def record_queues(queued, now=None, unsent=None):
     out = {k: {"n": int((v or {}).get("n") or 0), "oldest": (v or {}).get("oldest") or (v or {}).get("oldest_created_at"),
                "at": now}
            for k, v in (queued or {}).items()}
+    # a server that did not answer this round keeps its positions' last counts: unread is never read as empty
+    # (of_review on organic-framework PR 530: a failed server's queues were recorded as depth 0)
+    for k, (n, oldest) in ((k, v) for k, v in _LAST_QUEUES.items() if k != "_seeded"):
+        if k.partition(":")[0] in keep_orgs and k not in out:
+            out[k] = {"n": n, "oldest": oldest, "at": now}
     try:
         tmp = _queues_path() + f".{os.getpid()}"
         with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
@@ -1358,6 +1364,8 @@ def run(load, client_for, servers, default, log=print, stop=None, deliverer=herd
 
     ticks = {}
 
+    inflight = {}   # url -> the presence call still running for it
+
     def presence_loop():
         sent_key, sent_at = None, 0.0
         while not stop.is_set():
@@ -1375,22 +1383,46 @@ def run(load, client_for, servers, default, log=print, stop=None, deliverer=herd
                     except Exception:  # noqa: BLE001 - a broken orgs.yaml drains nothing; presence goes on
                         drains = {}
                     bodies = presence_bodies(state["local"], servers, default, drains)
-                    queued, unsent, failed = {}, {}, 0
+                    queued, unsent, failed = {}, {}, set()
+                    # every server at once, each waited on for PRESENCE_WAIT at most: one down or hung never keeps
+                    # the others' presence back, and their receivers would read as absent and get nothing
+                    # (of_conductor, msg 01a203da-ade5: a killed server of one organization held another's mail
+                    # for 15 minutes; of_review on organic-framework PR 530: a hung one outlasted the TTL)
+                    answers, errors, started = {}, {}, []
+
+                    def ask(url, body):
+                        try:
+                            answers[url] = client_for(url).put_presence(body)
+                        except Exception as e:  # noqa: BLE001 - said below, asked again at the next check
+                            errors[url] = e
                     for url in sorted(set(servers.values()) | {default} | set(bodies)):
-                        ticks["presence"] = time.time()  # per server: two hung servers outlast STALE_S together
-                        write_heartbeat(ticks)
-                        try:   # one server down never keeps the others' presence back: their receivers would read
-                            # as absent and get nothing (of_conductor, msg 01a203da-ade5: a killed server of one
-                            # organization held another's mail for 15 minutes)
-                            r = client_for(url).put_presence(bodies.get(url, []))
-                        except Exception as e:  # noqa: BLE001 - said, and tried again at the next check
-                            failed += 1
-                            log(f"presence {url}: {type(e).__name__}: {e}")
+                        prev = inflight.get(url)
+                        if prev is not None and prev.is_alive():   # still waiting on an earlier round: no pile-up
+                            errors[url] = TimeoutError("an earlier presence call is still waiting")
                             continue
+                        t = threading.Thread(target=ask, args=(url, bodies.get(url, [])), daemon=True)
+                        t.start()
+                        inflight[url] = t
+                        started.append((url, t))
+                    deadline = time.time() + PRESENCE_WAIT
+                    for url, t in started:
+                        ticks["presence"] = time.time()
+                        write_heartbeat(ticks)
+                        t.join(max(0.0, deadline - time.time()))
+                        if t.is_alive():
+                            errors.setdefault(url, TimeoutError(f"no answer within {PRESENCE_WAIT} s"))
+                    for url in sorted(set(started_url for started_url, _ in started) | set(errors)):
+                        if url in errors:
+                            failed.add(url)
+                            log(f"presence {url}: {type(errors[url]).__name__}: {errors[url]}")
+                            continue
+                        r = answers.get(url)
                         if isinstance(r, dict):
                             queued.update(r.get("queued") or {})
                             unsent.update(r.get("unsent") or {})
-                    record_queues(queued, unsent=unsent)
+                    keep = {k.partition(":")[0] for k in _LAST_QUEUES if k != "_seeded"
+                            and servers.get(k.partition(":")[0], default) in failed}
+                    record_queues(queued, unsent=unsent, keep_orgs=keep)
                     if not failed:   # a server that failed is asked again at the next check, not after PRESENCE_EVERY
                         sent_key, sent_at = key, time.time()
                 except Exception as e:
