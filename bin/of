@@ -3830,9 +3830,40 @@ def _ingest_with_reads(conn, path):
     return n
 
 
+SHIP_EVERY_S = 60   # the ingest worker ships at least this often while it drains (hand-over 8679ce1c)
+
+
+def _ship_if_due(quiet, force=False, now=None):
+    """Ship (of_ship.ship, under its own lock) when the last ship from this machine is SHIP_EVERY_S old or older, or
+    FORCE. The time of the last ship is a file's mtime, shared by every worker. A failure never stops the drain."""
+    import time
+    import of_events
+    mark = os.path.join(of_events.STATE_DIR, "ship.last")
+    now = time.time() if now is None else now
+    try:
+        if not force and now - os.path.getmtime(mark) < SHIP_EVERY_S:
+            return False
+    except OSError:
+        pass
+    try:
+        import of_ship
+        of_ship.ship(log=(lambda m: None) if quiet else print)
+    except Exception:  # noqa: BLE001 - the next due ship tries again
+        pass
+    try:
+        with open(mark, "a"):
+            os.utime(mark, (now, now))
+    except OSError:
+        pass
+    return True
+
+
 def _ingest_worker(conn, args):
-    """One per machine (flock). Drains the hook spool, then every queued transcript, until the
-    queue is empty; then ships. Hooks only queue and spawn; they never wait for this."""
+    """One per machine (flock). Drains the hook spool, then every queued transcript, until the queue is empty, and
+    ships at least every SHIP_EVERY_S on the way and once at the end. On 2026-11-22 a worker held the lock for over an
+    hour on a loaded machine with a queue that kept filling, it shipped only once the queue was empty, and the host's
+    feed got nothing from 11:04Z (of_server, hand-over 8679ce1c). A worker that cannot take the lock still ships when
+    the last ship is due. Hooks only queue and spawn; they never wait for this."""
     import fcntl
     import of_events
     import of_store
@@ -3840,6 +3871,7 @@ def _ingest_worker(conn, args):
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
+        _ship_if_due(args.quiet)   # the holder may be stuck: what is in the store still leaves
         return 0
     pending = os.path.join(of_events.STATE_DIR, "pending")
     os.makedirs(pending, mode=0o700, exist_ok=True)
@@ -3871,13 +3903,10 @@ def _ingest_worker(conn, args):
             # the hook's spooled records (a delivered message's prompt) reached the store only that much later, so
             # the relay took a typed message for lost and typed it again (of_server 3f2d224, 2026-11-11)
             total += of_store.drain_spool(conn)
+            _ship_if_due(args.quiet)
     if not args.quiet:
         print(f"{total} records")
-    try:
-        import of_ship
-        of_ship.ship(log=(lambda m: None) if args.quiet else print)
-    except Exception:
-        pass
+    _ship_if_due(args.quiet, force=True)
     return 0
 
 
