@@ -120,6 +120,63 @@ def _uuid7():
     return str(u7() if u7 else uuid.uuid4())
 
 
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+def open_own(path, flags=os.O_WRONLY | os.O_CREAT | os.O_APPEND, mode=0o600):
+    """A descriptor for PATH in OF's state folder, never through a link put at its name. On the agent host every
+    sandboxed session may write that folder, and the hook's and the store's processes run outside the sandbox, so a link
+    there would have them write into any file of their user's (docs/guard.md, Gaps, "A process outside the sandbox
+    follows a link"; of_server, hand-over 58681935). Anything but a regular file of ours with one link is refused,
+    and a FIFO fails at once (O_NONBLOCK). The relay's _open_own is the model."""
+    import stat
+    fd = os.open(path, flags | _NOFOLLOW | getattr(os, "O_NONBLOCK", 0), mode)
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_nlink != 1:
+        os.close(fd)
+        raise OSError(f"{path} is not a regular file of ours")
+    return fd
+
+
+def append_own(path, text):
+    """Append TEXT to PATH through open_own."""
+    with os.fdopen(open_own(path), "a") as fh:
+        fh.write(text)
+
+
+def own_dir(path, mode=0o700):
+    """Make the folder PATH (and its parents) and refuse it when it is a link or not ours: a file written under a
+    folder a session replaced by a link would land wherever the link points."""
+    import stat
+    os.makedirs(path, mode=mode, exist_ok=True)
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+        raise OSError(f"{path} is not a folder of ours")
+    return path
+
+
+def write_new(path, text, mode=0o600):
+    """Replace PATH with TEXT through a new file beside it, made with O_EXCL and never through a link (whatever lies at
+    the temporary name is removed first, and one planted meanwhile stops the write), then renamed over PATH: a link at
+    PATH is replaced, never followed. The relay's _open_new is the model."""
+    tmp = f"{path}.{os.getpid()}.{time.time_ns()}.tmp"
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW, mode)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def now_iso(ts=None):
     ts = time.time() if ts is None else ts
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(ts)) + f".{int(ts * 1000) % 1000:03d}Z"

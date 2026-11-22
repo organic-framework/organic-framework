@@ -3933,14 +3933,14 @@ def _ingest_worker(conn, args):
     import of_events
     import of_hook
     import of_store
-    lock = open(os.open(os.path.join(of_events.STATE_DIR, "ingest.lock"), os.O_WRONLY | os.O_CREAT, 0o600))
+    lock = os.fdopen(of_events.open_own(os.path.join(of_events.STATE_DIR, "ingest.lock"), os.O_WRONLY | os.O_CREAT),
+                     "w")   # never through a link (hand-over 58681935)
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         of_hook.ship_detached_if_due()   # the holder may be stuck: what is in the store still leaves
         return 0
-    pending = os.path.join(of_events.STATE_DIR, "pending")
-    os.makedirs(pending, mode=0o700, exist_ok=True)
+    pending = of_events.own_dir(os.path.join(of_events.STATE_DIR, "pending"))
     total = of_store.drain_spool(conn)
     while True:
         markers = sorted(os.listdir(pending))
