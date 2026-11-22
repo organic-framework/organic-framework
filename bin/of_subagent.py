@@ -168,9 +168,9 @@ class SubagentError(Exception):
 
 def allowance(registry, harness, kind, repo=None, origin=None):
     """None when the organization's registry (its parsed positions.yaml) allows HARNESS for KIND on REPO (a workspace
-    run's checkout folder name; research has none), else why not (docs/registry.md, "Subagent harnesses": by
+    run's repository name, repo_of: a worktree's is its repository's; research has none), else why not (docs/registry.md, "Subagent harnesses": by
     repository, since one repository holds many systems). A `repos` item with a slash is <host>/<owner>/<name> and
-    matches ORIGIN, the checkout's origin fetch URL (repo_origin); one without keeps matching the folder name; a slash
+    matches ORIGIN, the checkout's origin fetch URL (repo_origin); one without matches the repository name; a slash
     item never matches a checkout with no readable origin (of_architect, docs/registry.md, 2026-11-18)."""
     entry = (registry or {}).get("subagent_harnesses")
     if not isinstance(entry, dict) or not entry:
@@ -322,16 +322,18 @@ def _exclude_rx(pattern):
     return re.compile("^" + lead + out + "(?:/.*)?$", re.I | re.S)
 
 
-def excludes_for(registry, repo, origin=None):
+def excludes_for(registry, repo, origin=None, folder=None):
     """The exclude regexes for REPO: the built-in list, the entry's `excludes` for every repository ('*'), for REPO
-    (its folder name) and for ORIGIN (<host>/<owner>/<name>)."""
+    (its repository name, repo_of), for FOLDER (the checkout's own folder name, which a worktree's entry was keyed by
+    before: excludes fail closed, so every name that names the checkout applies; of_review on PR 555) and for ORIGIN
+    (<host>/<owner>/<name>)."""
     ex = ((registry or {}).get("subagent_harnesses") or {}).get("excludes") or {}
     if not isinstance(ex, dict):
         raise SubagentError("subagent_harnesses.excludes: a map of repository name to a list of path patterns")
     pats = list(DEFAULT_EXCLUDES)
     # a key in either form: the folder's name, the origin (<host>/<owner>/<name>), or the origin's name, so a clone
     # in another folder still gets the repository's excludes (of_review on PR 342)
-    keys = ["*", repo] + [k for k in ex if origin and "/" in str(k) and fold(str(k).strip("/")) == fold(origin)]
+    keys = ["*", repo] + ([folder] if folder and folder != repo else []) + [k for k in ex if origin and "/" in str(k) and fold(str(k).strip("/")) == fold(origin)]
     if origin:
         keys += [k for k in ex if "/" not in str(k) and fold(str(k)) == fold(origin.rsplit("/", 1)[-1])]
     for key in keys:
@@ -1165,7 +1167,7 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
     work_dir = _private_dir(os.path.join(run_dir, "material" if checkout else "empty"))
     try:
         if checkout:
-            rxs = excludes_for(registry, repo, origin)
+            rxs = excludes_for(registry, repo, origin, folder=os.path.basename(checkout.rstrip("/")))
             snap_dir = snapshot(checkout, os.path.join(work_dir, repo or "repo"), head, base, rxs)
             bad = secret_files(work_dir)
             # max_snapshot_mb, after excludes; absent means no limit (of_architect, docs/registry.md, 2026-11-18)

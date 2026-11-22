@@ -1049,6 +1049,15 @@ class RepoOfWorktreeTest(unittest.TestCase):
             self.assertEqual(of_subagent.repo_of(repo), "infra-repo")
             self.assertEqual(of_subagent.repo_of(wt), "infra-repo")
 
+    def test_an_exclude_keyed_by_a_worktrees_folder_keeps_holding(self):
+        """of_review on PR 555: an entry keyed by the worktree's folder name, the name a worktree was given before,
+        still applies beside the repository's; excludes fail closed."""
+        reg = {"subagent_harnesses": {"excludes": {"topic-branch": ["ops/secret.yml"], "infra-repo": ["vault/"]}}}
+        rxs = of_subagent.excludes_for(reg, "infra-repo", None, folder="topic-branch")
+        self.assertTrue(of_subagent.excluded("ops/secret.yml", rxs))
+        self.assertTrue(of_subagent.excluded("vault/x", rxs))
+        self.assertFalse(of_subagent.excluded("ops/other.yml", rxs))
+
 
 if __name__ == "__main__":
     unittest.main()
