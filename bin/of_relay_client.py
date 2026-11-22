@@ -741,27 +741,36 @@ def record_queues(queued, now=None, unsent=None, keep_orgs=()):
     out = {k: {"n": int((v or {}).get("n") or 0), "oldest": (v or {}).get("oldest") or (v or {}).get("oldest_created_at"),
                "at": now}
            for k, v in (queued or {}).items()}
-    # a server that did not answer this round keeps its positions' last counts: unread is never read as empty
-    # (of_review on organic-framework PR 530: a failed server's queues were recorded as depth 0)
-    for k, (n, oldest) in ((k, v) for k, v in _LAST_QUEUES.items() if k != "_seeded"):
-        if k.partition(":")[0] in keep_orgs and k not in out:
-            out[k] = {"n": n, "oldest": oldest, "at": now}
+    unsent = {k: dict(v, at=now) for k, v in (unsent or {}).items() if isinstance(v, dict)}
+    # a server that did not answer this round keeps its positions' last record whole, its reading time included, and
+    # their undelivered note: unread is never read as empty, what was delivered here since that reading is never
+    # counted as waiting again, and no step is declared for them (of_review on organic-framework PR 530: depth 0,
+    # then a restamped count)
+    kept = set()
+    if keep_orgs:
+        mine = lambda k: k.partition(":")[0] in keep_orgs and k not in (queued or {})
+        prev = {k: v for k, v in read_queues().items() if mine(k) and isinstance(v, dict)}
+        for k, v in prev.items():
+            out[k] = {"n": int(v.get("n") or 0), "oldest": v.get("oldest"), "at": v.get("at") or now}
+        unsent.update({k: v for k, v in read_unsent().items() if mine(k) and k not in unsent and isinstance(v, dict)})
+        kept = {k for k in set(prev) | set(_LAST_QUEUES) if k != "_seeded" and mine(k)}
     try:
         tmp = _queues_path() + f".{os.getpid()}"
         with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-            json.dump({"at": now, "queues": out,
-                       "unsent": {k: dict(v, at=now) for k, v in (unsent or {}).items() if isinstance(v, dict)}}, fh)
+            json.dump({"at": now, "queues": out, "unsent": unsent}, fh)
         os.replace(tmp, _queues_path())
     except OSError:
         pass
-    for key in (set(out) | set(_LAST_QUEUES)) - {"_seeded"}:
+    for key in (set(out) | set(_LAST_QUEUES)) - {"_seeded"} - kept:
         cur = ((out.get(key) or {}).get("n", 0), (out.get(key) or {}).get("oldest"))
         if cur != _LAST_QUEUES.get(key, (0, None)):  # depth or the oldest message changed
             org, _, pos = key.partition(":")
             of_events.emit("inbound_queue", {"org": org, "position": pos, "depth": cur[0],
                                              "oldest_created_at": cur[1]}, position=pos)
+    held = {k: _LAST_QUEUES[k] for k in kept if k in _LAST_QUEUES}
     _LAST_QUEUES.clear()
-    _LAST_QUEUES.update({k: (v["n"], v["oldest"]) for k, v in out.items()}, _seeded=True)
+    _LAST_QUEUES.update({k: (v["n"], v["oldest"]) for k, v in out.items() if k not in kept}, _seeded=True)
+    _LAST_QUEUES.update(held)
     try:
         tmp = _emitted_path() + f".{os.getpid()}"
         with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
@@ -1420,8 +1429,8 @@ def run(load, client_for, servers, default, log=print, stop=None, deliverer=herd
                         if isinstance(r, dict):
                             queued.update(r.get("queued") or {})
                             unsent.update(r.get("unsent") or {})
-                    keep = {k.partition(":")[0] for k in _LAST_QUEUES if k != "_seeded"
-                            and servers.get(k.partition(":")[0], default) in failed}
+                    orgs = set(servers) | {k.partition(":")[0] for k in state["local"]}
+                    keep = {o for o in orgs if servers.get(o, default) in failed}
                     record_queues(queued, unsent=unsent, keep_orgs=keep)
                     if not failed:   # a server that failed is asked again at the next check, not after PRESENCE_EVERY
                         sent_key, sent_at = key, time.time()
