@@ -2637,26 +2637,36 @@ def rest_lifted(sid, mark, sessions, dirs):
 #
 # Claude Code asks once per folder whether to trust it (projects[<path>].hasTrustDialogAccepted in the
 # config's .claude.json). A resumed session in an untrusted folder sits on that dialog (runners_keeper,
-# 2026-11-06). A git worktree takes the trust of its main repository. Rule (of_architect, 2026-11-06):
+# 2026-11-06). Rule (of_architect, 2026-11-06):
 # before a move, check the target; carry the source's trust (the owner's earlier decision) and record it;
 # if no config trusts the folder, do not move and ask the owner. Never press the dialog.
 
-def _git(cwd, *args):
-    try:
-        out = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=10)
-        return out.stdout.strip() if out.returncode == 0 else ""
-    except Exception:
-        return ""
+def git_top(cwd):
+    """The folder's own git top level, found as Claude Code finds it, by names alone and never by running git: the
+    nearest folder from it up that holds an entry named .git of any kind. Never the home folder or a folder above it, as
+    with GIT_CEILING_DIRECTORIES at the home. None outside a repository. A program outside the sandbox that ran git
+    there would take the folder's own configuration, which a session may write (of_server, message 01a20540-997d;
+    hand-over 4c70deab, condition 4)."""
+    d, home = os.path.realpath(cwd), os.path.realpath(os.path.expanduser("~"))
+    while not (d == home or home.startswith(d.rstrip(os.sep) + os.sep)):
+        if os.path.lexists(os.path.join(d, ".git")):
+            return d
+        up = os.path.dirname(d)
+        if up == d:
+            return None
+        d = up
+    return None
 
 
 def trust_candidates(cwd):
-    """The keys Claude Code may look up for a folder: the folder, its git top level, a worktree's main repo."""
-    common = _git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
-    main = os.path.dirname(common) if common.endswith("/.git") else ""
-    out = []
-    for k in (cwd, _git(cwd, "rev-parse", "--show-toplevel"), main):
-        if k and k not in out:
-            out.append(k)
+    """The keys a folder's trust is read from: the folder and its own git top level. Never a key taken from a common
+    dir, which a session can point anywhere through a .git file or commondir (of_server, message 01a20540-997d), so
+    a linked worktree trusted only through its main repository counts as untrusted: stricter than Claude Code, never
+    looser."""
+    out = [cwd]
+    top = git_top(cwd)
+    if top and top not in out:
+        out.append(top)
     return out
 
 
