@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import of_herdr_service as hs  # noqa: E402
 
 SOCK = "/home/alex/.config/herdr/herdr.sock"
+LOG_DIR = hs.log_dir  # setUp replaces it with a temporary folder
 
 
 class Host:
@@ -65,7 +66,8 @@ class HerdrServiceTest(unittest.TestCase):
         self.units = os.path.join(self.tmp.name, "units")
         self.proc = os.path.join(self.tmp.name, "proc")
         for patch in (mock.patch.object(sys, "platform", "linux"),
-                      mock.patch.object(hs.of_events, "STATE_DIR", os.path.join(self.tmp.name, "state"))):
+                      mock.patch.object(hs.of_events, "STATE_DIR", os.path.join(self.tmp.name, "state")),
+                      mock.patch.object(hs, "log_dir", lambda: os.path.join(self.tmp.name, "log"))):
             patch.start()
             self.addCleanup(patch.stop)
 
@@ -78,7 +80,7 @@ class HerdrServiceTest(unittest.TestCase):
 
     def test_the_unit_runs_herdr_server_and_its_panes_keep_of_automation(self):
         unit = hs.unit_text("/usr/bin/herdr", path="/home/alex/.local/bin:/usr/bin",
-                            log="/home/alex/.local/state/of/herdr-server.log")
+                            log="/home/alex/.local/log/of/herdr-server.log")
         self.assertIn("ExecStart=/usr/bin/herdr server\n", unit)  # nothing removed: the panes inherit OF_AUTOMATION
         self.assertNotIn("-u OF_AUTOMATION", unit)
         self.assertIn("ExecStop=/usr/bin/herdr server stop\n", unit)
@@ -98,12 +100,21 @@ class HerdrServiceTest(unittest.TestCase):
         self.assertIn("OOMPolicy=continue\n", service)  # the kernel kills one process; stop would end the rest
         self.assertTrue(unit.endswith("[Install]\nWantedBy=default.target\n"))
 
+    def test_the_log_is_outside_ofs_state_folder(self):
+        """systemd opens it itself, outside any sandbox; sessions write in the state folder (of_agent-server,
+        msg 01a2046c-4053)."""
+        with mock.patch.dict(os.environ, {"HOME": "/home/alex"}), mock.patch.object(hs, "log_dir", LOG_DIR), \
+                mock.patch.object(hs.of_events, "LOG_DIR", None, create=True):
+            unit = hs.unit_text("/usr/bin/herdr", path="/usr/bin")
+        self.assertIn("StandardOutput=append:/home/alex/.local/log/of/herdr-server.log\n", unit)
+        self.assertNotIn(".local/state/of", unit)
+
     def test_the_path_does_not_depend_on_the_callers_path(self):
         """A setup script writes this text before the install runs; both must write the same file."""
         texts = set()
         for caller in ("/home/alex/.local/share/mise/shims:/usr/bin:/home/alex/.local/bin", "/usr/bin:/bin"):
             with mock.patch.dict(os.environ, {"PATH": caller, "HOME": "/home/alex"}):
-                texts.add(hs.unit_text("/usr/bin/herdr", log="/home/alex/.local/state/of/herdr-server.log"))
+                texts.add(hs.unit_text("/usr/bin/herdr", log="/home/alex/.local/log/of/herdr-server.log"))
         self.assertEqual(len(texts), 1)
         self.assertIn("Environment=PATH=/usr/bin:/home/alex/.local/bin:/usr/local/bin:/bin\n", texts.pop())
         self.assertEqual(hs.unit_path("/home/alex/.local/bin/herdr", home="/home/alex"),

@@ -28,6 +28,8 @@ What the unit does, and why:
   one process, and under the default OOMPolicy=stop systemd would then stop the unit and every other pane with it
   (systemd.service(5)). continue keeps the unit, unless that process is herdr's server, the unit's main process. The
   slice applies at the unit's next start, so a server under the unit in another slice is not done yet.
+- Its output appends to herdr-server.log in log_dir(), never in OF's state folder: systemd opens that path itself,
+  outside any sandbox, and agents' sandboxed sessions write in the state folder.
 - Restart=on-failure, but not on exit status 1. That is how herdr exits when another server holds its socket, and a
   restart could only fail again.
 - A live handoff (`herdr update --handoff`) does not survive under the unit. It starts the new server as a child and
@@ -56,6 +58,14 @@ UNITS_DIR = "~/.config/systemd/user"
 RESTART = f"systemctl --user restart {UNIT}"
 
 
+def log_dir():
+    """Where the unit's output goes: a folder no sandboxed session writes. systemd opens StandardOutput=append: itself,
+    as the user and outside any sandbox, so a link or a pipe planted in OF's state folder would act on herdr's start
+    (of_server's Gaps entry; of_agent-server, msg 01a2046c-4053). of_events.LOG_DIR once of_platform's hand-over
+    58681935 makes it, else ~/.local/log/of, the folder that hand-over names."""
+    return getattr(of_events, "LOG_DIR", None) or os.path.join(os.path.expanduser("~"), ".local", "log", "of")
+
+
 def unit_path(herdr, home=None):
     """The panes' PATH: herdr's folder, ~/.local/bin, then the system's, whatever the calling shell's PATH is."""
     home = home or os.path.expanduser("~")
@@ -67,7 +77,7 @@ def unit_text(herdr, path=None, log=None):
     """The unit for `herdr` (an absolute path). `path` and `log` default to this user's."""
     w = of_systemd._word
     path = path or unit_path(herdr)
-    log = (log or os.path.join(of_events.STATE_DIR, "herdr-server.log")).replace("%", "%%")
+    log = (log or os.path.join(log_dir(), "herdr-server.log")).replace("%", "%%")
     return ("[Unit]\nDescription=Organic Framework: this user's herdr server\n\n[Service]\n"
             "WorkingDirectory=%h\n"
             # one cgroup holds every agent: out of the slice a desktop marks for systemd-oomd, which kills whole cgroups
@@ -212,7 +222,7 @@ def install(run=subprocess.run, units_dir=None, herdr=None, proc="/proc", wait_s
     target = directory / UNIT
     text = unit_text(herdr)
     changed = not target.exists() or target.read_bytes() != text.encode()
-    os.makedirs(of_events.STATE_DIR, mode=0o700, exist_ok=True)  # systemd opens the log before ExecStart
+    os.makedirs(log_dir(), mode=0o700, exist_ok=True)  # systemd opens the log before ExecStart
     lines = []
     if changed:
         directory.mkdir(parents=True, exist_ok=True)
@@ -250,7 +260,7 @@ def install(run=subprocess.run, units_dir=None, herdr=None, proc="/proc", wait_s
             return lines, False
         sleep(0.5)
     lines.append(f"herdr's server did not start: `systemctl --user status {UNIT}` and "
-                 f"{os.path.join(of_events.STATE_DIR, 'herdr-server.log')} say why")
+                 f"{os.path.join(log_dir(), 'herdr-server.log')} say why")
     return lines, False
 
 
