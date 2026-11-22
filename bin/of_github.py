@@ -620,9 +620,12 @@ def local_commits(root, since, git="git", branch="main"):
     return out
 
 
-def last_local(conn, org):
+def last_local(conn, org, repo=None):
+    """The newest git work record of the organization, or of its one checkout REPO: each checkout keeps its own cursor,
+    so one skipped for a run is read from where it stopped (of_review on PR 509)."""
     row = conn.execute("SELECT max(ts) FROM event WHERE name = 'of.work_record' AND org = ? "
-                       "AND json_extract(payload, '$.source') = 'git'", (org,)).fetchone()
+                       "AND json_extract(payload, '$.source') = 'git' "
+                       "AND (? IS NULL OR json_extract(payload, '$.repo') = ?)", (org, repo, repo)).fetchone()
     return row[0] if row else None
 
 
@@ -633,9 +636,11 @@ def import_local(conn, org, systems, roots, since=None, works=None, log=print, l
     unit: commit, repo, sha, author, merged_at, title, position, paths, systems, works}, for an organization that
     commits locally and never pushes (the OF team; of_studio, docs/studio.md §2.1). Deterministic id by repo and sha;
     an existing record is kept. Returns the number written."""
-    if not since:
-        last = last_local(conn, org)
-        since = (dt.date.fromisoformat(last[:10]) - dt.timedelta(days=1)).isoformat() if last else "2026-10-01"
+    def since_of(repo):   # an explicit --since wins; else this checkout's own cursor, less a day
+        if since:
+            return since
+        last = last_local(conn, org, repo)
+        return (dt.date.fromisoformat(last[:10]) - dt.timedelta(days=1)).isoformat() if last else "2026-10-01"
     by_dir = systems_by_dir(systems)
     if branches is not None and not isinstance(branches, dict):
         log(f"  branches in orgs.yaml for {org} is not a mapping of repository to branch; ignored")
@@ -648,13 +653,13 @@ def import_local(conn, org, systems, roots, since=None, works=None, log=print, l
         if not os.path.isdir(os.path.join(root, ".git")):
             continue  # a main checkout only (a worktree's .git is a file)
         repo = os.path.basename(root.rstrip("/"))
-        ref, how = resolve(root, branches.get(repo) or branches.get(root.rstrip("/")) or branches.get(root))
-        if not ref:
-            log(f"  {repo}: not read: {how}")  # said plainly, never an empty read that looks like no work
-            continue
         try:   # one checkout that does not read (a treeless clone, no system git) stops none of the others
-            commits = lister(root, since, branch=ref)
-        except Exception as e:  # noqa: BLE001 - said plainly, never an empty read that looks like no work
+            ref, how = resolve(root, branches.get(repo) or branches.get(root.rstrip("/")) or branches.get(root))
+            if not ref:
+                log(f"  {repo}: not read: {how}")  # said plainly, never an empty read that looks like no work
+                continue
+            commits = lister(root, since_of(repo), branch=ref)
+        except Exception as e:  # noqa: BLE001 - said plainly; its own cursor stays where it was
             log(f"  {repo}: not read: {type(e).__name__}: {str(e)[-200:]}")
             continue
         for c in commits:
