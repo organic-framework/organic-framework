@@ -277,7 +277,8 @@ def _custody_index(pats):
             if stat.S_ISREG(st.st_mode) and inode not in inodes:
                 who = f"{org}/{cid}"
                 inodes[inode] = who
-                digests.setdefault(st.st_size, {}).setdefault(_sha256(path), who)
+                if st.st_size:  # an empty file holds no key, and every empty file would read as its copy
+                    digests.setdefault(st.st_size, {}).setdefault(_sha256(path), who)
     return inodes, digests
 
 

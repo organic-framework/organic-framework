@@ -375,6 +375,21 @@ class CopyCommands(unittest.TestCase):
         self.assertTrue((files / transcript.relative_to("/")).is_file())
         self.assertTrue(any(str(transcript) in msg and "transcript quotes a private key" in msg for msg in logs))
 
+    def test_an_empty_file_is_no_copy_of_a_custody_file(self):
+        """2026-11-22, the first batch's trial bundle for the agent host: a custody credential named an empty file,
+        and 45 empty scratch files were left out as its copies, since every empty file has the same size and digest."""
+        custody = Path(self.d, "custody")
+        custody.mkdir()
+        (custody / "empty.pem").write_text("")
+        (custody / "key").write_text("custody fixture")
+        scratch = Path(self.d, "scratch")
+        scratch.mkdir()
+        (scratch / "run.err").write_text("")
+        (scratch / "backup").write_text("custody fixture")
+        pats = [("acme", "pki", str(custody))]
+        got = dict(of_carry._content_matches([str(scratch / "run.err"), str(scratch / "backup")], pats, lambda _: None))
+        self.assertEqual(got, {str(scratch / "backup"): "custody copy: acme/pki"})
+
     def test_no_agent_and_no_loose_key(self):
         envs = []
 
