@@ -3348,7 +3348,7 @@ def _line_act(words):
             return True
         if rest[:1] == ["access"] and any(x in ("grant", "revoke", "link", "record") for x in rest[1:]):
             return True
-        if _org_path_act(rest):
+        if _org_path_act(rest) or _server_route_act(rest):
             return True
     return False
 
@@ -3692,9 +3692,10 @@ def _actor_act(words):
 
 def _server_route_act(words):
     """`of server route <url> --via …`: where this machine's OF traffic goes, the owner's by the positive test
-    (of_review on organic-framework PR 521: a cleared caller passed it)."""
+    (of_review on organic-framework PR 521: a cleared caller passed it). `route` anywhere after `server`, since
+    options may come first (`of server --via … route <url>`: of_secrets-review and of_review on PR 521)."""
     words = [w for w in words if w != "--"]
-    return words[:2] == ["server", "route"]
+    return words[:1] == ["server"] and "route" in words[1:]
 
 
 def _org_path_act(words):

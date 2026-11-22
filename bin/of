@@ -3534,10 +3534,18 @@ def _server_yaml_tls(cert, port):
 def _write_route(dest, text):
     """A server's route file (of_client.connect_target), replaced whole and never written through, mode 600."""
     os.makedirs(os.path.dirname(dest), mode=0o700, exist_ok=True)
-    tmp = f"{dest}.{os.getpid()}"
-    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-        fh.write(text.strip() + "\n")
-    os.replace(tmp, dest)
+    import tempfile
+    # a fresh name, created exclusively: nothing placed at a guessable temporary path is ever written through
+    # (of_secrets-review on organic-framework PR 521)
+    fd, tmp = tempfile.mkstemp(prefix=".route.", dir=os.path.dirname(dest))
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text.strip() + "\n")
+        os.replace(tmp, dest)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
 
 
 def _server_route(args):
