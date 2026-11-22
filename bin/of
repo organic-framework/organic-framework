@@ -6921,13 +6921,31 @@ def _receipts_since(client, since):
         after = nxt
 
 
+def _since_utc(text):
+    """An ISO date or time (a space for the T, Z or an offset; no zone is UTC) as 'YYYY-MM-DDTHH:MM:SS' in UTC, the
+    form the receipts' times compare in; None when it is not one (of_review on organic-framework PR 539: '+04:00' and
+    'yesterday' were compared as text and read as an empty window)."""
+    import datetime
+    try:
+        t = datetime.datetime.fromisoformat(str(text).strip().replace("Z", "+00:00").replace("z", "+00:00"))
+    except ValueError:
+        return None
+    if t.tzinfo is not None:
+        t = t.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    return t.strftime("%Y-%m-%dT%H:%M:%S")
+
+
 def cmd_shipped(args):
     """What has left this machine: receipts per server, with organizations and tiers, over the last day by default."""
     import time
     import of_client
     import of_ship
-    since = None if args.all else (args.since or time.strftime("%Y-%m-%dT%H:%M:%S",
-                                                               time.gmtime(time.time() - 86400)))
+    since = None if args.all else (_since_utc(args.since) if args.since else
+                                   time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 86400)))
+    if args.since and not args.all and since is None:
+        print(f"of shipped: --since takes an ISO date or time, such as 2026-11-22 or 2026-11-22T10:00:00Z, not "
+              f"{args.since!r}", file=sys.stderr)
+        return 2
     # the servers this machine ships to: each organization's own, and the default only for one that names none
     # (of_lab, 2026-11-07: a client probed 127.0.0.1:18200, which it never ships to)
     servers = set(of_ship.org_servers(of_ship.config()).values()) or {of_ship.config()["server_url"].rstrip("/")}
