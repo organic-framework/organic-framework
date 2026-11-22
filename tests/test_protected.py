@@ -640,7 +640,8 @@ class ProtectedFfTest(unittest.TestCase):
         org_dir = os.path.join(self.d, 'org')
         for listed in (f"  - path: {org_dir}\n    protected_code: []\n",       # named by its folder
                        f"  - name: acme\n    path: {org_dir}\n    protected_code:\n",            # a bare key
-                       f"  - name: acme\n    path: {org_dir}\n    protected_code: {{path: x}}\n"):  # no dash
+                       f"  - name: acme\n    path: {org_dir}\n    protected_code: {{path: x}}\n",  # no dash
+                       f"  - name: ''\n    path: {org_dir}/\n    protected_code: []\n"):   # a name that comes out empty
             with open(os.path.join(reg, "positions.yaml"), "w") as fh:   # the pushed registry vouches again
                 fh.write(f"positions: []\nprotected_code:\n  - path: \"{self.wt}\"\n    ff:\n"
                          "      repo: someone/fork\n      branch: other\n      human: [README]\n")
