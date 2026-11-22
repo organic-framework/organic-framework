@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
@@ -179,6 +180,14 @@ class RelayTest(unittest.TestCase):
         with self.assertRaises(OSError):
             of_relay._open_own(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
         os.unlink(path)
+        real_fstat = os.fstat                                         # replaced after it was opened: count 0, kept
+
+        def replaced(fd):
+            st = real_fstat(fd)
+            return type("S", (), {"st_mode": st.st_mode, "st_uid": st.st_uid, "st_nlink": 0})()
+        of_relay.record_queues({"ofb:of_a": {"n": 5, "oldest": "2026-11-22T10:00:00Z"}}, now=1000.0)
+        with mock.patch.object(of_relay.os, "fstat", replaced):
+            self.assertEqual(of_relay.read_queues()["ofb:of_a"]["n"], 5)
         qpath = of_relay._queues_path()                                # a read never follows a link either
         with open(victim, "w") as fh:
             json.dump({"queues": {"zeta:x": {"n": 7}}}, fh)

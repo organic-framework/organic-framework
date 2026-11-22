@@ -37,11 +37,13 @@ def _open_own(path, flags, mode=0o600):
     """A descriptor for PATH in OF's state folder, never through a link put at its name: on the agent host every
     sandboxed session may write that folder and the relay runs outside the sandbox, so a link there would make it write
     into any file of its user's (docs/guard.md, Gaps, "A process outside the sandbox follows a link"). Anything but a
-    regular file of ours with one link is refused, and a FIFO put there fails at once instead of holding the relay
-    (O_NONBLOCK; on a regular file it changes nothing)."""
+    regular file of ours is refused, and so is one with a second name (a hard link); a count of 0 is a file replaced
+    after it was opened, which stays readable (of_review on organic-framework PR 541: refusing it read as empty and was
+    written back, erasing rows). A FIFO put there fails at once instead of holding the relay (O_NONBLOCK; on a regular
+    file it changes nothing)."""
     fd = os.open(path, flags | NOFOLLOW | getattr(os, "O_NONBLOCK", 0), mode)
     st = os.fstat(fd)
-    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_nlink != 1:
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_nlink > 1:
         os.close(fd)
         raise OSError(f"{path} is not a regular file of ours")
     return fd
@@ -54,7 +56,7 @@ def _read_own(path, mode="r"):
     fd = os.open(path, os.O_RDONLY | NOFOLLOW | getattr(os, "O_NONBLOCK", 0))
     try:
         st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_nlink != 1:
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_nlink > 1:
             raise OSError(f"{path} is not a regular file of ours")
         return os.fdopen(fd, mode)
     except BaseException:
