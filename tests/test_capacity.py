@@ -386,6 +386,18 @@ class StatusAndTarget(unittest.TestCase):
                 fh.write("tiers:\n  ~/.claude-a: default_claude_ai\n")
             self.assertEqual(of_capacity.status([], [d], probe=False)[0]["tier"], "default_claude_ai")
 
+    def test_the_sandbox_proxy_bridge_is_no_background_work(self):
+        """2026-11-22, the agent host: Claude Code bridges its Linux sandbox's network proxy with a socat of its own,
+        under every sandboxed session; read as background work, it kept the balancer off all of them."""
+        args = {"11": "socat UNIX-LISTEN:/tmp/claude-http-e2f3a55928563e8d.sock,fork,reuseaddr TCP:localhost:46067",
+                "12": "/bin/zsh -c source snapshot && eval 'sleep 60' < /dev/null",
+                "13": "socat UNIX-LISTEN:/var/run/x.sock TCP:localhost:9"}
+        run = lambda *a, **k: type("R", (), {"stdout": "11 12 13\n"})()  # noqa: E731
+        with mock.patch.object(of_capacity.subprocess, "run", run), \
+                mock.patch.object(of_capacity, "proc_args", lambda c: args[c]):
+            got = of_capacity.background_processes(10)
+        self.assertEqual(got, ["sleep 60", "socat UNIX-LISTEN:/var/run/x.sock TCP:localhost:9"])
+
     def test_a_failed_probe_waits_and_a_spent_week_is_probed_seldom(self):
         """2026-11-22, load 190: seven probes passed their 120 s, and each pulse, every 5 minutes, started all seven
         again. A failed probe stays a reading of nothing, never the last good one with room (of_review on PR 526)."""
