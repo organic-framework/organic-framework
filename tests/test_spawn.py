@@ -399,6 +399,31 @@ class WorkCloneTest(unittest.TestCase):
         self.assertTrue(of_spawn.clone_refused("/srv/organic-framework-build", entries))   # beside the checkout /srv/code
         self.assertIsNone(of_spawn.clone_refused("/work/a-clone", entries))
 
+    def test_the_readers_outside_the_sandbox_never_pick_a_clone(self):
+        """of_review on PR 551: work_dir and doc_path refuse a named work clone where they pick the folder."""
+        import importlib.machinery
+        import importlib.util
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            d = os.path.realpath(d)
+            for x in ("fw", "build", "orgrepo/registry"):
+                os.makedirs(os.path.join(d, x))
+            with open(os.path.join(d, "build", "doc.md"), "w") as fh:
+                fh.write("x")
+            orgs = os.path.join(d, "orgs.yaml")
+            with open(orgs, "w") as fh:
+                fh.write(f"orgs:\n  - name: o\n    path: {d}/orgrepo\n    paths: [{d}/fw]\n    work_clone: {d}/build\n")
+            loader = importlib.machinery.SourceFileLoader("of_cli_wd", os.path.join(HERE, "..", "bin", "of"))
+            of = importlib.util.module_from_spec(importlib.util.spec_from_loader("of_cli_wd", loader))
+            with mock.patch.dict(os.environ, {"OF_ORGS": orgs}):
+                loader.exec_module(of)
+                p = {"name": "a", "system": "s"}
+                self.assertEqual(of_spawn.work_dir(p, {"s": {"repos": ["build"]}}, [f"{d}/fw"]), f"{d}/fw")
+                self.assertIsNone(of.doc_path("build:doc.md", [f"{d}/fw"]))
+            # with no clone named, the sibling is taken as before
+            self.assertEqual(of_spawn.work_dir(p, {"s": {"repos": ["build"]}}, [f"{d}/fw"]), f"{d}/build")
+
     def test_a_refused_clone_keeps_its_copy_denied(self):
         """of_review on PR 542, second round, point 3: a later change can refuse a clone; its copy stays denied."""
         import tempfile

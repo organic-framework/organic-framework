@@ -891,11 +891,16 @@ def doc_path(doc, roots):
     if not m:
         return None
     repo, rel = m.group(1), m.group(2)
+    try:
+        import of_spawn
+        in_clone = of_spawn.clone_guard()   # never a named work clone (of_review on PR 551)
+    except Exception:  # noqa: BLE001 - no orgs file to read: no clone to keep out
+        in_clone = lambda path: False  # noqa: E731
     for root in roots:
         r = os.path.expanduser(str(root))
         for base in (r if os.path.basename(r.rstrip("/")) == repo.rpartition("/")[2] else None,
                      os.path.join(r, repo.rpartition("/")[2]), os.path.join(os.path.dirname(r), repo.rpartition("/")[2])):
-            if base and os.path.isfile(os.path.join(base, rel)):
+            if base and os.path.isfile(os.path.join(base, rel)) and not in_clone(os.path.join(base, rel)):
                 return os.path.join(base, rel)
     return None
 
