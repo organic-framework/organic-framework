@@ -142,9 +142,22 @@ HOOK_EVENTS = ("applypatch-msg", "commit-msg", "fsmonitor-watchman", "p4-changel
                "update")
 
 
+DEVELOPER_DIRS = ("/Library/Developer/CommandLineTools", "/Applications/Xcode.app/Contents/Developer")
+
+
+def _stub_git():
+    """On a Mac without Apple's command line developer tools, /usr/bin/git is a stub that opens a dialog offering to
+    install them. Studio, the model, `of works` and the listener read checkouts through _git_cmd in the background, so
+    running the stub would pop that dialog at the person every pass. Read from the folders `xcode-select -p` would
+    print, without running anything, as the guard does (of_guard._developer_tools)."""
+    import sys
+    return sys.platform == "darwin" and not any(os.path.isfile(os.path.join(p, "usr", "bin", "git"))
+                                                for p in DEVELOPER_DIRS)
+
+
 def _git_cmd(tree, extra=()):
     """The system's git in TREE with every setting that keeps the repository's programs from running (_git, _blob)."""
-    if not os.path.isfile(SYSTEM_GIT):
+    if not os.path.isfile(SYSTEM_GIT) or _stub_git():
         raise Refused("no system git (/usr/bin/git) on this machine")
     hooks = [x for ev in HOOK_EVENTS for x in ("-c", f"hook.{ev}.enabled=false")]
     return [SYSTEM_GIT, "-C", tree, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", *hooks,

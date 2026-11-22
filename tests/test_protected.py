@@ -667,6 +667,22 @@ class ReaderAndLoginTest(unittest.TestCase):
         P.LOGINUID = os.path.join(self.d, "missing")                               # no such file: macOS
         self.assertFalse(P._under_sudo())
 
+    def test_a_mac_without_developer_tools_runs_no_git(self):
+        """/usr/bin/git on such a Mac is the stub that opens an install dialog: never run in the background."""
+        from unittest import mock
+        none = os.path.join(self.d, "nothing")
+        with mock.patch.object(P, "DEVELOPER_DIRS", (none,)), mock.patch("sys.platform", "darwin"), \
+                mock.patch.object(P.os.path, "isfile", lambda p: p == P.SYSTEM_GIT):
+            self.assertTrue(P._stub_git())
+            with self.assertRaises(P.Refused):
+                P._git_cmd(self.d)
+        with mock.patch.object(P, "DEVELOPER_DIRS", (self.d,)), mock.patch("sys.platform", "darwin"):
+            os.makedirs(os.path.join(self.d, "usr", "bin"), exist_ok=True)
+            open(os.path.join(self.d, "usr", "bin", "git"), "w").close()
+            self.assertFalse(P._stub_git())                                          # the tools are there
+        with mock.patch("sys.platform", "linux"):
+            self.assertFalse(P._stub_git())
+
     def test_github_without_credentials(self):
         import io
         import urllib.error
