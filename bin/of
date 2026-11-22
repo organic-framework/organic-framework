@@ -6785,7 +6785,7 @@ def _pulse_service_launchd(action):  # the earlier standalone job, kept for syst
             os.remove(plist)
         print("of pulse: uninstalled")
         return 0
-    log = os.path.join(of_events.STATE_DIR, "pulse.log")
+    log = of_events.log_path("pulse.log")   # never in the state folder (hand-over 58681935)
     with open(plist, "w") as fh:
         fh.write(f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

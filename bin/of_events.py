@@ -9,6 +9,11 @@ import time
 import uuid
 
 STATE_DIR = os.environ.get("OF_STATE") or os.path.expanduser("~/.local/state/of")
+# The logs OF's services and their watchdogs write from outside any sandbox live here, never in STATE_DIR, which every
+# sandboxed session may write on the agent host: there systemd opens a unit's append: log itself and follows a link a
+# session put at its name, and no O_NOFOLLOW in OF's code covers it (of_agent-server, msg 01a20460-c4bf; of_server's
+# hand-over 58681935). Outside spawn's allowWrite.
+LOG_DIR = os.environ.get("OF_LOG_DIR") or os.path.expanduser("~/.local/log/of")
 CONFIG_DIR = os.environ.get("OF_CONFIG_DIR") or os.path.expanduser("~/.config/of")
 
 
@@ -121,6 +126,11 @@ def _uuid7():
 
 
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+def log_path(name):
+    """The path of the log NAME in LOG_DIR, the folder made (and refused when it is a link or not ours)."""
+    return os.path.join(own_dir(LOG_DIR), name)
 
 
 def open_own(path, flags=os.O_WRONLY | os.O_CREAT | os.O_APPEND, mode=0o600):

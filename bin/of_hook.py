@@ -987,7 +987,7 @@ def _deliver_without_listener(hook, index):
         of_events.write_new(mark, "")
         here = os.path.dirname(os.path.realpath(__file__))
         env = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_") and k != "CLAUDE_CODE_SESSION_ID"}
-        log = os.fdopen(of_events.open_own(os.path.join(STATE, "deliver.log")), "a")
+        log = os.fdopen(of_events.open_own(of_events.log_path("deliver.log")), "a")   # beside the listener's
         try:
             subprocess.Popen([sys.executable, os.path.join(here, "of"), "asks", "deliver", pos],
                              stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,

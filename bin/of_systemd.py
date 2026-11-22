@@ -25,7 +25,7 @@ def service(command, python, of_bin, watchdog=False):
     if "$" in python or "$" in of_bin:
         python = ":" + python  # suppress environment expansion in this ExecStart command
     name = command + ("-watchdog" if watchdog else "")
-    log = os.path.join(of_events.STATE_DIR, name + ".log").replace("%", "%%")
+    log = of_events.log_path(name + ".log").replace("%", "%%")   # never in the state folder (hand-over 58681935)
     policy = "Type=oneshot" if watchdog else "Restart=always\nRestartSec=10"
     relation = f"PartOf=of-{name}.timer" if watchdog else "After=of-server.service"
     path = _word("PATH=" + of_init.service_path())  # herdr can live in the installing user's ~/.local/bin
