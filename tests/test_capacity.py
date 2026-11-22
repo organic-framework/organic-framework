@@ -2038,6 +2038,8 @@ class Resume(unittest.TestCase):
 
         live = {"session": "s1", "cwd": self.cwd, "pid": 9, "status": "idle"}
         logs = []
+        import of_spawn
+        orgs, real_settings = [], of_spawn.session_settings
         with mock.patch.multiple(of_capacity, live_sessions=lambda d: [live] if d == self.cfg else [],
                                  _agent_by_session=lambda _: {"pane_id": "w6:p18", "agent_status": "idle"},
                                  _continuation=lambda _: {}, load_policy=lambda: {}, proc_env=lambda _: {},
@@ -2045,9 +2047,12 @@ class Resume(unittest.TestCase):
                                  connectors_seen=lambda _: set(), plugins_ready=lambda _: set(), granted_labels=lambda _: {},
                                  with_labels=lambda have, _: have, tools_for=lambda *_: None, deny_for=lambda *_: None,
                                  exit_session=exit_session, start_session=start_session), \
-                mock.patch.object(of_capacity, "stopped_tasks", wraps=of_capacity.stopped_tasks) as scan:
-            of_capacity.move({"name": "runners_keeper", "holder": {"session": "s1"}}, target,
+                mock.patch.object(of_capacity, "stopped_tasks", wraps=of_capacity.stopped_tasks) as scan, \
+                mock.patch.object(of_spawn, "session_settings",
+                                  lambda *a, **k: orgs.append(k.get("org")) or real_settings(*a, **k)):
+            of_capacity.move({"name": "runners_keeper", "holder": {"session": "s1"}, "_org": "team"}, target,
                              assume_empty_input=True, log=logs.append)
+        self.assertEqual(set(orgs), {"team"})          # the work clone's organization (OF-265; of_review, PR 552)
         self.assertEqual(scan.call_args.args[0], of_capacity.find_transcript(target, "s1"))
         self.assertTrue(any("1 stopped scheduled task" in msg for msg in logs))
         rec = [c[2] for c in self.calls if c[:2] == ("emit", "session_settings")]
@@ -2055,6 +2060,17 @@ class Resume(unittest.TestCase):
         with open(settings, "rb") as fh:
             self.assertEqual(rec[0]["sha256"], hashlib.sha256(fh.read()).hexdigest())
         self.assertNotIn("disk_sha256", rec[0])                              # what it wrote is what lies there
+
+    def test_a_resume_gives_the_settings_its_organization(self):
+        """Card OF-265 (of_review on PR 552): `of capacity resume` passes the position's organization too, so the
+        session it starts on the agent host gets its work clone."""
+        import of_spawn
+        orgs, real = [], of_spawn.session_settings
+        with mock.patch.object(of_spawn, "session_settings", lambda *a, **k: orgs.append(k.get("org")) or real(*a, **k)):
+            r = of_capacity.resume("runners_keeper", "s1", self.cfg, "w6:p18", log=lambda *_: None,
+                                   position={"name": "runners_keeper", "_org": "team"})
+        self.assertEqual(r["session"], "s1")
+        self.assertEqual(set(orgs), {"team"})
 
     def test_a_move_stopped_at_the_exit_leaves_the_settings_file_and_records_nothing(self):
         """of_review on PR 516: the move wrote the live session's settings file before the exit, so a move stopped
