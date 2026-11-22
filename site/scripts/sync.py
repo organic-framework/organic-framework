@@ -85,6 +85,7 @@ PAGES = [
         ("docs/getting-help.md", "getting-help", "How to reach OF"),
         ("docs/contours.md", "contours", "Contours: one organization per OS user"),
         ("docs/agent-secrets.md", "agent-secrets", "Agents' secrets"),
+        ("docs/github-access.md", "github-access", "GitHub from the agent host's sandbox"),
         ("docs/tools.md", "tools", "Tools of a position"),
         ("docs/studio.md", "studio", "Model and Studio"),
         ("docs/diagnose.md", "diagnose", "Anti-pattern catalogue"),
