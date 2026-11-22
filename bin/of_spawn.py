@@ -63,12 +63,30 @@ def clone_guard(orgs_file=None):
             raw = os.path.join(os.getcwd(), raw)
         if near(os.path.abspath(raw)) or near(os.path.realpath(raw)):
             return True
-        step = os.sep
-        for part in [x for x in raw.split(os.sep) if x]:   # a step on the way that lies in a clone
-            step = os.path.join(step, part)
-            r = os.path.realpath(step)
-            if any(r == c or r.startswith(c + os.sep) for c in clones):
+        here, todo, links = os.sep, raw.split(os.sep), 0   # link by link, as the open goes: realpath shows only ends
+        while todo:
+            part = todo.pop(0)
+            if part in ("", "."):
+                continue
+            if part == "..":
+                here = os.path.dirname(here)
+                continue
+            step = os.path.join(here, part)
+            if any(step == c or step.startswith(c + os.sep) for c in clones):
                 return True
+            try:
+                target = os.readlink(step) if os.path.islink(step) else None
+            except OSError:
+                return bool(clones)   # it changed under the check: refused
+            if target is None:
+                here = step
+                continue
+            links += 1
+            if links > 40:
+                return bool(clones)   # no open resolves it: refused
+            if os.path.isabs(target):
+                here = os.sep
+            todo = target.split(os.sep) + todo
         return False
     return hit
 
