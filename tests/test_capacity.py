@@ -2176,18 +2176,21 @@ class Resume(unittest.TestCase):
 
     def test_a_restore_takes_a_newer_copy_only_when_it_continues_the_carried_one(self):
         """of_review on PR 538: freshness alone let a session that resumed from an older copy and wrote to it win a
-        second restore, and the carried copy went to the backup the balancer deletes; and a copy gone between the
-        listing and the read ended the whole balancer run."""
+        second restore, and the carried copy went to the backup the balancer deletes; a last line with no uuid is no
+        proof of continuation; and a copy gone between the listing and the read ended the whole balancer run."""
         home = os.path.realpath(self.cwd)
         carried_dir = os.path.join(self.cfg, "projects", "-elsewhere-work")
         os.makedirs(carried_dir)
         carried = os.path.join(carried_dir, "s1.jsonl")
-        last = json.dumps({"type": "user", "cwd": "/nowhere/work", "message": {"content": "carried turn"}})
+        turn = json.dumps({"type": "user", "uuid": "u-carried-9", "cwd": "/nowhere/work",
+                           "message": {"content": "carried turn"}})
+        tail = json.dumps({"type": "file-history-snapshot", "snapshot": {}})   # most transcripts end on such a line
         with open(carried, "w") as fh:
-            fh.write(last + "\n")
+            fh.write(turn + "\n" + tail + "\n")
         local = os.path.join(self.cfg, "projects", "-acme", "s1.jsonl")
-        with open(local, "a") as fh:                                   # written after: another history
-            fh.write(json.dumps({"type": "user", "cwd": self.cwd, "message": {"content": "resumed here"}}) + "\n")
+        with open(local, "a") as fh:     # written after: another history, ending on the same uuid-less line
+            fh.write(json.dumps({"type": "user", "uuid": "u-local-1", "cwd": self.cwd,
+                                 "message": {"content": "resumed here"}}) + "\n" + tail + "\n")
         os.utime(carried, (time.time() - 600, time.time() - 600))
         os.symlink("/nowhere/gone.jsonl", os.path.join(self.cfg, "projects", "-dangling"))  # not a copy
         os.makedirs(os.path.join(self.cfg, "projects", "-gone"))
@@ -2215,7 +2218,8 @@ class Resume(unittest.TestCase):
         self.assertIn(local, str(err.exception))
         self.assertIn(carried, str(err.exception))
         with open(local, "a") as fh:                                   # now it continues the carried copy
-            fh.write(last + "\n" + json.dumps({"type": "user", "message": {"content": "after"}}) + "\n")
+            fh.write(turn + "\n" + json.dumps({"type": "user", "parentUuid": "u-carried-9",
+                                                "message": {"content": "after"}}) + "\n")
         self.assertEqual(restore().call_args.args[2], home)
 
     def test_carry_note_recovers_a_one_shot_even_when_install_rewrites_its_stop_notice(self):
