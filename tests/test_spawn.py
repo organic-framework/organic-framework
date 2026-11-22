@@ -332,16 +332,33 @@ class SandboxBlock(unittest.TestCase):
         self.assertEqual((box["enabled"], box["failIfUnavailable"], box["allowUnsandboxedCommands"]), (True, True, False))
         self.assertIn("/home/alex/.config/other", box["filesystem"]["denyRead"])      # the catalogue's root, as a folder
         self.assertNotIn("/home/alex/x/*.key", box["filesystem"]["denyRead"])         # a glob: its present matches only
-        self.assertEqual(box["filesystem"]["denyWrite"][:-1], box["filesystem"]["denyRead"])   # never written either
-        self.assertEqual(box["filesystem"]["denyWrite"][-1], os.path.expanduser("~/.local/state/of/index.json"))  # G36
+        self.assertEqual(box["filesystem"]["denyWrite"][:-2], box["filesystem"]["denyRead"])   # never written either
+        self.assertEqual(box["filesystem"]["denyWrite"][-2:], [os.path.expanduser("~/.local/state/of/index.json"),
+                                                               of_spawn.of_checkout()])  # G36, the code OF runs
         self.assertIn(os.path.expanduser("~/.ssh"), box["filesystem"]["denyRead"])
         self.assertEqual(box["filesystem"]["allowWrite"], [os.path.expanduser("~/.local/state/of")])
         self.assertEqual((box["network"]["allowAllUnixSockets"], box["network"]["strictAllowlist"]), (True, True))
         self.assertIn("github.com", box["network"]["allowedDomains"])                # bypass mode: the list binds
         self.assertIn("/home/alex/.claude/projects", box["filesystem"]["denyRead"])   # transcripts
         self.assertIn("/home/alex/.claude/.credentials.json", box["filesystem"]["denyRead"])   # the account's sign-in
-        self.assertEqual(s["permissions"]["deny"], deny)                            # the file tools' rules unchanged
-        self.assertNotIn("sandbox", json.loads(of_spawn.session_settings(None, deny, platform="darwin")))
+        # the file tools, outside the sandbox: only the working folders, never the checkout OF runs from
+        self.assertEqual(s["permissions"]["deny"], deny + [f"Edit(/{of_spawn.of_checkout()}/**)"])
+        self.assertIs(s["permissions"]["blockWritesOutsideWorkingDirectories"], True)
+        mac = json.loads(of_spawn.session_settings(None, deny, platform="darwin"))
+        self.assertNotIn("sandbox", mac)
+        self.assertEqual(mac["permissions"], {"deny": deny})
+
+    def test_the_checkout_of_runs_from_is_the_one_its_link_resolves_into(self):
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            here = os.path.dirname(os.path.dirname(os.path.realpath(of_spawn.__file__)))
+            self.assertEqual(of_spawn.of_checkout(), here)                   # no link: the code that runs
+            os.makedirs(os.path.join(home, "co", "bin"))
+            os.makedirs(os.path.join(home, ".local", "bin"))
+            open(os.path.join(home, "co", "bin", "of"), "w").close()
+            os.symlink(os.path.join(home, "co", "bin", "of"), os.path.join(home, ".local", "bin", "of"))
+            self.assertEqual(of_spawn.of_checkout(), os.path.realpath(os.path.join(home, "co")))
 
     def test_other_sessions_scratch_is_denied_and_its_own_allowed(self):
         """Tried on the agent host (2026-11-20): the temp root must stay writable (the sandbox's sockets, $TMPDIR),
