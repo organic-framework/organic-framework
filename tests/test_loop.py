@@ -982,7 +982,7 @@ class OwnersMeasureTest(unittest.TestCase):
                 with open(orgs, "w") as fh:
                     fh.write(_json.dumps({"orgs": [{"name": "good", "path": "good"},
                                                    {"name": "other", "path": "other", "paths": [repo]}]}))
-                got = [(o, w) for o, w, _, _ in of._loop_works(orgs)]
+                got = [(o, w) for o, w, _, _ in of._loop_works(orgs, log=lambda m: None)]
                 self.assertIn(("good", "w1"), got, n)
                 self.assertNotIn(("other", "w2"), got, n)
                 if ly:

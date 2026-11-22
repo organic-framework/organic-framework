@@ -1129,7 +1129,10 @@ def loop_stalls(positions, agents, bind, mem, now, conn, works, prompt=None, thr
     clock, of_diagnose_rules.loop_stall. At level owner the work's owner and doers are told, at level conductor the
     organization's conductor (the founder's window), each once per episode: an episode is keyed by the clock's `since`,
     and ends when the clock does. A receiver busy, away or held on another machine is tried at the next pulse; nothing
-    is typed into a person. works: [(org, work id, the registry's entry, its loop or None)]. Returns the number told."""
+    is typed into a person. works: [(org, work id, the registry's entry, its loop or None)]; its `unread` (bin/of
+    _loop_works) names the works or organizations that could not be read, whose episodes are kept as they are, and a
+    work whose card cannot be made keeps its episode too, so a file half written never opens a second episode (of_review
+    on PR 504). Returns the number told."""
     import of_diagnose_rules
     import of_loops
     ends = of_loops.ask_ends(conn)
@@ -1151,13 +1154,23 @@ def loop_stalls(positions, agents, bind, mem, now, conn, works, prompt=None, thr
     long_told = mem.setdefault("loop_long_waits", [])
     esc_h = dict(of_diagnose_rules.STALL_DEFAULTS, **(thresholds or {}))["escalate_hours_gte"]
     current, told = set(), 0
+    kept = {f"{o}/{w}" if w else f"{o}/" for o, w in getattr(works, "unread", None) or ()}
     for org, wid, work, loop in works:
         rows = by_work.get(wid) or []
         if not loop and not rows:
             continue
+        doers = work.get("doers")   # a list of names, as of registry check wants it; anything else names nobody
+        work = dict(work, doers=[x for x in doers if isinstance(x, str)] if isinstance(doers, list) else [])
+        if not isinstance(work.get("owner"), str):
+            work["owner"] = None
         # a wait on an ask ends when that ask is answered or withdrawn (ask_ends reads the asks view once, on the first
         # wait on an ask), as Studio and the daily diagnosis read it (of_studio, message 01a1e13d-1487)
-        card = of_loops.project(wid, loop, rows, now, work=work, asks=ends)
+        try:
+            card = of_loops.project(wid, loop, rows, now, work=work, asks=ends)
+        except Exception as e:  # noqa: BLE001 - one work's bad shape stops neither the others nor its own episode
+            kept.add(f"{org}/{wid}")
+            log(f"loop stalls: {org}/{wid}: {type(e).__name__}: {e}; its episode is kept")
+            continue
         if not card:
             continue
         owner = work.get("owner")
@@ -1212,8 +1225,8 @@ def loop_stalls(positions, agents, bind, mem, now, conn, works, prompt=None, thr
                 ep["told"].append(name)
             told += 1
             log(f"told {name}: {wid} stalled {st['hours']:g} h")
-    for k in [k for k in episodes if k not in current]:
-        del episodes[k]   # progress or a stated wait ended the episode
+    for k in [k for k in episodes if k not in current and k not in kept and k[:k.find("/") + 1] not in kept]:
+        del episodes[k]   # progress or a stated wait ended the episode; one that could not be read did not
     del long_told[:-500]
     return told
 
