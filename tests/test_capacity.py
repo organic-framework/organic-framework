@@ -1,6 +1,7 @@
 """Capacity (of_capacity): account per config dir, the probe's reading, positions per account,
 the 30-minute probe cache, headroom and the target of a move."""
 
+import contextlib
 import glob
 import hashlib
 import json
@@ -18,6 +19,7 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
 import of_capacity  # noqa: E402
+REAL_INJECT = of_capacity._inject   # the stubs in setUp replace it; a test that needs the real one names it
 import of_locale  # noqa: E402
 import of_spawn  # noqa: E402
 
@@ -1858,7 +1860,7 @@ class DeclaredStart(unittest.TestCase):
         self.calls, self.up = [], False
         self.patches = [mock.patch.object(of_capacity.time, "sleep", lambda *_: None),
                         mock.patch.object(of_capacity, "_inject",
-                                          lambda sid, text, reason: self.calls.append(("inject", sid, text, reason))),
+                                          lambda sid, text, reason, log=None: self.calls.append(("inject", sid, text, reason))),
                         mock.patch.object(of_capacity, "live_sessions",
                                           lambda d, *a: [{"session": "s1", "pid": 7, "name": "runners_keeper",
                                                           "cwd": "/w", "file": __file__}] if self.up else [])]
@@ -1950,7 +1952,7 @@ class Resume(unittest.TestCase):
                         # never the real herdr binary: a CI runner has none (PR 204, of_review)
                         mock.patch.object(of_capacity, "ensure_herdr_integration", lambda *a, **k: False),
                         mock.patch.object(of_capacity, "_inject",
-                                          lambda sid, text, reason: self.calls.append(("inject", sid, text))),
+                                          lambda sid, text, reason, log=None: self.calls.append(("inject", sid, text))),
                         mock.patch.object(of_capacity.of_events, "emit",
                                           lambda kind, payload, **k: self.calls.append(("emit", kind, payload))),
                         mock.patch.object(of_capacity, "live_sessions",
@@ -1991,31 +1993,6 @@ class Resume(unittest.TestCase):
         self.assertEqual(self.calls[rec][2]["by"], "of capacity resume")      # of_server, message 01a20340-445c
         self.assertLess(rec, kinds.index("pane run"))                        # recorded before the launch
 
-    def test_a_move_whose_declaration_cannot_be_recorded_stops_before_the_exit(self):
-        """of_review on PR 566: the declaration's file refused after the exit left a moved session down."""
-        target = os.path.join(self.home.name, ".claude-b")
-        os.makedirs(target)
-        shutil.copy2(os.path.join(self.cfg, ".claude.json"), target)
-        victim = os.path.join(self.home.name, "victim")
-        with open(victim, "w") as fh:
-            fh.write("keep")
-        os.symlink(victim, os.path.join(self.home.name, "injections.jsonl"))
-        exits = []
-        live = {"session": "s1", "cwd": self.cwd, "pid": 9, "status": "idle"}
-        with mock.patch.multiple(of_capacity, live_sessions=lambda d: [live] if d == self.cfg else [],
-                                 _agent_by_session=lambda _: {"pane_id": "w6:p18", "agent_status": "idle"},
-                                 _continuation=lambda _: {}, load_policy=lambda: {}, proc_env=lambda _: {},
-                                 proc_args=lambda _: "claude", background_processes=lambda _: [], missing_signins=lambda *_: [],
-                                 connectors_seen=lambda _: set(), plugins_ready=lambda _: set(), granted_labels=lambda _: {},
-                                 with_labels=lambda have, _: have, tools_for=lambda *_: None, deny_for=lambda *_: None,
-                                 exit_session=lambda *a, **k: exits.append(1)):
-            with self.assertRaisesRegex(of_capacity.MoveError, "declaration cannot be recorded"):
-                of_capacity.move({"name": "runners_keeper", "holder": {"session": "s1"}}, target,
-                                 assume_empty_input=True, log=lambda *_: None)
-        self.assertEqual(exits, [])
-        with open(victim) as fh:
-            self.assertEqual(fh.read(), "keep")
-
     def test_move_updates_the_private_note_after_exit_and_copy_before_resume(self):
         target = os.path.join(self.home.name, ".claude-b")
         os.makedirs(target)
@@ -2028,6 +2005,10 @@ class Resume(unittest.TestCase):
             fh.write(json.dumps({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "call-1"}]},
                                  "toolUseResult": {"id": "deadbeef"}}) + "\n")
         notes = os.path.join(self.home.name, "capacity", "moves", "*", "note.md")
+        victim = os.path.join(self.home.name, "victim")      # a link at the hook's cache of declarations (PR 566)
+        with open(victim, "w") as fh:
+            fh.write("keep")
+        os.symlink(victim, os.path.join(self.home.name, "injections.jsonl"))
 
         settings = os.path.join(of_capacity.of_events.STATE_DIR, "spawn", "s1.settings.json")
         os.makedirs(os.path.dirname(settings), exist_ok=True)
@@ -2071,7 +2052,7 @@ class Resume(unittest.TestCase):
                                  proc_args=lambda _: "claude", background_processes=lambda _: [], missing_signins=lambda *_: [],
                                  connectors_seen=lambda _: set(), plugins_ready=lambda _: set(), granted_labels=lambda _: {},
                                  with_labels=lambda have, _: have, tools_for=lambda *_: None, deny_for=lambda *_: None,
-                                 exit_session=exit_session, start_session=start_session), \
+                                 exit_session=exit_session, start_session=start_session, _inject=REAL_INJECT), \
                 mock.patch.object(of_capacity, "stopped_tasks", wraps=of_capacity.stopped_tasks) as scan, \
                 mock.patch.object(of_spawn, "session_settings",
                                   lambda *a, **k: orgs.append(k.get("org")) or real_settings(*a, **k)):
@@ -2085,6 +2066,10 @@ class Resume(unittest.TestCase):
         with open(settings, "rb") as fh:
             self.assertEqual(rec[0]["sha256"], hashlib.sha256(fh.read()).hexdigest())
         self.assertNotIn("disk_sha256", rec[0])                              # what it wrote is what lies there
+        with open(victim) as fh:                     # the exit's declaration: not through the link, said, and on
+            self.assertEqual(fh.read(), "keep")
+        self.assertTrue(any("its declaration is in the event store" in msg for msg in logs))
+        self.assertIn(("emit", "injected_prompt"), [c[:2] for c in self.calls])
 
     def test_a_resume_gives_the_settings_its_organization(self):
         """Card OF-265 (of_review on PR 552): `of capacity resume` passes the position's organization too, so the
@@ -3216,24 +3201,37 @@ class ToolProfiles(unittest.TestCase):
             os.makedirs(os.path.join(t, "capacity"))
             for name in ("injections.jsonl", "capacity/tick.lock", "capacity/balance.lock", "capacity/balance.replan"):
                 os.symlink(victim, os.path.join(t, name))
-            with self.assertRaises(of_capacity.MoveError):            # that session's, never another error
-                of_capacity._inject("s1", "hello", "test")
-            with self.assertRaises(of_capacity.MoveError):
-                of_capacity.check_injections()
-            ran = []
+            said = []
+            of_capacity._inject("s1", "hello", "test", log=said.append)     # the hook's cache: said, and on
+            self.assertIn("its declaration is in the event store", said[-1])
+            of_capacity._SAID.clear()
+            ran, err = [], []
+            stack = contextlib.ExitStack()
+            stack.enter_context(mock.patch.object(of_capacity, "_say", err.append))
             with mock.patch.object(of_capacity.subprocess, "Popen", lambda argv, **k: ran.append(argv[-1])):
                 for name in ("capacity/balance.log", "capacity/tick.log"):
                     os.symlink(victim, os.path.join(t, name))
                 of_capacity.spawn_balance()                                   # a refused log costs only the log
+                of_capacity.spawn_balance()
+                self.assertFalse(of_capacity.spawn_tick())                     # a refused lock: no tick, said
                 os.unlink(os.path.join(t, "capacity/tick.lock"))
                 self.assertTrue(of_capacity.spawn_tick())
                 os.unlink(os.path.join(t, "capacity/tick.lock"))              # the lock spawn_tick made
                 os.symlink(victim, os.path.join(t, "capacity/tick.lock"))
-            self.assertEqual(ran, ["balance", "tick"])
-            with self.assertRaises(OSError):
-                of_capacity._tick_lock()
-            with self.assertRaises(OSError):
-                of_capacity.mark_replan(["s2"])
+            self.assertEqual(ran, ["balance", "balance", "tick"])
+            with stack:
+                logs = []
+                self.assertIsNone(of_capacity._tick_lock())
+                self.assertFalse(of_capacity.run_tick(None, 0, log=logs.append))    # never run without its lock
+                self.assertIn("skipped: its lock", logs[0])
+                with mock.patch.object(of_capacity, "_reboot_pauses_balance", lambda *a: False), \
+                        mock.patch.object(of_capacity, "status", lambda *a, **k: self.fail("ran without its lock")):
+                    self.assertEqual(of_capacity.balance([], log=logs.append), [])
+                self.assertIn("balance: skipped: its lock", logs[-1])
+                of_capacity.mark_replan(["s2"])                                  # the run goes on without it
+            self.assertEqual(sum("balance.log" in x for x in err), 1)          # each refusal said once
+            self.assertEqual(sum("tick.lock" in x for x in err), 1)
+            self.assertEqual(sum("balance.replan" in x for x in err), 1)
             self.assertFalse(of_capacity._balance_busy())
             self.assertEqual(of_capacity.replan_due(set()), set())
             with open(victim) as fh:
