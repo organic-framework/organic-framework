@@ -191,14 +191,16 @@ def _server_keys(path=None):
     return [os.path.expanduser(str(x)) for x in out if x]
 
 
-def of_checkout():
-    """The checkout OF itself runs from: the one `~/.local/bin/of` resolves into, where the units (of-server, of-relay,
-    of-listen) and bin/of-hook run outside any sandbox; else the one this file is in. A session that writes it, its
-    .git included, changes code that then runs unsandboxed (of_agent-server's finding on the agent host, message
-    01a202cd-f226; of_server's Gaps entry in docs/guard.md, message 01a202d3-e7c8)."""
+def of_checkouts():
+    """The checkouts OF itself runs from: the one `~/.local/bin/of` resolves into, where the units (of-server, of-relay,
+    of-listen) and bin/of-hook run outside any sandbox, and the one this file is in, when they differ. A session that
+    writes one, its .git included, changes code that then runs unsandboxed (of_agent-server's finding on the agent host,
+    message 01a202cd-f226; of_server's Gaps entry in docs/guard.md, message 01a202d3-e7c8)."""
     link = os.path.expanduser("~/.local/bin/of")
-    real = os.path.realpath(link) if os.path.exists(link) else os.path.realpath(__file__)
-    return os.path.dirname(os.path.dirname(real))
+    out = [os.path.dirname(os.path.dirname(os.path.realpath(__file__)))]
+    if os.path.exists(link):
+        out.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(link))))
+    return list(dict.fromkeys(out))
 
 
 def sandbox_settings(deny=None, platform=None, scratch=None):
@@ -251,11 +253,12 @@ def sandbox_settings(deny=None, platform=None, scratch=None):
     # Bash may not write what it may not read: OF's state folder is writable and holds its server folder (the same
     # review); every denied path is denied for writes too, and so is the guard's session index, which only the hook
     # writes, outside the sandbox (docs/guard.md G36; hand-over a18341af), and the checkout OF runs from, whole, since
-    # its .git's objects and refs are code too (of_checkout; a host position works in its own clone, never in it)
+    # its .git's objects and refs are code too (of_checkouts; a host position works in its own clone, never in it)
     return {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
             "autoAllowBashIfSandboxed": True,
             "filesystem": {"denyRead": denied,
-                           "denyWrite": denied + [os.path.expanduser("~/.local/state/of/index.json"), of_checkout()],
+                           "denyWrite": denied + [os.path.expanduser("~/.local/state/of/index.json")]
+                           + of_checkouts(),
                            "allowRead": allow,
                            "allowWrite": [os.path.expanduser("~/.local/state/of")]},
             "network": {"allowAllUnixSockets": True, "strictAllowlist": True,
@@ -278,7 +281,20 @@ def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=
         # checkout OF runs from (of_server, message 01a202d3-e7c8; Claude Code 2.1.314 and later)
         perms = s.setdefault("permissions", {})
         perms["blockWritesOutsideWorkingDirectories"] = True
-        perms.setdefault("deny", []).append(f"Edit(/{of_checkout()}/**)")
+        rules = perms.setdefault("deny", [])
+        rules += [f"Edit(/{c}/**)" for c in of_checkouts()]
+        # the Read tool runs outside the sandbox, so it reads what denyRead keeps from Bash: each such path is a Read
+        # deny rule too (of_server, message 01a202e4-62f9). An account's projects folder also holds the session's own
+        # saved tool results, which Claude Code opens with Read, and a deny cannot carve them out (of_review on PR
+        # 507): there the rule takes the transcripts only, and the other sessions' saved results stay open to Read
+        projects = {os.path.join(d, "projects") for d in _accounts_dirs()}
+        rules += [r for p in box["filesystem"]["denyRead"]
+                  for r in ((f"Read(/{p}/**/*.jsonl)",) if p in projects else (f"Read(/{p})", f"Read(/{p}/**)"))
+                  if r not in rules]
+        # the session's own scratch folders stay writable to the file tools: the memory directory is exempt, a
+        # scratchpad is not (tried by of_server on Claude Code 2.1.330)
+        if box["filesystem"]["allowRead"]:
+            perms["additionalDirectories"] = list(box["filesystem"]["allowRead"])
     for k, v in (extra or {}).items():
         if k == "env" and isinstance(v, dict):
             s["env"] = dict(s.get("env") or {}, **v)  # a tool profile's env joins the agents' own

@@ -332,9 +332,11 @@ class SandboxBlock(unittest.TestCase):
         self.assertEqual((box["enabled"], box["failIfUnavailable"], box["allowUnsandboxedCommands"]), (True, True, False))
         self.assertIn("/home/alex/.config/other", box["filesystem"]["denyRead"])      # the catalogue's root, as a folder
         self.assertNotIn("/home/alex/x/*.key", box["filesystem"]["denyRead"])         # a glob: its present matches only
-        self.assertEqual(box["filesystem"]["denyWrite"][:-2], box["filesystem"]["denyRead"])   # never written either
-        self.assertEqual(box["filesystem"]["denyWrite"][-2:], [os.path.expanduser("~/.local/state/of/index.json"),
-                                                               of_spawn.of_checkout()])  # G36, the code OF runs
+        cos = of_spawn.of_checkouts()
+        n = 1 + len(cos)
+        self.assertEqual(box["filesystem"]["denyWrite"][:-n], box["filesystem"]["denyRead"])   # never written either
+        self.assertEqual(box["filesystem"]["denyWrite"][-n:],
+                         [os.path.expanduser("~/.local/state/of/index.json")] + cos)  # G36, the code OF runs
         self.assertIn(os.path.expanduser("~/.ssh"), box["filesystem"]["denyRead"])
         self.assertEqual(box["filesystem"]["allowWrite"], [os.path.expanduser("~/.local/state/of")])
         self.assertEqual((box["network"]["allowAllUnixSockets"], box["network"]["strictAllowlist"]), (True, True))
@@ -342,23 +344,39 @@ class SandboxBlock(unittest.TestCase):
         self.assertIn("/home/alex/.claude/projects", box["filesystem"]["denyRead"])   # transcripts
         self.assertIn("/home/alex/.claude/.credentials.json", box["filesystem"]["denyRead"])   # the account's sign-in
         # the file tools, outside the sandbox: only the working folders, never the checkout OF runs from
-        self.assertEqual(s["permissions"]["deny"], deny + [f"Edit(/{of_spawn.of_checkout()}/**)"])
+        rules = s["permissions"]["deny"]
+        self.assertEqual(rules[:len(deny) + len(cos)], deny + [f"Edit(/{c}/**)" for c in cos])
         self.assertIs(s["permissions"]["blockWritesOutsideWorkingDirectories"], True)
+        # the Read tool runs outside the sandbox, so it reads what denyRead keeps from Bash (of_server, 01a202e4-62f9)
+        for p in box["filesystem"]["denyRead"]:
+            if p == "/home/alex/.claude/projects":   # its own saved tool results stay open: transcripts only (PR 507)
+                self.assertIn(f"Read(/{p}/**/*.jsonl)", rules)
+                self.assertNotIn(f"Read(/{p}/**)", rules)
+                continue
+            self.assertIn(f"Read(/{p}/**)", rules)
+            self.assertIn(f"Read(/{p})", rules)
+        self.assertIn(f"Read(/{os.path.expanduser('~/.ssh')}/**)", rules)
+        self.assertEqual(rules.count("Read(//home/alex/.config/other/**)"), 1)   # the catalogue's own rule not doubled
+        self.assertNotIn("additionalDirectories", s["permissions"])            # no scratch named: none added
+        with mock.patch.object(of_spawn, "_accounts_dirs", return_value=["/home/alex/.claude"]):
+            own = json.loads(of_spawn.session_settings(None, deny, platform="linux", scratch=("/home/alex/repo", "S1")))
+        self.assertEqual(own["permissions"]["additionalDirectories"], own["sandbox"]["filesystem"]["allowRead"])
+        self.assertTrue(own["permissions"]["additionalDirectories"])           # its scratchpad, for the file tools
         mac = json.loads(of_spawn.session_settings(None, deny, platform="darwin"))
         self.assertNotIn("sandbox", mac)
         self.assertEqual(mac["permissions"], {"deny": deny})
 
-    def test_the_checkout_of_runs_from_is_the_one_its_link_resolves_into(self):
+    def test_the_checkouts_of_runs_from_are_its_links_and_spawns_own(self):
         import tempfile
         from unittest import mock
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
             here = os.path.dirname(os.path.dirname(os.path.realpath(of_spawn.__file__)))
-            self.assertEqual(of_spawn.of_checkout(), here)                   # no link: the code that runs
+            self.assertEqual(of_spawn.of_checkouts(), [here])                # no link: the code that runs
             os.makedirs(os.path.join(home, "co", "bin"))
             os.makedirs(os.path.join(home, ".local", "bin"))
             open(os.path.join(home, "co", "bin", "of"), "w").close()
             os.symlink(os.path.join(home, "co", "bin", "of"), os.path.join(home, ".local", "bin", "of"))
-            self.assertEqual(of_spawn.of_checkout(), os.path.realpath(os.path.join(home, "co")))
+            self.assertEqual(of_spawn.of_checkouts(), [os.path.realpath(os.path.join(home, "co")), here])  # both
 
     def test_other_sessions_scratch_is_denied_and_its_own_allowed(self):
         """Tried on the agent host (2026-11-20): the temp root must stay writable (the sandbox's sockets, $TMPDIR),
