@@ -81,6 +81,69 @@ class SystemdTest(unittest.TestCase):
             seen["restart"]()
             self.assertEqual(run.call_args[0][0], ["systemctl", "--user", "restart", "of-server.service"])
 
+    def test_the_backup_records_counts_and_the_check_restores_into_a_scratch_database(self):
+        """agent-host_keeper, 2026-11-22: no restore had been exercised on the host."""
+        with tempfile.TemporaryDirectory() as d:
+            state = os.path.join(d, "state")
+            of_server.Store(state)
+            rows = {"of_acme": {"events": 5}, "of_unassigned": {"events": 0}, "of_vault": {"raw": 2}}
+
+            def post(q):
+                if q.startswith("SELECT name, total_rows"):
+                    db = q.split("database = '")[1].split("'")[0]
+                    return "".join(f"{t}\t{n}\n" for t, n in rows.get(db, {}).items()).encode()
+                return b""
+            cfg = {"state_dir": state, "orgs": {"acme": "of_acme"}, "plugins": {"storage": "clickhouse"},
+                   "backup": {"clickhouse_disk": "backups"}}
+            with mock.patch("of_ship.config", return_value={"url": "http://192.0.2.1:8123"}):
+                of_server.backup(cfg, ch_post=post, today="2026-11-20")
+            counts = json.load(open(os.path.join(state, "backups", "2026-11-20", "clickhouse-counts.json")))
+            self.assertEqual(counts["of_acme"], {"events": [5, 5]})
+
+            class Admin:
+                def __init__(self, restored):
+                    self.restored, self.seen = restored, []
+
+                def post(self, q, **kw):
+                    self.seen.append(q)
+                    if q.startswith("SELECT name, total_rows"):
+                        db = q.split("database = '")[1].split("'")[0].replace("of_restore_check_", "")
+                        return "".join(f"{t}\t{n}\n" for t, n in self.restored.get(db, {}).items()).encode()
+                    return b""
+            good = Admin(rows)
+            out = of_server.backup_check(cfg, admin=good)
+            self.assertTrue(any("of_acme restored, 1 tables within" in x for x in out))
+            self.assertIn("RESTORE DATABASE of_acme AS of_restore_check_of_acme FROM Disk('backups', '2026-11-20/of_acme.zip')",
+                          good.seen)
+            self.assertEqual(good.seen[-1], "DROP DATABASE IF EXISTS of_restore_check_of_vault SYNC")   # dropped after
+            with self.assertRaisesRegex(SystemExit, "of_acme"):                                          # a short restore
+                of_server.backup_check(cfg, admin=Admin(dict(rows, of_acme={"events": 3})))
+            # of_review on PR 559: a database never restored is a failure, merges may shrink a count, and the error
+            # keeps ClickHouse's name
+            cpath = os.path.join(state, "backups", "2026-11-20", "clickhouse-counts.json")
+            saved = open(cpath).read()
+            json.dump(dict(json.loads(saved), of_vault={}), open(cpath, "w"))         # its count was not read
+            with self.assertRaisesRegex(SystemExit, "of_vault"):
+                of_server.backup_check(cfg, admin=good)
+            c = json.loads(saved)
+            del c["of_unassigned"]                                                     # its backup failed that night
+            json.dump(c, open(cpath, "w"))
+            with self.assertRaisesRegex(SystemExit, "of_unassigned"):
+                of_server.backup_check(cfg, admin=good)
+            c = json.loads(saved)
+            c["of_acme"] = {"events": [7, 5]}                                          # merged between the counts
+            json.dump(c, open(cpath, "w"))
+            of_server.backup_check(cfg, admin=Admin(dict(rows, of_acme={"events": 6})))
+
+            class Full(Admin):
+                def post(self, q, **kw):
+                    if q.startswith("RESTORE"):
+                        raise RuntimeError("ClickHouse 507: Code: 243. Cannot reserve space. (NOT_ENOUGH_SPACE)")
+                    return super().post(q, **kw)
+            json.dump(json.loads(saved), open(cpath, "w"))
+            with self.assertRaisesRegex(SystemExit, "NOT_ENOUGH_SPACE"):
+                of_server.backup_check(cfg, admin=Full(rows))
+
     def test_a_database_backed_up_today_is_left_and_one_failure_stops_no_other(self):
         """of_agent-server, 2026-11-22: BACKUP refuses a name that exists, and the name is the UTC day, so a run by
         hand before the timer's failed the timer's, and a run that failed half-way could not be retried that day."""
@@ -108,7 +171,7 @@ class SystemdTest(unittest.TestCase):
             with mock.patch("of_ship.config", return_value={"url": "http://192.0.2.1:8123"}):
                 with self.assertRaisesRegex(RuntimeError, r"failed for of_vault \(RuntimeError\)"):
                     of_server.backup(cfg, ch_post=post, today="2026-11-20")
-            self.assertEqual([q.split()[2] for q in sent], ["of_vault", "of_zeta"])  # acme and unassigned finished,
+            self.assertEqual([q.split()[2] for q in sent if q.startswith("BACKUP")], ["of_vault", "of_zeta"])  # acme and unassigned finished,
             # of_review on PR 554: a failed night removes no old day, or each one would leave fewer good backups
             self.assertTrue(os.path.isdir(os.path.join(chdir, "2026-11-01")))
             self.assertTrue(os.path.isdir(os.path.join(state, "backups", "2026-11-01")))
@@ -153,8 +216,9 @@ class SystemdTest(unittest.TestCase):
             self.assertEqual(os.stat(os.path.dirname(copy)).st_mode & 0o777, 0o700)
             got = sqlite3.connect(copy).execute("SELECT machine_id FROM machines").fetchall()
             self.assertEqual(got, [("m",)])
-            self.assertEqual(sent, [f"BACKUP DATABASE {db} TO Disk('backups', '2026-11-20/{db}.zip')"
-                                    for db in ("of_acme", "of_unassigned", "of_vault")])
+            self.assertEqual([q for q in sent if q.startswith("BACKUP")],
+                             [f"BACKUP DATABASE {db} TO Disk('backups', '2026-11-20/{db}.zip')"
+                              for db in ("of_acme", "of_unassigned", "of_vault")])
             self.assertFalse(os.path.exists(os.path.join(chdir, "2026-11-01")))           # past seven days
             self.assertFalse(os.path.exists(os.path.join(state, "backups", "2026-11-02")))
             self.assertTrue(any("removed 2026-11-01" in x for x in out))

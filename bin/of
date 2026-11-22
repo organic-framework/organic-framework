@@ -3737,6 +3737,9 @@ def cmd_server(args):
         for line in of_server.clickhouse_init():
             print(line)
         return 0
+    if args.action == "backup-check":  # that the newest backup restores (docs/server.md)
+        of_server.backup_check()
+        return 0
     if args.action == "backup":  # nightly under systemd on the host (of-server-backup.timer)
         try:
             lines = of_server.backup()
@@ -8735,7 +8738,7 @@ def main(argv=None):
     sv.add_argument("action", choices=["run", "start", "stop", "install", "uninstall", "watchdog", "enroll-machine",
                                        "tls-init", "route",
                                        "revoke", "status", "export-secret-key", "export", "import",
-                                       "moving", "backup", "clickhouse-init", "clickhouse-setup"])
+                                       "moving", "backup", "backup-check", "clickhouse-init", "clickhouse-setup"])
     sv.add_argument("--daemon", action="store_true", help="run: detach (the same as `of server start`)")
     sv.add_argument("--log", help="start: the log file (default ~/.local/log/of/server.log)")
     sv.add_argument("path", nargs="?", help="export-secret-key: a new file (mode 600) for the derived masking key; "
