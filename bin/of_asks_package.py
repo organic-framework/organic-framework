@@ -45,12 +45,11 @@ def before_file(project, card):
         return {"decision": "pass", "by": None}
     if isinstance(e, Exception):
         return {"decision": "stop", "by": f"{PACKAGE}'s lock", "reason": f"Benchfile.lock cannot be read: {e}"}
-    import bench
-    import of_method
-    try:
+    try:  # any failure, Bench or of_method missing included, closes the gate: never a traceback in `of ask`
+        import of_method
         return of_method.before(project, PACKAGE, "file", card)
-    except bench.BenchError as err:
-        return {"decision": "stop", "by": f"{PACKAGE}'s hooks", "reason": str(err)}
+    except Exception as err:  # noqa: BLE001
+        return {"decision": "stop", "by": f"{PACKAGE}'s hooks", "reason": f"{type(err).__name__}: {err}"}
 
 
 def escalate_after(project, log=None):
@@ -60,11 +59,10 @@ def escalate_after(project, log=None):
     e = _lock_names_it(project)
     if e is None or isinstance(e, Exception):
         return ESCALATE_AFTER_S
-    import bench
-    import of_method
-    try:
+    try:  # any failure keeps the default: the pulse's escalation never ends on it (of_platform on PR 574)
+        import of_method
         v = of_method.settings(project, PACKAGE).get("escalate_after")
-    except bench.BenchError as err:
+    except Exception as err:  # noqa: BLE001
         if log:
             log(f"of-asks escalate_after: {err}; the default {ESCALATE_AFTER_S // 3600}h acts")
         return ESCALATE_AFTER_S
