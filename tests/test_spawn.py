@@ -421,6 +421,13 @@ class WorkCloneTest(unittest.TestCase):
                 p = {"name": "a", "system": "s"}
                 self.assertEqual(of_spawn.work_dir(p, {"s": {"repos": ["build"]}}, [f"{d}/fw"]), f"{d}/fw")
                 self.assertIsNone(of.doc_path("build:doc.md", [f"{d}/fw"]))
+                # a way there through a link into the clone, or a link inside it pointing out: refused too
+                os.symlink(f"{d}/build", f"{d}/fw/via")
+                self.assertTrue(of_spawn.clone_guard()(f"{d}/fw/via/doc.md"))
+                os.makedirs(f"{d}/out")
+                os.symlink(f"{d}/out", f"{d}/build/link-out")
+                self.assertTrue(of_spawn.clone_guard()(f"{d}/build/link-out"))
+                self.assertFalse(of_spawn.clone_guard()(f"{d}/out"))
             # with no clone named, the sibling is taken as before
             self.assertEqual(of_spawn.work_dir(p, {"s": {"repos": ["build"]}}, [f"{d}/fw"]), f"{d}/build")
 

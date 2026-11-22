@@ -51,9 +51,21 @@ def clone_guard(orgs_file=None):
     checked where the folder is picked, not predicted when the clone is named)."""
     clones = [c for _, c, _, _ in work_clones(orgs_file, include_refused=True)]
 
-    def hit(path):
-        q = os.path.realpath(os.path.expanduser(str(path)))
+    def near(q):
         return any(q == c or q.startswith(c + os.sep) or c.startswith(q + os.sep) for c in clones)
+
+    def hit(path):
+        # the whole way there, not only where it ends: the path as written, and each step of it resolved
+        a = os.path.abspath(os.path.expanduser(str(path)))
+        if near(a) or near(os.path.realpath(a)):
+            return True
+        step = os.sep
+        for part in a.strip(os.sep).split(os.sep):   # a step on the way that lies in a clone (a folder above holds one)
+            step = os.path.join(step, part)
+            r = os.path.realpath(step)
+            if any(r == c or r.startswith(c + os.sep) for c in clones):
+                return True
+        return False
     return hit
 
 
@@ -69,7 +81,7 @@ def work_dir(p, systems, org_paths, exists=os.path.isdir):
                 if exists(cand) and not in_clone(cand):
                     return cand
     for root in roots:
-        if exists(root):
+        if exists(root) and not in_clone(root):
             return root
     raise SpawnError(f"no working folder for {p['name']}: system {p.get('system')!r} names no repository under "
                      f"{', '.join(org_paths or []) or 'the organization paths'}; pass --cwd")
