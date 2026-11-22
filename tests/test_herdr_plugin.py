@@ -280,6 +280,18 @@ class HookTest(unittest.TestCase):
                 plugin.log("x", state=d)
             self.assertEqual(open(victim).read(), "untouched\n")
 
+    def test_a_file_unlinked_after_the_open_is_still_ours(self):
+        """of_review on PR 540: a concurrent hook unlinks the pending mark between our open and fstat (count 0)."""
+        with tempfile.TemporaryDirectory() as d:
+            p, real = os.path.join(d, "herdr-plugin.pending"), os.open
+            def open_then_unlink(path, *a, **k):
+                fd = real(path, *a, **k)
+                if path == p:
+                    os.unlink(p)
+                return fd
+            with mock.patch.object(plugin.os, "open", open_then_unlink):
+                os.close(plugin._open_own(p, os.O_WRONLY | os.O_CREAT | os.O_APPEND))
+
     def test_a_file_of_another_user_is_refused(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "herdr-plugin.log"), "w"):

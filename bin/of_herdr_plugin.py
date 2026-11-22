@@ -54,7 +54,7 @@ def _open_own(path, flags):
     # a hard link planted there is a regular file too: it must be this user's own, with no other name (of_server, PR 540)
     why = ("is not a regular file" if not stat.S_ISREG(st.st_mode) else
            "is not this user's" if st.st_uid != os.getuid() else
-           "has another name (a hard link)" if st.st_nlink != 1 else None)
+           "has another name (a hard link)" if st.st_nlink > 1 else None)  # 0: unlinked after the open, by a concurrent hook
     if why:
         os.close(fd)
         raise OSError(f"{path} {why}")
