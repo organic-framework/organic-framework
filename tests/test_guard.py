@@ -134,6 +134,16 @@ class GuardBashTest(unittest.TestCase):
         self.assertIsNone(deny("echo $KEYCLOAK_HOST"))  # KEY is not a whole part of KEYCLOAK
         for v in ("$GITHUB_TOKEN", "$AWS_SECRET_ACCESS_KEY", "${DB_PASSWORD}", "$MY_PRIVATE_X", "$X_CREDENTIALS"):
             self.assertTrue(deny(f"echo {v}"), v)
+        # the deny says what to do when the variable holds no secret (a user organization's CI watcher, 2026-11-22)
+        got = deny('key=$(gh run view 1 --json status -q .status); echo "$key"')
+        self.assertTrue(got)
+        self.assertIn("give it a name that says so", str(got))
+        for cmd in ('echo "$key"', 'key=$API_TOKEN; echo "$key"', 'key="$API_TOKEN"; echo "$key"',
+                    'export key=$API_TOKEN; echo "$key"', 'key=$(gh run view 1); key=$1; echo "$key"',
+                    'key=$(echo $API_TOKEN); echo "$key"', 'key=`gh run view 1`; echo "$key"'):
+            got = deny(cmd)                                           # not set here, every time, from no variable:
+            self.assertTrue(got, cmd)                                 # the plain deny
+            self.assertNotIn("name that says so", str(got), cmd)
 
     def test_names_only_env_output_allowed(self):
         # of_architect decision 2: output that carries names only is fine; values are not
