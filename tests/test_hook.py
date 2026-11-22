@@ -562,7 +562,8 @@ class HandleTest(unittest.TestCase):
         ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
         self.assertLessEqual(len(ctx), of_context.CAP)
         first = ctx.split("\n")[0]
-        self.assertTrue(first.startswith("OF: this start context is cut to fit Claude Code's 10,000-character limit"))
+        # the binding rules are cut here too, so the first line says so loudly (of_architect, msg 01a204f7-ef0e)
+        self.assertTrue(first.startswith("OF WARNING: your organization's binding rules do not reach this session"))
         self.assertIn("the brief cut to", first)
         path = first.rsplit(": ", 1)[1]
         self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)

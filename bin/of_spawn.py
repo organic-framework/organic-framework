@@ -517,8 +517,9 @@ def launch_command(cwd, config_dir, sid, name, default_dir, model=None, bypass=T
 def plan(p, positions, agents, bind, systems, org_paths, org_root, want_workspace, config_dir=None, cwd=None,
          capacity_rows=None, best_target=None, trusted=None, default_dir=os.path.expanduser("~/.claude"),
          model=None, bypass=True, sid=None, memory=None, deny=None, accepted=None, tools=None, effort=None,
-         subagents=False):
-    """Everything run() needs, or SpawnError. trusted(config_dir, cwd) -> key or None; accepted(config_dir) -> whether
+         subagents=False, folders=None):
+    """Everything run() needs, or SpawnError. FOLDERS: {org: [folders]} the registries' positions run in
+    (of_context.rules_folders), so a session is never started in another organization's folder. trusted(config_dir, cwd) -> key or None; accepted(config_dir) -> whether
     the account accepted the Bypass Permissions warning (bypass_accepted); tools(position, sid, config_dir) ->
     (argv, settings keys) of its tool profile (of_tools.launch_parts)."""
     live = {q["name"]: a for q, a in bind(positions, agents)[0]}
@@ -532,6 +533,14 @@ def plan(p, positions, agents, bind, systems, org_paths, org_root, want_workspac
     if p.get("status") in ("parked", "finished"):
         raise SpawnError(f"{p['name']} is {p['status']} in the registry; its keeper resumes it first")
     cwd = os.path.expanduser(cwd) if cwd else work_dir(p, systems, org_paths)
+    if folders is not None:
+        import of_context
+        other = of_context.foreign_orgs(p.get("_orgid") or p.get("_org"), cwd, folders)
+        if other:
+            # its start would load their rules and, before, took theirs away (of_architect, message 01a204f7-ef0e)
+            raise SpawnError(f"{cwd} is a folder of {', '.join(sorted(other))}'s positions: a session of "
+                             f"{p.get('_org')} there loads their binding rules; start it in its own organization's "
+                             f"folder (--cwd)")
     if not config_dir:
         rows = capacity_rows or []
         # an account that trusts the folder first: a founder's task to trust it costs more than some headroom
