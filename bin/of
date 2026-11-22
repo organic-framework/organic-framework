@@ -5311,13 +5311,16 @@ def _diff_registry(org):
     try:
         import of_spawn
         svc = os.path.realpath(os.path.dirname(os.path.dirname(path)))
-        for clone, copy in of_spawn.work_clones(ORGS_FILE):
-            alt = os.path.join(clone, "registry", "positions.yaml")
-            if copy == svc and os.path.isfile(alt):
-                return alt
+        hit = next((os.path.join(c, "registry", "positions.yaml") for c, copy in of_spawn.work_clones(ORGS_FILE)
+                    if copy == svc and os.path.isfile(os.path.join(c, "registry", "positions.yaml"))), None)
     except Exception:  # noqa: BLE001 - no clone to read: the organization's own path
-        pass
-    return path
+        hit = None
+    if hit and not (os.environ.get("CLAUDE_CODE_SESSION_ID") and sys.platform.startswith("linux")):
+        # the clone only inside a session's sandbox (spawn's block, on Linux): outside one, the owner's terminal or a
+        # unit, a session may have planted anything in it (of_server, message 01a20471-8284, condition (b))
+        raise OfError(f"{org}'s registry lives in its work clone ({os.path.dirname(os.path.dirname(hit))}), which "
+                      "of diff uses only inside a session's sandbox: run it from the structure keeper's session")
+    return hit or path
 
 
 def _diff_check(d):

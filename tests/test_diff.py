@@ -324,15 +324,28 @@ class WorkCloneApplyTest(unittest.TestCase):
             with open(orgs, "w") as fh:
                 fh.write(f"orgs:\n  - name: ofb\n    path: {t}/copy\n    workspace: ofb\n"
                          f"    work_clone: {t}/clone\n")
+            # outside a session's sandbox (the owner's terminal, a unit) the clone is refused, and nothing is written
             r = run("diff", "propose", diff_file, "--from", "of_a")
-            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            r = run("diff", "apply", "sd-2026-11-22-clone")
-            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            self.assertIn("work clone", r.stdout)
-            clone = yaml.safe_load(open(os.path.join(t, "clone", "registry", "positions.yaml")))
-            self.assertEqual(clone["positions"][1]["mandate_exit"], {"done_when": "done", "review": "2026-12-01"})
-            with open(os.path.join(t, "copy", "registry", "positions.yaml")) as fh:
-                self.assertEqual(fh.read(), REG)                                   # the copy is never written
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("only inside a session's sandbox", r.stdout + r.stderr)
+            for repo in ("copy", "clone"):
+                with open(os.path.join(t, repo, "registry", "positions.yaml")) as fh:
+                    self.assertEqual(fh.read(), REG, repo)
+            # inside one (a session on Linux, spawn's sandbox) the registry is the clone's (of_server, condition (b))
+            import importlib.machinery
+            import importlib.util
+            from unittest import mock
+            loader = importlib.machinery.SourceFileLoader("of_cli_dc", of)
+            cli = importlib.util.module_from_spec(importlib.util.spec_from_loader("of_cli_dc", loader))
+            with mock.patch.dict(os.environ, {"OF_ORGS": orgs}):   # read as the module loads (org_registries' default)
+                loader.exec_module(cli)
+            with mock.patch.dict(os.environ, {"OF_ORGS": orgs, "CLAUDE_CODE_SESSION_ID": "s1"}), \
+                    mock.patch.object(cli.sys, "platform", "linux"):
+                self.assertEqual(cli._diff_registry("ofb"), os.path.join(t, "clone", "registry", "positions.yaml"))
+            with mock.patch.dict(os.environ, {"OF_ORGS": orgs}):
+                os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+                with mock.patch.object(cli.sys, "platform", "linux"), self.assertRaises(cli.OfError):
+                    cli._diff_registry("ofb")
 
 
 class ReproposeTest(unittest.TestCase):
