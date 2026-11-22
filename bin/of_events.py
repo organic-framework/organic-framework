@@ -13,7 +13,8 @@ STATE_DIR = os.environ.get("OF_STATE") or os.path.expanduser("~/.local/state/of"
 # sandboxed session may write on the agent host: there systemd opens a unit's append: log itself and follows a link a
 # session put at its name, and no O_NOFOLLOW in OF's code covers it (of_agent-server, msg 01a20460-c4bf; of_server's
 # hand-over 58681935). Outside spawn's allowWrite.
-LOG_DIR = os.environ.get("OF_LOG_DIR") or os.path.expanduser("~/.local/log/of")
+LOG_DIR = os.path.expanduser("~/.local/log/of")   # no environment override: the installing shell would choose the
+# units' text (of_review on PR 545 and PR 543)
 CONFIG_DIR = os.environ.get("OF_CONFIG_DIR") or os.path.expanduser("~/.config/of")
 
 
@@ -409,8 +410,8 @@ def append(rec, raw_ref=None):
         ok = append_jsonl(rec)
         if not ok:  # nowhere to write: say so where the owner looks, instead of losing it silently
             try:
-                with open(os.path.join(_state_dir(), "hook-errors.log"), "a") as fh:
-                    fh.write(f"{now_iso()} ERROR event {rec.get('event.name')} {rec.get('of.event.id')} not written\n")
+                append_own(os.path.join(_state_dir(), "hook-errors.log"),
+                           f"{now_iso()} ERROR event {rec.get('event.name')} {rec.get('of.event.id')} not written\n")
             except Exception:
                 pass
         return ok
@@ -420,7 +421,7 @@ def append_jsonl(rec):
     """The fallback spool: one JSON line under an exclusive lock. Never raises."""
     try:
         path = os.path.join(_state_dir(), "events.jsonl")
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        fd = open_own(path)   # never through a link: it runs when the store and the spool refuse (of_review, PR 545)
         with os.fdopen(fd, "a") as fh:
             fcntl.flock(fh, fcntl.LOCK_EX)
             fh.write(json.dumps(rec, ensure_ascii=False, separators=(",", ":")) + "\n")

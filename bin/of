@@ -3943,12 +3943,14 @@ def _ingest_worker(conn, args):
     pending = of_events.own_dir(os.path.join(of_events.STATE_DIR, "pending"))
     total = of_store.drain_spool(conn)
     while True:
-        markers = sorted(os.listdir(pending))
+        # write_new's temporary files (".tmp") are no markers: taken as one, a half-made file lost its transcript
+        # (of_review on PR 545, point 1)
+        markers = sorted(m for m in os.listdir(pending) if not m.endswith(".tmp"))
         if not markers:
             # No lost wakeup: a hook queues its marker BEFORE it checks the lock. Release, look
             # again, and take the lock back if something arrived meanwhile (lab finding).
             fcntl.flock(lock, fcntl.LOCK_UN)
-            if not os.listdir(pending):
+            if not [m for m in os.listdir(pending) if not m.endswith(".tmp")]:
                 break
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

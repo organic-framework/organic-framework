@@ -95,9 +95,15 @@ def connect(path=None, timeout=10.0):
     # the store never through a link a session put at its name: SQLite follows one at the database file itself (it
     # refuses one at its -wal), and the processes that write it run outside the sandbox on the agent host (of_server,
     # hand-over 58681935, docs/guard.md Gaps)
+    # a check by name before SQLite opens by name: it refuses a link or a second name (a hard link) planted before the
+    # open, not one swapped in between (docs/guard.md, Gaps)
     for p in (path, path + "-wal", path + "-shm", path + "-journal"):
-        if os.path.islink(p):
-            raise sqlite3.OperationalError(f"{p} is a link: the store is not opened through it")
+        try:
+            st = os.lstat(p)
+        except FileNotFoundError:
+            continue
+        if os.path.islink(p) or st.st_nlink > 1 or st.st_uid != os.getuid():
+            raise sqlite3.OperationalError(f"{p} is a link, a second name or not ours: the store is not opened")
     if not os.path.exists(path):
         try:
             os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600))
