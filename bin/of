@@ -2733,13 +2733,28 @@ def cmd_owner(args):
     import of_init
     if args.action == "show":
         doc = of_init.owner_settings()
-        for k, default in (("language", "en"), ("surface", "herdr")):
+        for k, default in (("language", "en"), ("surface", "herdr"), ("bench", "~/.local/share/bench")):
             v = doc.get(k)
             print(f"{k}: " + (f"{v}" + (f" ({of_init.language_name(v)})" if k == "language" else "") if v
                               else f"(not set: {default})"))
         return 0
     if not args.key or not args.value:
-        raise OfError("of owner set language <code or name> | of owner set surface herdr|remote")
+        raise OfError("of owner set language <code or name> | of owner set surface herdr|remote | "
+                      "of owner set bench <folder>")
+    if args.key == "bench":
+        # where OF finds Bench (bin/of_benchpath.py): the owner's, since OF imports code from it
+        import of_asks_answer
+        if of_asks_answer.not_the_owner():
+            raise OfError("where OF finds Bench is the owner's to set: OF runs its code. The owner runs "
+                          "`of owner set bench <folder>` in a plain terminal")
+        folder = os.path.realpath(os.path.expanduser(args.value))
+        if not os.path.isfile(os.path.join(folder, "bin", "bench.py")):
+            raise OfError(f"{args.value}: no bin/bench.py there; give a checkout of organic-framework/bench")
+        home = os.path.realpath(os.path.expanduser("~"))
+        shown = "~" + folder[len(home):] if folder.startswith(home + "/") else folder
+        of_init.write_owner_setting("bench", shown)
+        print(f"bench: {shown}")
+        return 0
     if args.key == "language":
         code = of_init.language_code(args.value)
         if code not in of_init.LANGUAGES:
@@ -2875,6 +2890,48 @@ def cmd_post(args):
     print(f"no result within {args.wait} s; the request {res['id']} stays queued, and its result will be at "
           f"{res['result']}", file=sys.stderr)
     return 2
+def cmd_bench(args):
+    """`of bench <command> [--org O] …`: Bench's commands (organic-framework/bench, docs/bench.md) with OF as the
+    framework, so `of bench install` checks an organization's settings and hooks against its packages' main.lua
+    (bin/of_method.py). --org takes the organization's folder from orgs.yaml; plain `bench` installs with no framework."""
+    rest = list(args.rest or [])
+    org = None
+    for i, a in enumerate(rest):
+        if a == "--org" and i + 1 < len(rest):
+            org = rest[i + 1]
+            del rest[i:i + 2]
+            break
+        if a.startswith("--org="):
+            org = a.split("=", 1)[1]
+            del rest[i]
+            break
+    if org:
+        path = (_org_paths_entry(org) or {}).get("path")
+        if not path:
+            raise OfError(f"orgs.yaml gives no path for {org}")
+        rest += ["--project", os.path.expanduser(str(path))]
+    try:
+        import of_method
+        import bench
+    except ImportError as e:
+        raise OfError(str(e))
+    bench.FRAMEWORK = of_method.on_install
+    import argparse
+
+    class _Top:
+        def add_parser(self, name, help=None):
+            return argparse.ArgumentParser(prog="of bench", description="Bench with OF as the framework (docs/bench.md)")
+    if not rest or rest[0] in ("-h", "--help"):
+        bench.add_parser(_Top()).print_help()
+        return 0
+    return bench.main(bench.add_parser(_Top()).parse_args(rest))
+
+
+def _org_paths_entry(org):
+    with open(ORGS_FILE) as fh:
+        doc = yaml.safe_load(fh) or {}
+    import of_init
+    return next((o for o in doc.get("orgs") or [] if isinstance(o, dict) and of_init.org_entry_name(o) == org), None)
 
 
 def cmd_subagent(args):
@@ -8300,6 +8357,12 @@ def main(argv=None):
     if argv and argv[0] in ("model", "studio"):  # of_studio's commands: dispatched as is, no logic here
         import of_studio_cli
         return of_studio_cli.main(argv)
+    if argv and argv[0] == "bench":  # Bench's own parser takes the rest (cmd_bench), its options included
+        try:
+            return cmd_bench(argparse.Namespace(rest=argv[1:]))
+        except OfError as e:
+            print(f"of: {e}", file=sys.stderr)
+            return 1
     if argv and argv[0] == "works":  # the works map and its state (docs/works.md): of_studio_cli's own `works` parser (= of model works)
         import of_studio_cli
         return of_studio_cli.main(argv)
@@ -8392,6 +8455,10 @@ def main(argv=None):
     po.add_argument("--repo", default="organic-framework/organic-framework")
     po.add_argument("--wait", type=int, default=120, help="seconds to wait for the unit's result (default 120)")
     po.set_defaults(fn=cmd_post)
+    bp = sub.add_parser("bench", help="Bench's commands with OF as the framework: install, check, settings, hook, fork, "
+                        "rebase, test (organic-framework/bench; docs/bench.md)", add_help=False)
+    bp.add_argument("rest", nargs=argparse.REMAINDER)
+    bp.set_defaults(fn=cmd_bench)
     sa = sub.add_parser("subagent", help="a read-only run on another provider's harness, Codex or Muse (RFC 0008 §3; "
                         "bin/of_subagent.py): run, or selftest (the live checks of its limits)")
     sa.add_argument("action", choices=["run", "selftest", "muse-login"])
@@ -8584,7 +8651,7 @@ def main(argv=None):
     ow = sub.add_parser("owner", help="this machine's owner settings, without an organization: show | set "
                         "language <code or name> | set surface herdr|remote (~/.config/of/owner.yaml)")
     ow.add_argument("action", choices=["show", "set"])
-    ow.add_argument("key", nargs="?", choices=["language", "surface"])
+    ow.add_argument("key", nargs="?", choices=["language", "surface", "bench"])
     ow.add_argument("value", nargs="?")
     ow.set_defaults(fn=cmd_owner)
     it = sub.add_parser("init", help="quickstart: an organization, positions, hooks and a local server")

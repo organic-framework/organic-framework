@@ -344,6 +344,36 @@ class AgentDefaultsTest(unittest.TestCase):
 
 
 
+class BenchPathTest(unittest.TestCase):
+    """bin/of_benchpath.py: OF finds Bench at the path its owner settings name, else ~/.local/share/bench; never by an
+    environment variable; its checkout is protected as OF's own (of_checkouts)."""
+
+    def test_the_path_the_owner_names_its_place_on_sys_path_and_its_protection(self):
+        import of_benchpath
+        import of_init
+        with tempfile.TemporaryDirectory() as d:
+            d = os.path.realpath(d)
+            co = os.path.join(d, "bench")
+            os.makedirs(os.path.join(co, "bin"))
+            saved = of_init.owner_settings().get("bench")
+            try:
+                of_init.write_owner_setting("bench", os.path.join(d, "absent"))
+                with self.assertRaisesRegex(ImportError, "Bench is not at"):
+                    of_benchpath.ensure()
+                self.assertNotIn(os.path.join(d, "absent"), of_spawn.of_checkouts())
+                with mock.patch.dict(os.environ, {"BENCH_HOME": co}):          # never read
+                    self.assertEqual(of_benchpath.home(), os.path.join(d, "absent"))
+                open(os.path.join(co, "bin", "bench.py"), "w").close()
+                of_init.write_owner_setting("bench", co)
+                b = of_benchpath.ensure()
+                self.assertEqual(sys.path[-1], b)                            # after OF's own modules
+                self.assertIn(co, of_spawn.of_checkouts())                    # denied to every session's writes
+            finally:
+                of_init.write_owner_setting("bench", saved)
+                if os.path.join(co, "bin") in sys.path:
+                    sys.path.remove(os.path.join(co, "bin"))
+
+
 class WorkCloneTest(unittest.TestCase):
     """Card OF-265 v2, hand-over ab9ed07b (of_server's four conditions, message 01a2044e-a1e4): a session on Linux may
     write the work clone the owner names in orgs.yaml, never its control files or the services' copy."""
