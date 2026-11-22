@@ -3698,7 +3698,13 @@ def cmd_server(args):
             print(line)
         return 0
     if args.action == "backup":  # nightly under systemd on the host (of-server-backup.timer)
-        for line in of_server.backup():
+        try:
+            lines = of_server.backup()
+        except of_server.BackupFailed as e:   # what it did, then why it failed (of_review on PR 554)
+            for line in e.lines:
+                print(line)
+            raise OfError(str(e)) from None
+        for line in lines:
             print(line)
         return 0
     if args.action in ("export", "import"):  # one organization's records between servers (bin/of_server_export.py)

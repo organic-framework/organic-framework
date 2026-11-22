@@ -84,8 +84,10 @@ class SystemdTest(unittest.TestCase):
             of_server.Store(state)
             chdir = os.path.join(d, "ch")
             os.makedirs(os.path.join(chdir, "2026-11-20"))
-            open(os.path.join(chdir, "2026-11-20", "of_acme.zip"), "w").close()       # made by an earlier run
-            open(os.path.join(chdir, "2026-11-20", "of_unassigned.zip"), "w").close()  # finished: no lock beside it
+            with open(os.path.join(chdir, "2026-11-20", "of_acme.zip"), "w") as fh:       # made by an earlier run
+                fh.write("zip")
+            with open(os.path.join(chdir, "2026-11-20", "of_unassigned.zip"), "w") as fh:  # finished: no lock beside it
+                fh.write("zip")
             os.makedirs(os.path.join(chdir, "2026-11-01"))                              # good old days, past the cutoff
             os.makedirs(os.path.join(state, "backups", "2026-11-01"))
             sent = []
@@ -99,7 +101,7 @@ class SystemdTest(unittest.TestCase):
             cfg = {"state_dir": state, "orgs": {"acme": "of_acme", "zeta": "of_zeta"}, "plugins": {"storage": "clickhouse"},
                    "backup": {"clickhouse_disk": "backups", "clickhouse_path": chdir}}
             with mock.patch("of_ship.config", return_value={"url": "http://192.0.2.1:8123"}):
-                with self.assertRaisesRegex(RuntimeError, "failed for of_vault"):
+                with self.assertRaisesRegex(RuntimeError, r"failed for of_vault \(RuntimeError\)"):
                     of_server.backup(cfg, ch_post=post, today="2026-11-20")
             self.assertEqual([q.split()[2] for q in sent], ["of_vault", "of_zeta"])  # acme and unassigned finished,
             # of_review on PR 554: a failed night removes no old day, or each one would leave fewer good backups
@@ -113,7 +115,10 @@ class SystemdTest(unittest.TestCase):
                 with self.assertRaises(RuntimeError) as cm:
                     of_server.backup(cfg, ch_post=post, today="2026-11-20")
             self.assertIn("of_zeta (an unfinished backup of the day is there)", str(cm.exception))
-            self.assertIn("of_unassigned (RuntimeError)", str(cm.exception))
+            self.assertIn("of_unassigned (BACKUP_ALREADY_EXISTS)", str(cm.exception))   # ClickHouse's name kept
+            self.assertTrue(any("server.db" in x for x in cm.exception.lines))          # and what succeeded
+            open(os.path.join(chdir, "2026-11-20", "of_acme.zip"), "w").close()         # empty: never done
+            self.assertEqual(of_server._day_zip(cfg["backup"], "2026-11-20", "of_acme"), "unfinished")
             # zeta still tried after vault failed
 
     def test_the_backup_copies_the_store_backs_up_each_database_and_keeps_seven_days(self):
