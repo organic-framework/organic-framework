@@ -54,10 +54,20 @@ class ParkedRefusalTest(unittest.TestCase):
         self.assertIn('`of send acme:acme_ops "…"`', got)
         self.assertIn("--to-parked", got)
 
-    def test_its_successor_unit_owner_and_structure_keeper_still_reach_it(self):
-        for sender in ("acme:acme_ops", "acme:acme_lead", "acme:acme_org"):
+    def test_its_unit_owner_and_structure_keeper_still_reach_it(self):
+        for sender in ("acme:acme_lead", "acme:acme_org"):
             with self.subTest(sender=sender):
                 self.assertIsNone(of_cli._parked_refusal("acme:acme_watch", self.BASE + [self.WATCH], sender))
+
+    def test_its_successor_is_refused_since_it_does_that_work(self):
+        """A successor's own messages sat in the parked queue until they raised a backlog card (a user organization
+        through its structure keeper, msg 01a2034b-a102)."""
+        got = of_cli._parked_refusal("acme:acme_watch", self.BASE + [self.WATCH], "acme:acme_ops")
+        self.assertIn("you, its successor, do its work now", got)
+        self.assertIn("--to-parked", got)
+        self.assertNotIn("of send acme:acme_ops", got)                  # never "send it to yourself"
+        lead = dict(self.WATCH, successor="acme_lead")                   # a successor that is also its unit's owner
+        self.assertIsNone(of_cli._parked_refusal("acme:acme_watch", self.BASE + [lead], "acme:acme_lead"))
         note = of_cli._parked_note("acme:acme_watch", self.BASE + [self.WATCH], "acme:acme_ops")
         self.assertIn("parked on purpose", note)
         self.assertNotIn("send it there instead", note)    # never "send it to yourself"
