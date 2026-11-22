@@ -629,13 +629,22 @@ class Relay:
             raise RelayError(403, "not_holder", "a person's position keeps its local inbox (of inbox)")
         return org, pos
 
-    def queued(self, m, to, session):
-        """The messages waiting for a position this caller holds, oldest first; nothing is leased."""
+    QUEUED_LIMIT = 100
+
+    def queued(self, m, to, session, newest=False):
+        """The messages waiting for a position this caller holds, at most QUEUED_LIMIT: the urgent ones first, then
+        the oldest (or, with NEWEST, the newest) of the rest; nothing is leased. `total` and `urgent` count the whole
+        queue, so a backlog past the limit never hides a newer or an urgent message behind a count that reads as
+        all (a user organization through its structure keeper, msg 01a203b5-c16a: a guard STOP and a runner hold
+        sat past the hundred oldest)."""
         org, pos = self._holder(m, to, session)
+        where = " FROM messages WHERE to_org = ? AND to_position = ? AND state IN ('queued', 'leased')"
         with self.app.store.conn() as c:
-            rows = c.execute(f"SELECT {_TAKE_COLS} FROM messages WHERE to_org = ? AND to_position = ?"
-                             " AND state IN ('queued', 'leased') ORDER BY seq LIMIT 100", (org, pos)).fetchall()
-        return {"messages": [_taken_fields(r) for r in rows]}
+            total, urgent = c.execute("SELECT count(*), COALESCE(sum(priority = 'urgent'), 0)" + where,
+                                      (org, pos)).fetchone()
+            rows = c.execute(f"SELECT {_TAKE_COLS}" + where + " ORDER BY COALESCE(priority, 'normal') = 'urgent' DESC, "
+                             + ("seq DESC" if newest else "seq") + " LIMIT ?", (org, pos, self.QUEUED_LIMIT)).fetchall()
+        return {"messages": [_taken_fields(r) for r in rows], "total": int(total or 0), "urgent": int(urgent or 0)}
 
     def take(self, m, msg_id, body):
         """Mark a message delivered because its receiver took it (`of inbox --mine`). Only without

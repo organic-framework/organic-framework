@@ -609,6 +609,23 @@ class RelayTest(unittest.TestCase):
         took = [p for _, p in self.events("of.message_delivered") if p.get("via") == "taken"]
         self.assertEqual(sorted((p["msg_id"], p["session_id"]) for p in took), [("t1", "S-dev"), ("t2", "S-dev")])
 
+    def test_a_backlog_past_the_limit_hides_no_urgent_message_and_counts_whole(self):
+        """A user organization through its structure keeper (msg 01a203b5-c16a): the listing held the hundred oldest
+        and read as the whole queue, so a guard STOP and a runner hold behind them went unseen."""
+        a, b = self.machine("a", ["ofb"]), self.machine("b", ["ofb"])
+        dev = {"holders": [{"org": "ofb", "position": "ofb_dev", "session_id": "S-dev", "kind": "agent"}]}
+        self.call(b, "PUT", "/v1/presence", dev)
+        n = of_server_relay.Relay.QUEUED_LIMIT + 5
+        for i in range(n):
+            self.call(a, "POST", "/v1/messages", {"msg_id": f"m{i:03d}", "to": "ofb:ofb_dev", "from": "ofb:ofb_lead",
+                                                  "text": "x", **({"priority": "urgent"} if i == n - 1 else {})})
+        got = self.call(b, "GET", "/v1/messages/queued?to=ofb:ofb_dev&session=S-dev")
+        self.assertEqual((got["total"], got["urgent"], len(got["messages"])), (n, 1, of_server_relay.Relay.QUEUED_LIMIT))
+        self.assertEqual(got["messages"][0]["msg_id"], f"m{n - 1:03d}")                 # the urgent one, newest, first
+        self.assertEqual(got["messages"][1]["msg_id"], "m000")                           # then the oldest
+        newest = self.call(b, "GET", "/v1/messages/queued?to=ofb:ofb_dev&session=S-dev&newest=1")["messages"]
+        self.assertEqual([m["msg_id"] for m in newest[:3]], [f"m{n - 1:03d}", f"m{n - 2:03d}", f"m{n - 3:03d}"])
+
     def test_fyi_is_never_offered_to_an_agents_relay(self):
         """priority fyi: an agent reads it with `of inbox --mine` (queued, take); its relay never leases
         it. A human's relay still gets it, for `of inbox`."""
@@ -627,7 +644,7 @@ class RelayTest(unittest.TestCase):
         self.assertEqual([(m["msg_id"], m["priority"]) for m in polled], [("p2", "urgent"), ("p3", "normal")])
         self.assertEqual(self.call(b, "PUT", "/v1/presence", dev)["queued"]["ofb:ofb_dev"]["n"], 3)
         q = self.call(b, "GET", "/v1/messages/queued?to=ofb:ofb_dev&session=S-dev")["messages"]
-        self.assertEqual([(m["msg_id"], m["priority"]) for m in q], [("p1", "fyi"), ("p2", "urgent"), ("p3", "normal")])
+        self.assertEqual([(m["msg_id"], m["priority"]) for m in q], [("p2", "urgent"), ("p1", "fyi"), ("p3", "normal")])
         took = self.call(b, "POST", "/v1/messages/p1/take", {"session": "S-dev"})
         self.assertEqual((took["state"], took["priority"]), ("delivered", "fyi"))
         self.assertEqual([p["priority"] for _, p in self.events("of.message_sent")], ["fyi", "urgent", "normal"])

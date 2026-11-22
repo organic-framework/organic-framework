@@ -1507,7 +1507,8 @@ def make_handler(app):
                         return self._problem(e.status, e.typ, e.title)
                 if u.path == "/v1/messages/queued":
                     q = parse_qs(u.query)
-                    return self._relay(lambda: app.relay.queued(m, (q.get("to") or [""])[0], (q.get("session") or [""])[0]))
+                    return self._relay(lambda: app.relay.queued(m, (q.get("to") or [""])[0], (q.get("session") or [""])[0],
+                                                                newest=(q.get("newest") or [""])[0] == "1"))
                 if u.path == "/v1/metrics":
                     if not m["tenant"]:
                         return self._problem(403, "forbidden", "tenant only")

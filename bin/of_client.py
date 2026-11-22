@@ -577,10 +577,12 @@ class Client:
     def poll_messages(self, wait=30):
         return self._authed("GET", f"/v1/messages?wait={int(wait)}")[1]
 
-    def queued_messages(self, to, session):
-        """Messages queued for a position this caller holds now (read-only, no lease)."""
+    def queued_messages(self, to, session, newest=False):
+        """Messages queued for a position this caller holds now (read-only, no lease): the urgent ones first, then the
+        oldest (NEWEST: the newest), with the whole queue's `total` and `urgent` counts."""
         from urllib.parse import quote
-        return self._authed("GET", f"/v1/messages/queued?to={quote(to)}&session={quote(session or '')}")[1]
+        return self._authed("GET", f"/v1/messages/queued?to={quote(to)}&session={quote(session or '')}"
+                                   + ("&newest=1" if newest else ""))[1]
 
     def take_message(self, msg_id, to, session):
         """Take one queued message: the server marks it delivered (pulled); idempotent."""

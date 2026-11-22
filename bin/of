@@ -4616,7 +4616,8 @@ def _inbox_mine(args):
         urls = [url.rstrip("/")]
     for i, u in enumerate(urls):
         try:
-            got += of_relay.pull(of_client.Client(u), key, session, take=args.take, pane_busy=busy)
+            got += of_relay.pull(of_client.Client(u), key, session, take=args.take, pane_busy=busy,
+                                 newest=getattr(args, "newest", False))
         except Exception as e:  # noqa: BLE001 - the server's 403 says why (not the holder, or a person)
             if i == 0:
                 raise OfError(f"of inbox --mine: {e}")
@@ -4625,7 +4626,14 @@ def _inbox_mine(args):
         print(f"not read: {line}")
     if args.take and args.take != "all" and not any(t for _, t in got):
         raise OfError(f"no queued message for {me['name']} matches {args.take!r}")
-    print(f"{len(got)} message(s) queued for {me['name']}" + ("" if args.take else
+    q = of_relay.LAST_QUEUE.get(key) or {}
+    total, urgent = q.get("total", len(got)), q.get("urgent", 0)
+    shown = (f"{total} message(s) queued for {me['name']}"
+             + (f", {urgent} of them urgent" if urgent else "")
+             + (f"; listed here: {q.get('listed')}, the urgent first, then the "
+                + ("newest" if getattr(args, "newest", False) else "oldest") + " (take some, or --newest, to see others)"
+                if q.get("listed") is not None and q.get("listed") < total else ""))
+    print(shown + ("" if args.take else
           " (listed, still queued: the relay types them in when you are idle; take them with --take <id>|all)"))
     for m, taken in got:
         if m.get("_note"):  # under a live lease: the relay is typing it in; act on it there, not here
@@ -8343,6 +8351,8 @@ def main(argv=None):
     ib.add_argument("--take", metavar="ID|all", help="take queued messages: delivered now, never typed in later; "
                                                     "all = what a listing showed this session (new ones stay queued)")
     ib.add_argument("--taken", action="store_true", help="--mine: show again what you took here (14 days)")
+    ib.add_argument("--newest", action="store_true",
+                    help="--mine: after the urgent messages, list the newest rather than the oldest")
     ib.add_argument("--from", dest="sender", help="--mine: which position you are, when the registry cannot tell "
                                                   "(your session must hold it)")
     ib.set_defaults(fn=cmd_inbox)

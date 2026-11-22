@@ -953,7 +953,12 @@ def taken_messages(key, since_s=TAKEN_KEEP_S, now=None):
     return out
 
 
-def pull(client, key, session, take=None, pane_busy=False):
+# {"<org>:<position>": {"total", "urgent", "listed"}} as the last `pull` heard them: the queue's true size, which a
+# listing of at most the server's limit does not show (a user organization, msg 01a203b5-c16a)
+LAST_QUEUE = {}
+
+
+def pull(client, key, session, take=None, pane_busy=False, newest=False):
     """Messages queued for `key` (this caller's own position). take: None (list only), "all" or a
     msg id prefix. A plain listing records what it showed to this session; "all" takes only those, and a
     message that arrived after the listing is returned untaken with `_note` NEW_SINCE_LISTING (it stays
@@ -961,7 +966,10 @@ def pull(client, key, session, take=None, pane_busy=False):
     taken on the server (delivered, so never offered again), kept locally (`taken_messages`), marked seen
     and declared as of.agent_message_in {delivery: pulled}. One under a live relay lease (409) is not
     taken: it is arriving in the pane. Returns [(message, taken: bool)]."""
-    msgs = (client.queued_messages(key, session) or {}).get("messages") or []
+    got = (client.queued_messages(key, session, newest=newest) if newest else client.queued_messages(key, session)) or {}
+    msgs = got.get("messages") or []
+    total = int(got.get("total") or len(msgs))   # an older server sends no total: the listing is all it says
+    LAST_QUEUE[key] = {"total": total, "urgent": int(got.get("urgent") or 0), "listed": len(msgs)}
     if take is None:
         mark_shown(key, session, [m["msg_id"] for m in msgs])
     listed = shown(key, session) if take == "all" else set()
@@ -1006,7 +1014,9 @@ def pull(client, key, session, take=None, pane_busy=False):
                            position=key.partition(":")[2], session=session)
         out.append((m, bool(want)))
     left = [m for m, taken in out if not taken]
-    set_queue(key, len(left), min((m.get("created_at") for m in left if m.get("created_at")), default=None))
+    # the whole queue less what this call took, never only the listing's length (a backlog past the server's limit)
+    set_queue(key, max(total - sum(1 for _, t in out if t), len(left)),
+              min((m.get("created_at") for m in left if m.get("created_at")), default=None))
     return out
 
 
