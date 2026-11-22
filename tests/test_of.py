@@ -253,6 +253,32 @@ class RegistryTest(unittest.TestCase):
         finally:
             sp.run = saved
 
+    def test_in_a_sandbox_a_fresh_heartbeat_and_unseen_transcripts_say_nothing(self):
+        """of_agent-server on the agent host, message 01a202cd-f226: in a sandbox pgrep sees only the sandbox's own
+        processes and the accounts' transcripts are denied; a running relay and a live session read as dead."""
+        import subprocess as sp
+        import time as _t
+        from unittest import mock
+        import of_relay_client
+        none = lambda *a, **k: type("R", (), {"stdout": "", "returncode": 1})()  # noqa: E731
+        with mock.patch.object(sp, "run", none):
+            with mock.patch.object(of_relay_client, "read_heartbeat", lambda *a, **k: {"ts": _t.time() - 30}):
+                self.assertTrue(of.relay_alive())
+            with mock.patch.object(of_relay_client, "read_heartbeat",
+                                   lambda *a, **k: {"ts": _t.time() - of_relay_client.STALE_S - 60}):
+                self.assertFalse(of.relay_alive())                     # an old heartbeat: pgrep tells
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            seen = []
+            with mock.patch.object(of, "_transcripts_visible", lambda: False):
+                self.assertTrue(of._transcript_exists("s-unseen", {}))   # none in sight: not called stale
+            with mock.patch.object(of, "_transcripts_visible", lambda: seen.append(1) or True):
+                self.assertFalse(of._transcript_exists("s-gone", {}))
+            os.makedirs(os.path.join(home, ".claude", "projects", "p"))
+            self.assertFalse(of._transcripts_visible([]))
+            open(os.path.join(home, ".claude", "projects", "p", "s1.jsonl"), "w").close()
+            self.assertTrue(of._transcripts_visible([]))
+            self.assertTrue(of._transcript_exists("s1", {}))
+
     def test_prompts_mine_lists_the_persons_prompts_with_ids(self):
         """of_onboarding, 2026-11-11: a provisional position cites the event id of the head's typed yes."""
         import argparse
