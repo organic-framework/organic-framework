@@ -338,7 +338,11 @@ class SettingsDigestTest(unittest.TestCase):
             self.assertEqual((name, payload["session"], payload["sha256"], payload["by"], kw["session"]),
                              ("session_settings", "S1", digest, "of spawn", "S1"))
             of_spawn.record_settings(pl, d, emit=lambda *a, **k: got.append((a, k)), by="of resume-command")
-            self.assertEqual(got[-1][0][1]["by"], "of resume-command")     # every restored pane resumes through it
+            self.assertEqual(got[-1][0][1]["by"], "of resume-command")     # herdr's own resume runs through it
+            with open(path, "w") as fh:                                    # another session rewrites it before launch
+                fh.write('{"x": 2}')
+            self.assertEqual(of_spawn.record_settings(pl, d, emit=lambda *a, **k: got.append((a, k))), digest)
+            self.assertEqual(got[-1][0][1]["disk_sha256"], hashlib.sha256(b'{"x": 2}').hexdigest())   # PR 516 review
 
 
 class SandboxBlock(unittest.TestCase):
