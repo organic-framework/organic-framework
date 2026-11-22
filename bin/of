@@ -49,6 +49,24 @@ try:
 except ImportError:
     sys.exit("of: PyYAML is missing. Install it with `python3 -m pip install --user pyyaml`.")
 
+
+def _timestamps_as_yaml_errors():
+    """An impossible unquoted time (2026-11-31T08:00:00Z) makes PyYAML raise ValueError, which is no YAMLError, so
+    every command that read that registry ended in a traceback. Re-raised as a ConstructorError on the safe loader,
+    every reader here reports it as the file's YAML problem (of_review on PR 506, the parked_until field)."""
+    from yaml.constructor import ConstructorError, SafeConstructor
+    base = SafeConstructor.construct_yaml_timestamp
+
+    def construct(loader, node):
+        try:
+            return base(loader, node)
+        except (ValueError, OverflowError) as e:
+            raise ConstructorError(None, None, f"no such date or time ({e})", node.start_mark)
+    yaml.SafeLoader.add_constructor("tag:yaml.org,2002:timestamp", construct)
+
+
+_timestamps_as_yaml_errors()
+
 from of_locale import tr  # noqa: E402  what a person reads, in their language (bin/of_locale.py)
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")

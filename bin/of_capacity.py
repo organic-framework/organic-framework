@@ -2268,12 +2268,14 @@ def balance_why(reason):
 
 
 def handover_note(name, sid, src, dst, account, continuation, ts, extra=None, model=None, why=None, restarted=False,
-                  bg=()):
+                  bg=(), parked=None):
     """model: (old, new) when the move changes the session's model; why: the reason, said to the session;
     restarted: a restart on the same account and model (move --restart); bg: the commands of the background
     processes the exit stopped (from `ps`), listed first: a window, a watch or a guard among them stands open with
     nothing behind it until the session re-attaches it (2026-11-22: a user organization's keeper lost two production
-    windows' watchdogs in a relief move, and found them below the scheduled tasks)."""
+    windows' watchdogs in a relief move, and found them below the scheduled tasks); parked: the position is parked
+    (its `parked_until`, or "" when it names none): the note says so and asks for no work, only a short reply and
+    `of status idle`, since a move must not end a park (of_review on PR 506)."""
     if why and why.strip() and why.strip()[-1] not in ".!?":
         why = why.strip() + "."  # a reason runs into the next sentence otherwise (PR 269 review)
     if restarted:
@@ -2297,11 +2299,21 @@ def handover_note(name, sid, src, dst, account, continuation, ts, extra=None, mo
                  f"({account}): " + (why.strip() if why else "the old account is near its model limits.")
                  + " Same session, same pane, same name; your context, memory and files are carried."
                  + ("" if why else " Nothing else changed."), ""]
+    if parked is not None:
+        lines += ["## Your position is parked", "",
+                  f"Your position is parked{f' until {parked}' if parked else ''} (its registry's `status: parked`), "
+                  "and it stays parked until whoever parked it sets `status: active`. This move only put your session "
+                  "on an account that accepts work for when the park ends. Start no work, run no command and "
+                  "re-create nothing now: what this note lists below is for when your park ends. Reply in at most "
+                  "three lines with what you were working on before the park and what you will do first after it, "
+                  "then run `of status idle` and wait.", ""]
     if bg:
         lines += ["## First: your background work stopped", "",
                   "These processes ran under your old process and stopped with it at the move (from `ps`). A window, "
-                  "a watch, a guard or a poll among them now stands with nothing behind it: re-attach or close those "
-                  "first, before anything else in this note, then re-create the rest you still need:"]
+                  "a watch, a guard or a poll among them now stands with nothing behind it: "
+                  + ("when your park ends, re-attach those you still need first, then the rest:" if parked is not None
+                     else "re-attach or close those first, before anything else in this note, then re-create the rest "
+                          "you still need:")]
         lines += [f"- `{c}`" for c in bg] + [""]
     crons = (continuation or {}).get("session_crons") or []
     tasks = [t for t in (continuation or {}).get("background_tasks") or [] if t.get("status") == "running"]
@@ -2316,11 +2328,13 @@ def handover_note(name, sid, src, dst, account, continuation, ts, extra=None, mo
         lines += ["Re-create the ones you still need that are not there.", ""]
     else:
         lines += ["The pre-exit record lists no crons, monitors or background tasks.", ""]
-    lines += ["Check that the move kept your context: reply in at most three lines with",
-              "1. what you were working on before this message, and",
-              "2. your next step.",
-              "Then declare your state with `of status` as usual and carry on (or stay idle if you were waiting).",
-              "", HOLDER_LAG_NOTE]
+    if parked is None:
+        lines += ["Check that the move kept your context: reply in at most three lines with",
+                  "1. what you were working on before this message, and",
+                  "2. your next step.",
+                  "Then declare your state with `of status` as usual and carry on (or stay idle if you were waiting).",
+                  ""]
+    lines += [HOLDER_LAG_NOTE]
     if extra:
         lines += ["", "## From your organization", "", extra.strip()]
     return "\n".join(lines) + "\n"
@@ -3244,7 +3258,8 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
     os.makedirs(work, mode=0o700, exist_ok=True)
     note = handover_note(name, sid, src, target, account_of(target), cont, _iso(time.time()),
                          (extra_note or "").replace("<name>", name) or None,
-                         model=(ctx_model, model) if switch else None, why=why, restarted=restarted, bg=running)
+                         model=(ctx_model, model) if switch else None, why=why, restarted=restarted, bg=running,
+                         parked=parked_note(p))
     _write_handover_note(note_path, note)
     held = False  # a Zellij pane whose command is claude itself is "held" after exit; Esc drops it to a shell
     if runtime == "zellij":
@@ -6251,7 +6266,16 @@ def park_end(p):
     v = (p or {}).get("parked_until")
     if isinstance(v, datetime):
         return (v if v.tzinfo else v.replace(tzinfo=timezone.utc)).timestamp()
+    v = v.strip() if isinstance(v, str) else v   # as `of registry check` reads it (of_review on PR 506)
     return _ts(v) if isinstance(v, str) and "T" in v else None
+
+
+def parked_note(p):
+    """For handover_note: None when position `p` is not parked; else its park's end as an ISO time ("" with none)."""
+    if str((p or {}).get("status") or "").split("#")[0].strip() != "parked":
+        return None
+    end = park_end(p)
+    return _iso(end) if end is not None else ""
 
 
 def rests_from_rescue(p, now):
@@ -6350,10 +6374,12 @@ def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib
             if not (is_stopped or doomed) or not p or s.get("status") not in ("idle", "shell", "waiting") \
                     or s["session"] in skip or rests_from_rescue(p, now):
                 continue
-            cands.append((not is_stopped, p["name"] not in policy["hold"], priority_tier(p, policy),
+            # a parked session near its park's end goes after every working one: its stop is nearly always the
+            # oldest, and with 27 parked it would hold the slots (of_review on PR 506)
+            cands.append((resting(p), not is_stopped, p["name"] not in policy["hold"], priority_tier(p, policy),
                           stopped.get(s["session"], until), p["name"], s["session"], d))
     moves = []
-    for later, _, _, since, name, sid, d in sorted(cands):
+    for _, later, _, _, since, name, sid, d in sorted(cands):
         if len(moves) >= policy.get("rescue_moves", RESCUE_MOVES):
             break
         t = min((r for r in targets if r["config_dir"] != d and model_fits(models.get(sid), r.get("tier"))),

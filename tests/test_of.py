@@ -256,6 +256,15 @@ class RegistryTest(unittest.TestCase):
             self.assertIn("acme_past: parked_until 2020-01-01", deep)
             self.assertNotIn("acme_left: parked_until", quick)                  # warnings: of registry check only
         self.assertEqual(of.parked_until_ts("2026-11-23T00:00:00Z"), 1795392000.0)
+        # of_review on PR 506: an impossible unquoted time was a ValueError, so a traceback, in every reader
+        with tempfile.TemporaryDirectory() as root:
+            self.write(root, "org/registry/positions.yaml", """
+                positions:
+                  - {name: acme_typo, system: acme, role: t, status: parked, parked_until: 2026-11-31T08:00:00Z}
+                """)
+            self.write(root, "conf/orgs.yaml", "orgs:\n  - {name: acme, path: %s/org}\n" % root)
+            problems = "\n".join(of.load_positions(os.path.join(root, "conf/orgs.yaml"), deep=True)[1])
+            self.assertIn("not valid YAML", problems)
         self.assertEqual(of.parked_until_ts("2026-11-23T04:00:00+04:00"), 1795392000.0)
 
     def test_org_agents_reads_the_entry(self):
