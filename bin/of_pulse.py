@@ -1169,7 +1169,7 @@ def loop_stalls(positions, agents, bind, mem, now, conn, works, prompt=None, thr
             card = of_loops.project(wid, loop, rows, now, work=work, asks=ends)
         except Exception as e:  # noqa: BLE001 - one work's bad shape stops neither the others nor its own episode
             kept.add(f"{org}/{wid}")
-            log(f"loop stalls: {org}/{wid}: {type(e).__name__}: {e}; its episode is kept")
+            print(f"loop stalls: {org}/{wid}: {type(e).__name__}: {e}; its episode is kept")   # even quiet, as before
             continue
         if not card:
             continue
@@ -1272,13 +1272,13 @@ def booking_note(items, loops=()):
             "limit with its ask id), say it with its source where you booked it.\n[once per booking]")
 
 
-def _loop_owners(works, log=print):
+def _loop_owners(works):
     """{(org, position): [work ids]}: the works with a loop each position owns or does. WORKS as booking_notes takes it.
     A failed read, or an owner or doers of the wrong shape, give nothing for that work, never an error."""
     try:
         works = works() if callable(works) else works
     except Exception as e:  # noqa: BLE001 - the note goes out without the offer
-        log(f"booking notes: works not read ({type(e).__name__}: {e}); notes go without `of loop wait`")
+        print(f"booking notes: works not read ({type(e).__name__}: {e}); notes go without `of loop wait`")
         works = ()
     out = {}
     for row in works or ():
@@ -1336,7 +1336,7 @@ def booking_notes(positions, agents, bind, mem, now, conn, prompt=None, log=prin
             keep.append(x)
             continue
         if loops is None:
-            loops = _loop_owners(works, log)
+            loops = _loop_owners(works)
         note = booking_note(x["items"], loops.get((x["org"], x["position"])) or ())
         res = prompt(a["pane_id"], note, "of_pulse")
         if (res[0] if isinstance(res, tuple) else (res is None or res is True)) is not True:
