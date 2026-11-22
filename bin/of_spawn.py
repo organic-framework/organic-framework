@@ -365,6 +365,13 @@ def of_checkouts():
     return list(dict.fromkeys([d for d in found if _is_checkout(d)] + [own]))
 
 
+def post_door(folder="/srv/of-gh-post/of"):
+    """The posting unit's door for OF's sessions, where it is set up: its requests folder and its signal file, never
+    the folder whole (of_server's interface v1, message 01a20553-b1bd; bin/of_post.py)."""
+    req, sig = os.path.join(folder, "requests"), os.path.join(folder, "signal")
+    return [req, sig] if os.path.isdir(req) and not os.path.islink(req) else []
+
+
 def sandbox_settings(deny=None, platform=None, scratch=None, org=None):
     """The session's `sandbox` block on Linux, else None. DENY: its Read/Edit deny rules (`Read(//abs/path/**)`).
     SCRATCH: (its working folder, its session id), so its own scratch folder stays readable while the other sessions'
@@ -429,7 +436,7 @@ def sandbox_settings(deny=None, platform=None, scratch=None, org=None):
                            "denyWrite": denied + [os.path.expanduser("~/.local/state/of/index.json")]
                            + of_checkouts() + [g for g in guarded if g not in of_checkouts()],
                            "allowRead": allow,
-                           "allowWrite": [os.path.expanduser("~/.local/state/of")] + writable},
+                           "allowWrite": [os.path.expanduser("~/.local/state/of")] + writable + post_door()},
             # deniedDomains is empty but given: the sandbox runtime alone refuses a network block without it
             # (srt 0.0.83; of_lab's guest check of the work clone, message 01a204eb-96d4)
             "network": {"allowAllUnixSockets": True, "strictAllowlist": True,
