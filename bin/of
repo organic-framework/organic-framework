@@ -2715,6 +2715,18 @@ def cmd_owner(args):
     return 0
 
 
+def _clone_ok(entry):
+    """Does an orgs.yaml entry's work clone get its sessions' allowWrite (of_spawn's checks)?"""
+    import of_spawn
+    return any(o == of_init_name(entry) for o, _, _ in of_spawn.work_clones(ORGS_FILE)) and \
+        of_spawn.clone_ready(os.path.realpath(os.path.expanduser(str(entry.get("work_clone")))))
+
+
+def of_init_name(entry):
+    import of_init
+    return of_init.org_entry_name(entry)
+
+
 def cmd_org(args):
     """`of org show [<org>]`, `of org set <org> hold on|off` and `of org set <org> path <folder>`: an organization's
     settings in this machine's orgs.yaml,
@@ -2736,7 +2748,9 @@ def cmd_org(args):
         for o in shown:
             print(f"{of_init.org_entry_name(o)}: hold {'on' if o.get('hold') else 'off'}, path "
                   f"{o.get('path') or '(none: joined through a server only)'}"
-                  + (f", work clone {o['work_clone']}" if o.get("work_clone") else ""))
+                  + (f", work clone {o['work_clone']}" + ("" if _clone_ok(o) else " (not writable: refused, or no "
+                                                                   ".git/commondir holding '.')")
+                     if o.get("work_clone") else ""))
         return 0
     usage = ("of org set <org> hold on|off | of org set <org> path <its repository's folder> | "
              "of org set <org> work_clone <a clone of it>|none")
@@ -2760,8 +2774,16 @@ def cmd_org(args):
                 raise OfError(f"{args.value}: not a git clone (no .git there)")
             import of_spawn
             why = of_spawn.clone_refused(folder, entries, os.path.dirname(os.path.abspath(path)))
-            if why:   # any organization's path or checkout, OF's own checkout, the home (of_review on PR 542)
+            if why:   # any organization's path or checkout, OF's own folders, the home (of_review on PR 542)
                 raise OfError(f"{args.value}: not a work clone: {why}; give a clone of its own")
+            cd = os.path.join(folder, ".git", "commondir")
+            if os.path.isdir(os.path.join(folder, ".git")) and not os.path.lexists(cd):
+                with open(os.open(cd, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644),
+                          "w") as fh:
+                    fh.write(".\n")   # in place, so the sandbox denies it as a file and no session can make it
+            if not of_spawn.clone_ready(folder):
+                raise OfError(f"{args.value}: .git/commondir must be a file holding '.': a worktree or a link is no "
+                              "work clone")
             home = os.path.realpath(os.path.expanduser("~"))
             value = shown_value = "~" + folder[len(home):] if folder.startswith(home + "/") else folder
     else:
@@ -5312,11 +5334,13 @@ def _diff_registry(org):
         import of_spawn
         svc = os.path.realpath(os.path.dirname(os.path.dirname(path)))
         hit = next((os.path.join(c, "registry", "positions.yaml") for o, c, copy in of_spawn.work_clones(ORGS_FILE)
-                    if o == org and copy == svc and os.path.isfile(os.path.join(c, "registry", "positions.yaml"))),
+                    if o == org and copy == svc and of_spawn.clone_ready(c)
+                    and os.path.isfile(os.path.join(c, "registry", "positions.yaml"))),
                    None)
     except Exception:  # noqa: BLE001 - no clone to read: the organization's own path
         hit = None
-    if hit and not (os.environ.get("CLAUDE_CODE_SESSION_ID") and sys.platform.startswith("linux")):
+    if hit and not (os.environ.get("CLAUDE_CODE_SESSION_ID") and sys.platform.startswith("linux")
+                    and os.environ.get("SANDBOX_RUNTIME") == "1"):   # set inside sandbox-runtime, not in a bare session
         # the clone only inside a session's sandbox (spawn's block, on Linux): outside one, the owner's terminal or a
         # unit, a session may have planted anything in it (of_server, message 01a20471-8284, condition (b))
         raise OfError(f"{org}'s registry lives in its work clone ({os.path.dirname(os.path.dirname(hit))}), which "

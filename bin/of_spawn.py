@@ -168,10 +168,24 @@ def _accounts_dirs():
 # clone: hooks, config (a hook path, a filter, an fsmonitor), info (attributes, excludes), submodules, worktrees (their
 # config.worktree and commondir), and the folder's own Claude Code settings (of_server's conditions for a work clone,
 # message 01a2044e-a1e4; hand-over ab9ed07b)
-# .git/commondir is left out: absent in an ordinary clone, a denied absent path is covered by an empty file on Linux,
-# and git dies on an empty commondir (of_review on PR 542, probe 5)
-CLONE_CONTROL = (".git/config", ".git/config.worktree", ".git/hooks", ".git/info", ".git/modules", ".git/worktrees",
-                 ".claude", ".mcp.json")
+# .git/commondir is denied too, and must exist: a session that could create it would have git take the repository's
+# config and hooks from a folder it wrote, around every other entry here. Holding "." it changes nothing for git, and
+# `of org set <org> work_clone` writes it; a clone without it gets no allowWrite (of_review on PR 542, second round:
+# absent, the Linux sandbox would cover it with an empty file, on which git dies)
+CLONE_CONTROL = (".git/config", ".git/config.worktree", ".git/commondir", ".git/hooks", ".git/info", ".git/modules",
+                 ".git/worktrees", ".claude", ".mcp.json")
+
+
+def clone_ready(clone):
+    """Does CLONE hold .git/commondir, a regular file that is no link, holding "."? Only then is it writable."""
+    p = os.path.join(clone, ".git", "commondir")
+    try:
+        if os.path.islink(p) or not os.path.isfile(p):
+            return False
+        with open(p) as fh:
+            return fh.read().strip() == "."
+    except OSError:
+        return False
 
 
 def _orgs_file():
@@ -186,7 +200,15 @@ def clone_refused(clone, entries, base=None):
     home = os.path.realpath(os.path.expanduser("~"))
     if clone == home:
         return "the home folder itself"
-    guarded = list(of_checkouts())
+    import of_events
+    # OF's own checkout, configuration, state and log folders, every account's folder, the SSH folder and the user's
+    # systemd units: allowWrite would open orgs.yaml, which this design trusts, or a key (of_review on PR 542)
+    guarded = list(of_checkouts()) + [os.path.realpath(os.path.expanduser(x)) for x in
+                                      (os.environ.get("OF_CONFIG_DIR") or "~/.config/of", "~/.ssh",
+                                       "~/.config/systemd/user", "~/Library/LaunchAgents")]
+    guarded += [os.path.realpath(x) for x in (of_events.STATE_DIR, getattr(of_events, "LOG_DIR", None) or
+                                              os.path.expanduser("~/.local/log/of"))]
+    guarded += [os.path.realpath(x) for x in _accounts_dirs()]
     for o in entries:
         for q in [o.get("path")] + list(o.get("paths") or []):
             if q:
@@ -197,13 +219,14 @@ def clone_refused(clone, entries, base=None):
     return None
 
 
-def work_clones(orgs_file=None):
+def work_clones(orgs_file=None, include_refused=False):
     """[(organization, its work clone, its services' copy)] for each organization whose entry in this machine's
     orgs.yaml names a `work_clone` (card OF-265, the founder's yes; hand-over ab9ed07b): a clone of its repository its
     own sessions may write from their sandbox, while the copy its services and the registry run from (`path`) stays
     denied. orgs.yaml is the owner's file, which no agent writes (docs/guard.md G33); the registry follows agents'
-    pushes, so it never names one. A clone that clone_refused refuses is left out. Outside the sandbox only `of diff`,
-    in a session, reads it (of_server, message 01a20471-8284)."""
+    pushes, so it never names one. A clone that clone_refused refuses is left out, unless INCLUDE_REFUSED (then each
+    row ends with the refusal, or None): its copy stays denied all the same. Outside the sandbox only `of diff`, in a
+    session, reads it (of_server, message 01a20471-8284)."""
     import yaml
     f = orgs_file or _orgs_file()
     try:
@@ -219,8 +242,9 @@ def work_clones(orgs_file=None):
             continue
         clone = os.path.realpath(os.path.join(base, os.path.expanduser(str(o["work_clone"]))))
         svc = os.path.realpath(os.path.join(base, os.path.expanduser(str(o["path"]))))
-        if not clone_refused(clone, entries, base):
-            out.append((o.get("name") or os.path.basename(svc), clone, svc))
+        refused = clone_refused(clone, entries, base)
+        if include_refused or not refused:
+            out.append((o.get("name") or os.path.basename(svc), clone, svc) + ((refused,) if include_refused else ()))
     return out
 
 
@@ -338,9 +362,11 @@ def sandbox_settings(deny=None, platform=None, scratch=None, org=None):
     # its .git's objects and refs are code too (of_checkouts; a host position works in its own clone, never in it)
     # a work clone the owner named: writable, its control files never, and the services' copy denied (hand-over
     # ab9ed07b); a clone not there gets nothing, its services' copy is denied all the same
-    clones = work_clones()   # ORG's clone only; every organization's services' copy denied (of_review on PR 542)
-    writable = [c for o, c, _ in clones if o == org and org and os.path.isdir(c)]
-    guarded = [svc for _, _, svc in clones] + [os.path.join(c, x) for c in writable for x in CLONE_CONTROL]
+    # ORG's clone only, and only with its commondir in place; every copy of an organization that names a clone denied,
+    # its clone refused or not (of_review on PR 542)
+    writable = [c for o, c, _ in work_clones() if o == org and org and os.path.isdir(c) and clone_ready(c)]
+    guarded = [svc for _, _, svc, _ in work_clones(include_refused=True)] + \
+        [os.path.join(c, x) for c in writable for x in CLONE_CONTROL]
     return {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
             "autoAllowBashIfSandboxed": True,
             "filesystem": {"denyRead": denied,
@@ -389,11 +415,10 @@ def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=
         if box["filesystem"]["allowRead"]:
             perms["additionalDirectories"] = list(box["filesystem"]["allowRead"])
         # the work clone for the file tools too, and its control files and the services' copy denied to them
-        clones = work_clones()
-        writable = [c for o, c, _ in clones if o == org and org and os.path.isdir(c)]
+        writable = [c for o, c, _ in work_clones() if o == org and org and os.path.isdir(c) and clone_ready(c)]
         if writable:
             perms["additionalDirectories"] = list(dict.fromkeys(perms.get("additionalDirectories", []) + writable))
-        for _, _, svc in clones:
+        for _, _, svc, _ in work_clones(include_refused=True):
             if f"Edit(/{svc}/**)" not in rules:
                 rules.append(f"Edit(/{svc}/**)")
         for c in writable:
