@@ -388,6 +388,21 @@ class UnreadCheckoutTest(unittest.TestCase):
                                            log=lines.append, lister=lister, resolve=lambda r, o=None: ("main", "t"))
                 self.assertEqual(n, 1)
                 self.assertTrue(any("bad: not read: RuntimeError" in x for x in lines), lines)
+                # each checkout keeps its own cursor: the one skipped is read from where it stopped
+                conn, asked = of_store.connect(), []
+                ok = lambda r, since, branch: asked.append((os.path.basename(r), since)) or []  # noqa: E731
+                of_github.import_local(conn, "ofb", {}, roots, None, works={}, log=lines.append, lister=ok,
+                                       resolve=lambda r, o=None: ("main", "t"))
+                self.assertEqual(dict(asked), {"bad": "2026-10-01", "good": "2026-11-21"})
+
+                def no_git(r, o=None):                                    # the branch lookup fails: the next is read
+                    if r.endswith("bad"):
+                        raise RuntimeError("no system git (/usr/bin/git) on this machine")
+                    return "main", "t"
+                asked.clear()
+                of_github.import_local(conn, "ofb", {}, roots, None, works={}, log=lines.append, lister=ok,
+                                       resolve=no_git)
+                self.assertEqual([r for r, _ in asked], ["good"])
             finally:
                 of_events.STATE_DIR = saved
 
