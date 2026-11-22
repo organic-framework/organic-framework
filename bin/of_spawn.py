@@ -377,7 +377,14 @@ def of_checkouts():
         except OSError:
             text = ""
         found += [os.path.realpath(m) for m in re.findall(r"(/[^\s'\"]*)/bin/of(?=[\s'\"]|$)", text, re.M)]
-    return list(dict.fromkeys([d for d in found if _is_checkout(d)] + [own]))
+    # Bench's checkout is code OF imports, the pulse included, outside any sandbox (bin/of_benchpath.py)
+    try:
+        import of_benchpath
+        b = of_benchpath.home()
+        bench = [b] if os.path.isfile(os.path.join(b, "bin", "bench.py")) else []
+    except Exception:  # noqa: BLE001
+        bench = []
+    return list(dict.fromkeys([d for d in found if _is_checkout(d)] + [own] + bench))
 
 
 def post_door(folder="/srv/of-gh-post/of"):

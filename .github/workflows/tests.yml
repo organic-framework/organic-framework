@@ -37,6 +37,10 @@ jobs:
           python-version: "3.14"
       - name: Install PyYAML
         run: python3 -m pip install --disable-pip-version-check pyyaml
+      # Bench's reader runs Lua in a process of its own (docs/bench.md); tests/test_of_method.py also needs a Bench
+      # checkout in OF_TEST_BENCH, added here once organic-framework/bench has a pushed commit to pin
+      - name: Install Lua
+        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends lua5.4
       - name: Unit suite
         env:
           GIT_CONFIG_GLOBAL: /dev/null

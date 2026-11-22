@@ -61,6 +61,7 @@ PAGES = [
         ("docs/journeys.md", "journeys", "Journeys of OF's users"),
         ("docs/remote.md", "remote", "Remote only: the conductor's chat"),
         ("docs/plugins.md", "plugins", "Plugins"),
+        ("docs/bench.md", "bench", "Bench in OF: packages, settings, hooks"),
         ("docs/desk.md", "desk", "The desk"),
         ("docs/handover.md", "handover", "Hand-overs and diffs"),
         ("docs/works.md", "works", "Works"),
