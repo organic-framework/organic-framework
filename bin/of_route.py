@@ -303,6 +303,13 @@ def route_org(table, d, router):
     if table == "event":
         rec = json.loads(d["record"]) if isinstance(d.get("record"), str) else (d.get("record") or {})
         org = router.org_of(d.get("org"), d.get("session_id"), rec.get("of.cwd"), serves=rec.get("of.serves"))
+        if org is None:
+            # an injected prompt declared from outside the session it types into (the relay, the account mover) names
+            # that session in its payload only, and follows it (2026-11-22, of_server: the relay's deliveries went to
+            # the default server's unassigned database, not to their receiver's organization)
+            target = _payload_field(d.get("payload"), "target_session")
+            if target:
+                org = router.org_of(None, target, None)
         if org is None and hasattr(router, "org_of_events"):
             # An ask's closure written with no organization, session or directory (a reconcile, an
             # owner's withdrawal) follows the ask it names (of_studio, 2026-11-06).
@@ -323,6 +330,15 @@ def route_org(table, d, router):
     except Exception:
         cwd = None
     return router.org_of(None, d.get("session_id"), cwd)
+
+
+def _payload_field(payload, key):
+    try:
+        p = json.loads(payload) if isinstance(payload, str) else (payload or {})
+    except ValueError:
+        return None
+    v = p.get(key) if isinstance(p, dict) else None
+    return v if isinstance(v, str) and v else None
 
 
 def _ask_refs(payload):

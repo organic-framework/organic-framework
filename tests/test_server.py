@@ -841,6 +841,27 @@ class AskClosureRoutingTest(unittest.TestCase):
                 else:
                     os.environ["OF_DB"] = saved
 
+    def test_an_injected_prompt_follows_its_target_session(self):
+        """2026-11-22: the relay declares each delivery with the receiver's session in its payload only, and those
+        events went to the default server's unassigned database instead of the receiver's organization's server."""
+        with tempfile.TemporaryDirectory() as root:
+            orgs = os.path.join(root, "orgs.yaml")
+            with open(orgs, "w") as fh:
+                fh.write("orgs:\n  - {name: zeta, database: db_zeta}\n  - {name: acme, database: db_acme}\n")
+            r = of_route.Router({"unassigned_database": "db_un"}, orgs)
+            r.org_by_session = {"S-zeta": "zeta", "S-acme": "acme"}
+
+            def injected(payload, session=""):
+                return {"name": "of.injected_prompt", "record": "{}", "payload": json.dumps(payload),
+                        "session_id": session}
+            relayed = {"injector": "of-relay:acme:x", "target_session": "S-zeta", "text_sha256": "0" * 64,
+                       "reason": "relayed message"}
+            self.assertEqual(of_route.route_org("event", injected(relayed), r), "zeta")    # the receiver's, not the sender's
+            self.assertEqual(of_route.route_org("event", injected(dict(relayed, target_session="S-acme")), r), "acme")
+            self.assertEqual(of_route.route_org("event", injected(relayed, session="S-acme"), r), "acme")  # its own first
+            self.assertIsNone(of_route.route_org("event", injected(dict(relayed, target_session="S-gone")), r))
+            self.assertIsNone(of_route.route_org("event", injected({"injector": "of_capacity"}), r))
+
 
 class RedactionTest(unittest.TestCase):
     """POST /v1/redactions on profile 1 storage (SQLite): docs/server.md, Redaction."""
