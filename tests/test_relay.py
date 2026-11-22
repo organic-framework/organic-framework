@@ -271,6 +271,24 @@ class RelayTest(unittest.TestCase):
         of_relay.pull(Server(), "ofb:of_a", "S")
         self.assertNotIn("ofb:of_a", of_relay.read_queues())  # an empty queue leaves the file
 
+    def test_a_message_typed_here_is_not_counted_as_waiting(self):
+        """A user organization (msg 01a203ee-9025): the server counts a message the relay already typed into the pane until its
+        ack, the listing leaves it out (never shown twice), and the header read "1 message queued" over nothing."""
+        class Server:
+            def queued_messages(self, to, session):
+                return {"messages": [{"msg_id": "T1", "to": to, "from": "zeta:x", "text": "typed", "state": "leased"},
+                                     {"msg_id": "T2", "to": to, "from": "zeta:x", "text": "new", "state": "queued"}],
+                        "total": 2, "urgent": 0}
+
+            def take_message(self, msg_id, to, session):
+                return {}
+        of_relay.mark_seen("T1", "typed", to="ofb:of_a")                  # the relay typed it; its ack is on the way
+        got = of_relay.pull(Server(), "ofb:of_a", "S")
+        self.assertEqual([m["msg_id"] for m, _ in got], ["T2"])
+        q = of_relay.LAST_QUEUE["ofb:of_a"]
+        self.assertEqual((q["total"], q["listed"], q["typed_here"]), (1, 1, 1))   # the header counts what it shows
+        self.assertEqual(of_relay.read_queues()["ofb:of_a"]["n"], 1)
+
     def test_a_take_under_a_live_lease_leaves_it_to_the_pane(self):
         class Leased(Exception):
             status = 409
