@@ -176,7 +176,7 @@ class ProtectedFfTest(unittest.TestCase):
         self.assertFalse(os.path.exists(marker))
 
     def test_no_hook_the_configuration_names_runs(self):
-        """git 2.56 runs a hook a repository's configuration names (hook.<name>.command and .event) whatever
+        """git 2.54 and later run a hook a repository's configuration names (hook.<name>.command and .event) whatever
         core.hooksPath says (of_architect, msg 01a202ea-781a, from git-config(1)); hook.<event>.enabled=false on the
         command line turns it off."""
         marker = os.path.join(self.d, "hooked")
@@ -197,8 +197,31 @@ class ProtectedFfTest(unittest.TestCase):
         self.assertIn("names a hook", str(cm.exception))
         self.assertEqual(self.head(), self.a)
         self.assertFalse(os.path.exists(marker))
-        self.assertIn("hook.post-checkout.enabled=false", P._git_cmd(self.wt))     # 2.56's switch, a second layer
+        self.assertIn("hook.post-checkout.enabled=false", P._git_cmd(self.wt))     # 2.55's switch, a second layer
         self.assertEqual(P._env()["GIT_ALLOW_PROTOCOL"], "")                          # no transport at all
+        # a hook written while GitHub is asked is seen right before the checkout (of_review on PR 511)
+        self.g("config", "--remove-section", "hook.spy")
+        asked = green({b: 7})
+
+        def api(path):
+            if "/check-runs" in path:
+                self.g("config", "hook.late.command", spy)
+                self.g("config", "hook.late.event", "post-checkout")
+            return asked(path)
+        with self.assertRaises(P.Refused) as cm:
+            self.ff(b, api=api)
+        self.assertIn("hook.late.command", str(cm.exception))
+        self.assertEqual(self.head(), self.a)
+        self.assertFalse(os.path.exists(marker))
+        # a configuration that cannot be read for hooks refuses, never reads as "none"
+        from unittest import mock
+        real = P._git
+        failing = lambda tree, *a, **k: (subprocess.CompletedProcess(a, 128, "", "") if a[:1] == ("config",)
+                                         else real(tree, *a, **k))
+        with mock.patch.object(P, "_git", failing):
+            with self.assertRaises(P.Refused) as cm:
+                P._no_config_hooks(self.wt)
+        self.assertIn("could not be read", str(cm.exception))
 
     def test_a_value_does_not_name_a_filter_and_a_forged_blob_is_refused(self):
         """of_architect on organic-framework PR 306: a value holding ` x.clean ` made the parsing name another driver,
