@@ -27,7 +27,8 @@ sys.path.insert(0, HERE)
 
 ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 CACHE = "guard-credentials.json"
-CACHE_VERSION = 4  # 2: keychain items, protected_code (G20, G21); 3: tools_excluded plugins (G22); 4: connectors too
+CACHE_VERSION = 5  # 2: keychain items, protected_code (G20, G21); 3: tools_excluded plugins (G22); 4: connectors too;
+# 5: the owner's protected_code lists in orgs.yaml too
 KEYCHAIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@:-]{0,127}\*?$")  # a service name, or a prefix with a trailing *
 # warn: allowed, noted once per session and recorded; deny: denied. Two switches (a user organization's plan, msg
 # 01a1c89d, 2026-11-11): a file a credential names, read by a position that neither lists nor keeps it (MODE_NAMED;
@@ -175,6 +176,15 @@ def load(orgs_file=None):
         except (OSError, yaml.YAMLError):
             continue
         out[org] = _org_entry(org, doc)
+    # G21 also keeps what the owner lists in orgs.yaml (of protected ff reads its ff entries from there alone): a
+    # registry that follows agents' pushes can add a path but never take one of his away (of_secrets-review on
+    # organic-framework PR 546)
+    import of_protected
+    for org, items in of_protected.owner_entries(orgs_file).items():
+        entry = out.setdefault(org, _org_entry(org, {}))
+        paths = [of_protected.entry_path(c) for c in items]
+        entry["protected_code"] = sorted(set(entry.get("protected_code") or [])
+                                         | {_abs(c) for c in paths if c and _code_path_ok(c)})
     return out
 
 
