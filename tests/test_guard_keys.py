@@ -52,6 +52,27 @@ class KeyReadTest(unittest.TestCase):
         self.assertIsNone(deny(f"ls -la {self.kit}/*"))
         self.assertIsNone(deny(f"cat {self.kit}/bin/*"))                                 # nothing there
 
+    def test_the_grep_tool_over_a_folder_that_holds_a_key(self):
+        """The route left once a key's name and its direct reads were refused (of_review's probe on organic-framework
+        PR 513): the Grep tool, in content mode, over the folder that holds it."""
+        grep = lambda path=None, **kw: of_guard.critical_deny(                          # noqa: E731
+            "Grep", dict({"pattern": ".", "output_mode": "content"}, **({"path": path} if path else {}), **kw),
+            cwd=self.d)
+        self.assertTrue(grep(self.kit))
+        self.assertTrue(grep(self.d))                                                   # a folder above it
+        self.assertTrue(grep())                                                         # the session's own folder
+        self.assertTrue(grep(self.kit, glob="runner_*"))
+        self.assertIsNone(grep(self.kit, glob="*.sh"))                                  # the key is not searched
+        self.assertIsNone(grep(os.path.join(self.kit, "bin")))                          # nothing there
+        self.assertIsNone(of_guard.critical_deny("Grep", {"pattern": ".", "path": self.kit}, cwd=self.d))  # names
+        self.assertIsNone(of_guard.critical_deny("Grep", {"pattern": ".", "path": self.kit,
+                                                          "output_mode": "count"}, cwd=self.d))
+        big = os.path.join(self.d, "big")                                               # a large file is not a key
+        os.makedirs(big)
+        with open(os.path.join(big, "dump"), "w") as fh:
+            fh.write(HEADER + "x" * (of_guard.GREP_KEY_MAX + 10))
+        self.assertIsNone(grep(big))
+
     def test_a_key_by_its_content_whatever_its_name(self):
         notes = os.path.join(self.kit, "notes.txt")                                     # a copy under another name
         self.assertTrue(deny(f"cat {notes}"))
