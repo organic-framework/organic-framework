@@ -134,6 +134,27 @@ def _uuid7():
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 
+_MODEL_CWD = None
+
+
+def model_cwd():
+    """The working folder of a model call OF makes outside the sandbox (claude -p for the case, the judges, the
+    corrections, the tempo reading): made fresh once per process, mode 700, under ~/.cache/of, where no session's
+    sandbox writes, so no project settings or instructions are planted where the call reads them (the folders inside
+    OF's state folder that served before are writable from a session's sandbox on Linux). Removed at exit."""
+    global _MODEL_CWD
+    if _MODEL_CWD and os.path.isdir(_MODEL_CWD) and not os.path.islink(_MODEL_CWD):
+        return _MODEL_CWD
+    import atexit
+    import shutil
+    import tempfile
+    base = os.path.join(os.path.expanduser("~"), ".cache", "of")
+    os.makedirs(base, mode=0o700, exist_ok=True)
+    _MODEL_CWD = tempfile.mkdtemp(prefix="model-cwd-", dir=base)
+    atexit.register(shutil.rmtree, _MODEL_CWD, True)
+    return _MODEL_CWD
+
+
 def log_path(name):
     """The path of the log NAME in LOG_DIR, the folder made (and refused when it is a link or not ours)."""
     return os.path.join(own_dir(LOG_DIR), name)
