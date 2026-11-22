@@ -16,6 +16,13 @@ Bench is RubyGems and Bundler, and OF is Rails. The design is organic-framework-
   (macOS: `brew install luajit`; Debian or Ubuntu: `apt install lua5.4`).
 - **Protection.** The checkout is code OF imports, the pulse included, outside any sandbox, so it is protected as OF's
   own checkout is: every session's sandbox denies writes to it (`of_spawn.of_checkouts`), and so does the guard.
+  `of owner set bench` refuses a development clone (one that runs the release gate), since positions write those.
+- **The reader's closedness.** OF evaluates an organization's `config/settings/*.lua` and `extensions/*/*.lua` through
+  Bench's reader, outside any sandbox, the pulse included; those files come from the organization's repository, which
+  agents write. Their safety rests on the reader: a Lua process of its own given no file, with no `io`, `os`, `load`,
+  `require` beyond the package's sources or `debug`, and budgets on instructions, memory and wall time. That is held
+  and tested in `organic-framework/bench` (its `docs/bench.md`, "The reader", and `tests/test_bench.py`'s hostile
+  set, one test per case).
 
 ## The commands
 

@@ -2750,6 +2750,12 @@ def cmd_owner(args):
         folder = os.path.realpath(os.path.expanduser(args.value))
         if not os.path.isfile(os.path.join(folder, "bin", "bench.py")):
             raise OfError(f"{args.value}: no bin/bench.py there; give a checkout of organic-framework/bench")
+        import of_guard
+        if of_guard.gated(folder):
+            # a development clone runs the release gate as its pre-commit hook, and positions write it; OF imports from
+            # this folder outside any sandbox, so it is a checkout no session works in (of_secrets-review on PR 575)
+            raise OfError(f"{args.value}: a development clone (it runs the release gate); give a checkout of "
+                          f"organic-framework/bench no session works in")
         home = os.path.realpath(os.path.expanduser("~"))
         shown = "~" + folder[len(home):] if folder.startswith(home + "/") else folder
         of_init.write_owner_setting("bench", shown)

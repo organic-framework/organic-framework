@@ -374,6 +374,37 @@ class BenchPathTest(unittest.TestCase):
                     sys.path.remove(os.path.join(co, "bin"))
 
 
+class BenchOwnerSetTest(unittest.TestCase):
+    def test_a_development_clone_is_refused_as_benchs_folder(self):
+        """of_secrets-review on PR 575: a clone that runs the release gate is one positions write."""
+        import importlib.machinery
+        import importlib.util
+        import of_asks_answer
+        import of_guard
+        import of_init
+        loader = importlib.machinery.SourceFileLoader("of_cli_owner", os.path.join(HERE, "..", "bin", "of"))
+        of = importlib.util.module_from_spec(importlib.util.spec_from_loader("of_cli_owner", loader))
+        loader.exec_module(of)
+        with tempfile.TemporaryDirectory() as d:
+            d = os.path.realpath(d)
+            for name in ("plain", "dev"):
+                os.makedirs(os.path.join(d, name, "bin"))
+                open(os.path.join(d, name, "bin", "bench.py"), "w").close()
+            os.makedirs(os.path.join(d, "dev", ".git", "hooks"))
+            with open(os.path.join(d, "dev", ".git", "hooks", "pre-commit"), "wb") as fh:
+                mark = of_guard.GATE_MARK
+                fh.write((mark if isinstance(mark, bytes) else mark.encode()) + b"\n")
+            saved = of_init.owner_settings().get("bench")
+            try:
+                with mock.patch.object(of_asks_answer, "not_the_owner", lambda: False):
+                    self.assertNotEqual(of.main(["owner", "set", "bench", os.path.join(d, "dev")]), 0)
+                    self.assertEqual(of.main(["owner", "set", "bench", os.path.join(d, "plain")]), 0)
+                with mock.patch.object(of_asks_answer, "not_the_owner", lambda: True):
+                    self.assertNotEqual(of.main(["owner", "set", "bench", os.path.join(d, "plain")]), 0)
+            finally:
+                of_init.write_owner_setting("bench", saved)
+
+
 class WorkCloneTest(unittest.TestCase):
     """Card OF-265 v2, hand-over ab9ed07b (of_server's four conditions, message 01a2044e-a1e4): a session on Linux may
     write the work clone the owner names in orgs.yaml, never its control files or the services' copy."""
