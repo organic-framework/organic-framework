@@ -2174,6 +2174,50 @@ class Resume(unittest.TestCase):
             self.assertIn("turns on the other machine", fh.read())            # the fresh copy, under its key
         self.assertEqual(glob.glob(os.path.join(self.cfg, "projects", "*", "s1.jsonl")), [now_there])
 
+    def test_a_restore_takes_a_newer_copy_only_when_it_continues_the_carried_one(self):
+        """of_review on PR 538: freshness alone let a session that resumed from an older copy and wrote to it win a
+        second restore, and the carried copy went to the backup the balancer deletes; and a copy gone between the
+        listing and the read ended the whole balancer run."""
+        home = os.path.realpath(self.cwd)
+        carried_dir = os.path.join(self.cfg, "projects", "-elsewhere-work")
+        os.makedirs(carried_dir)
+        carried = os.path.join(carried_dir, "s1.jsonl")
+        last = json.dumps({"type": "user", "cwd": "/nowhere/work", "message": {"content": "carried turn"}})
+        with open(carried, "w") as fh:
+            fh.write(last + "\n")
+        local = os.path.join(self.cfg, "projects", "-acme", "s1.jsonl")
+        with open(local, "a") as fh:                                   # written after: another history
+            fh.write(json.dumps({"type": "user", "cwd": self.cwd, "message": {"content": "resumed here"}}) + "\n")
+        os.utime(carried, (time.time() - 600, time.time() - 600))
+        os.symlink("/nowhere/gone.jsonl", os.path.join(self.cfg, "projects", "-dangling"))  # not a copy
+        os.makedirs(os.path.join(self.cfg, "projects", "-gone"))
+        os.symlink("/nowhere/gone.jsonl", os.path.join(self.cfg, "projects", "-gone", "s1.jsonl"))
+        self.assertEqual(of_capacity.find_transcript(self.cfg, "s1"), local)   # a dangling copy is the oldest
+        with open(os.path.join(self.cfg, ".claude.json"), "w") as fh:
+            json.dump({"oauthAccount": {"emailAddress": "vp@x"}, "projects": {home: {"hasTrustDialogAccepted": True}}}, fh)
+        e = {"name": "runners_keeper", "position": "runners_keeper", "session": "s1", "config_dir": self.cfg,
+             "cwd": "/nowhere/work", "model": "claude-opus-5-5"}
+
+        def restore():
+            start = mock.Mock(return_value={"pid": 9, "session": "s1"})
+            with mock.patch.multiple(of_capacity, _herdr=mock.Mock(return_value={
+                    "panes": [], "workspaces": [], "tabs": [], "pane_id": "w6:p18"}),
+                    load_policy=lambda: {"start_in": ["runners_keeper"]}, spawn_folder=lambda p: home,
+                    deny_for=lambda *_: None, tools_for=lambda *_: None, rename_agent=mock.Mock(), start_session=start):
+                of_capacity._restore_one(dict(e), {"name": "runners_keeper", "_org": "team"},
+                                         {"kind": "carry", "prepared_at": "2026-11-22T17:18:54Z", "home": "/home/of"},
+                                         "2026-11-22T17:19:00Z", log=lambda *_: None,
+                                         transcript_sources={carried: "/bundle/files/s1.jsonl"})
+            return start
+
+        with self.assertRaisesRegex(of_capacity.MoveError, "does not continue it") as err:
+            restore()
+        self.assertIn(local, str(err.exception))
+        self.assertIn(carried, str(err.exception))
+        with open(local, "a") as fh:                                   # now it continues the carried copy
+            fh.write(last + "\n" + json.dumps({"type": "user", "message": {"content": "after"}}) + "\n")
+        self.assertEqual(restore().call_args.args[2], home)
+
     def test_carry_note_recovers_a_one_shot_even_when_install_rewrites_its_stop_notice(self):
         import of_carry
         sid = "5e551011-0000-4000-8000-000000000001"
