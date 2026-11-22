@@ -2539,13 +2539,13 @@ def backup(cfg=None, keep=BACKUP_KEEP, ch_post=None, today=None):
                 if ("BACKUP_ALREADY_EXISTS" in str(e) or "already exists" in str(e)) and _day_zip(b, day, db) == "done":
                     out.append(f"{day}: ClickHouse {db} was backed up today already")
                 else:
-                    failed.append(f"{db} ({type(e).__name__})")
+                    failed.append(f"{db} ({_ch_error(e)})")
                 continue
             out.append(f"{day}: ClickHouse {db} backed up to its disk {disk}")
         if failed:
             # a failed night removes nothing: pruning the old days then would leave fewer good backups each failed
             # night, until none (of_review on PR 554)
-            raise RuntimeError(f"{day}: ClickHouse backup failed for {', '.join(failed)}; no old day removed")
+            raise BackupFailed(f"{day}: ClickHouse backup failed for {', '.join(failed)}; no old day removed", out)
     cutoff = time.strftime("%Y-%m-%d", time.gmtime((today and time.mktime(time.strptime(today, "%Y-%m-%d"))
                                                     or time.time()) - keep * 86400))
     for place in [root] + ([os.path.expanduser(b["clickhouse_path"])] if b.get("clickhouse_path") else []):
@@ -2563,9 +2563,25 @@ def _day_zip(b, day, db):
         return None
     zipf = os.path.join(os.path.expanduser(b["clickhouse_path"]), day, f"{db}.zip")
     locked = any(os.path.lexists(x) for x in (zipf + ".lock", os.path.join(os.path.dirname(zipf), ".lock")))
-    if os.path.lexists(zipf) or locked:
-        return "unfinished" if locked else "done"
+    if os.path.lexists(zipf) or locked:   # done: there, a regular file, not empty, no lock (of_review on PR 554)
+        done = not locked and os.path.isfile(zipf) and not os.path.islink(zipf) and os.path.getsize(zipf) > 0
+        return "done" if done else "unfinished"
     return None
+
+
+class BackupFailed(RuntimeError):
+    """A backup that failed, with the lines of what it did before (the command prints them before the error)."""
+
+    def __init__(self, message, lines=()):
+        super().__init__(message)
+        self.lines = list(lines)
+
+
+def _ch_error(e):
+    """ClickHouse's error name from an exception's text (ACCESS_DENIED, BACKUP_ALREADY_EXISTS), else the exception's
+    type: the reason a failure was found by stays in what is printed (of_review on PR 554), and no data does."""
+    m = re.search(r"\(([A-Z][A-Z0-9_]{2,})\)", str(e))
+    return m.group(1) if m else type(e).__name__
 
 
 CLICKHOUSE_HTTPS_PORT = 18443  # the host's ClickHouse, https only on 127.0.0.1
@@ -2766,13 +2782,17 @@ def clickhouse_init(cfg=None, run=None, client=None, sleep=time.sleep, schema_pa
         except Exception:
             raise SystemExit(f"of server clickhouse-init: statement {i} of {len(statements)} failed "
                              f"({stmt.split(None, 3)[:3]}); nothing secret is shown") from None
-    # BACKUP ... TO Disk(...) needs the DISK source grant from ClickHouse 26.9, and 26.8 has it backported
-    # (ClickHouse PR 117406): without it the nightly backup fails with ACCESS_DENIED (the agent host, 2026-11-22). A
-    # server that does not know the DISK source needs no grant, so its refusal of the statement is no failure.
+    # BACKUP ... TO Disk(...) needs WRITE ON DISK from ClickHouse 26.9, and 26.8 has it backported (ClickHouse PR
+    # 117406): without it the nightly backup fails with ACCESS_DENIED (the agent host, 2026-11-22). READ is what a
+    # RESTORE needs, which the server runs none of (of_review on PR 554). Only an older server's refusal of the unknown
+    # source passes; any other failure fails here with ClickHouse's error name.
     try:
-        admin.post(f"GRANT READ, WRITE ON DISK TO {user}", query_in_body=True, timeout=120)
-        disk = "; the DISK source granted for backups"
-    except Exception:
+        admin.post(f"GRANT WRITE ON DISK TO {user}", query_in_body=True, timeout=120)
+        disk = "; WRITE ON DISK granted for backups"
+    except Exception as e:  # noqa: BLE001 - only the unknown source passes
+        if _ch_error(e) not in ("SYNTAX_ERROR", "UNKNOWN_ACCESS_TYPE") and "Syntax error" not in str(e):
+            raise SystemExit(f"of server clickhouse-init: the backup grant failed ({_ch_error(e)}); nothing secret is "
+                             "shown") from None
         disk = "; this ClickHouse knows no DISK source grant, which its backups do not need"
     out.append(f"applied {len(statements)} statements: databases {', '.join([*org_dbs, vault, unassigned])}, "
                f"users {len(schema.users(org_dbs, vault, unassigned)) + 1} (passwords in {pwdir}, 0600){disk}")

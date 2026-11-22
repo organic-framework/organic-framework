@@ -64,21 +64,27 @@ class ClickHouseInitTest(unittest.TestCase):
         """The agent host, 2026-11-22: BACKUP ... TO Disk(...) failed with ACCESS_DENIED for want of WRITE ON DISK
         (ClickHouse PR 117406, in 26.8 and 26.9). A server that does not know the DISK source is no failure."""
         out = self.init()
-        self.assertIn("GRANT READ, WRITE ON DISK TO of_server", Client.seen)
-        self.assertIn("the DISK source granted", out[-1])
+        self.assertIn("GRANT WRITE ON DISK TO of_server", Client.seen)   # WRITE alone: READ is a restore's
+        self.assertIn("WRITE ON DISK granted", out[-1])
         real_post = Client.post
 
-        def old_server(self, query, **kw):
-            if "ON DISK" in query:
-                raise RuntimeError("Syntax error")
-            return real_post(self, query, **kw)
-        Client.seen, Client.users = [], set()
+        def failing(msg):
+            def post(self, query, **kw):
+                if "ON DISK" in query:
+                    raise RuntimeError(msg)
+                return real_post(self, query, **kw)
+            return post
         try:
-            Client.post = old_server
+            Client.seen, Client.users = [], set()
+            Client.post = failing("ClickHouse 400: Code: 62. DB::Exception: Syntax error (SYNTAX_ERROR)")
             out = self.init()
+            self.assertIn("knows no DISK source grant", out[-1])            # an older server: not needed
+            Client.seen, Client.users = [], set()
+            Client.post = failing("ClickHouse 403: Code: 497. DB::Exception: Not enough privileges. (ACCESS_DENIED)")
+            with self.assertRaisesRegex(SystemExit, "ACCESS_DENIED"):       # anything else fails, by its name
+                self.init()
         finally:
             Client.post = real_post
-        self.assertIn("knows no DISK source grant", out[-1])
 
     def test_from_no_user_to_the_schema_and_the_servers_user_with_nothing_secret_shown(self):
         out = self.init()
