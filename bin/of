@@ -7427,6 +7427,14 @@ def cmd_capacity(args):
     positions running on each, from a minimal probe at most every 30 minutes (docs/capacity.md)."""
     import of_capacity
     positions = _load_quiet()
+    if args.action == "allow-move":  # the holder's yes to a move over its background work (docs/capacity.md)
+        try:
+            until = of_capacity.allow_move(args.for_h or of_capacity.MOVE_ALLOWED_H, args.reason)
+        except of_capacity.MoveError as e:
+            raise OfError(f"capacity allow-move: {e}")
+        print(f"the balancer may move this session until {of_capacity._iso(until)}, though its background work "
+              "stops at the move; the move's note lists each process first")
+        return 0
     if args.action == "close":
         if not args.session or not args.position or not args.reason:
             raise OfError("usage: of capacity close <position> --session SID --reason TEXT [--dry-run]")
@@ -8395,10 +8403,10 @@ def main(argv=None):
     te.add_argument("--org", help="replay: only this organization's events")
     te.add_argument("--quiet", action="store_true", help=argparse.SUPPRESS)
     te.set_defaults(fn=cmd_tempo)
-    cp = sub.add_parser("capacity", help="model limits per account and who runs where: of capacity status [--fresh] | plan | move <position> --to <dir> | resume <position> --session S --to <dir> --pane P")
+    cp = sub.add_parser("capacity", help="model limits per account and who runs where: of capacity status [--fresh] | plan | move <position> --to <dir> | resume <position> --session S --to <dir> --pane P | allow-move [--for H]")
     cp.add_argument("action", nargs="?", choices=["status", "move", "resume", "plan", "close", "balance", "creds",
                                                   "vault", "vault-setup", "mint", "babysit", "memory", "reboot", "spend",
-                                                  "carry", "tick", "training"],
+                                                  "carry", "tick", "training", "allow-move"],
                     default="status")
     cp.add_argument("--since", help="babysit: from this date (default: 7 days ago)")
     cp.add_argument("--month", help="spend: YYYY-MM (default: this month, UTC)")
@@ -8437,6 +8445,8 @@ def main(argv=None):
     cp.add_argument("--to", help="move: the target config dir, e.g. ~/.claude-e; resume: the config dir that holds the session")
     cp.add_argument("--dry-run", "-n", action="store_true", help="move: checks and the plan only")
     cp.add_argument("--allow-shells", action="store_true", help="move: stop the session's background shells")
+    cp.add_argument("--for", dest="for_h", type=float,
+                    help="allow-move: hours the yes holds (default 2, at most 24)")
     cp.add_argument("--pane", help="resume: the herdr pane to start the session in")
     cp.add_argument("--only", help="reboot restore, carry restore: these positions only, comma-separated; carry "
                                    "prepare: the organization or positions to carry")

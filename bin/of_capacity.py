@@ -2267,9 +2267,13 @@ def balance_why(reason):
     return "the old account is about to reach its model limits."
 
 
-def handover_note(name, sid, src, dst, account, continuation, ts, extra=None, model=None, why=None, restarted=False):
+def handover_note(name, sid, src, dst, account, continuation, ts, extra=None, model=None, why=None, restarted=False,
+                  bg=()):
     """model: (old, new) when the move changes the session's model; why: the reason, said to the session;
-    restarted: a restart on the same account and model (move --restart)."""
+    restarted: a restart on the same account and model (move --restart); bg: the commands of the background
+    processes the exit stopped (from `ps`), listed first: a window, a watch or a guard among them stands open with
+    nothing behind it until the session re-attaches it (2026-11-22: a user organization's keeper lost two production
+    windows' watchdogs in a relief move, and found them below the scheduled tasks)."""
     if why and why.strip() and why.strip()[-1] not in ".!?":
         why = why.strip() + "."  # a reason runs into the next sentence otherwise (PR 269 review)
     if restarted:
@@ -2293,6 +2297,12 @@ def handover_note(name, sid, src, dst, account, continuation, ts, extra=None, mo
                  f"({account}): " + (why.strip() if why else "the old account is near its model limits.")
                  + " Same session, same pane, same name; your context, memory and files are carried."
                  + ("" if why else " Nothing else changed."), ""]
+    if bg:
+        lines += ["## First: your background work stopped", "",
+                  "These processes ran under your old process and stopped with it at the move (from `ps`). A window, "
+                  "a watch, a guard or a poll among them now stands with nothing behind it: re-attach or close those "
+                  "first, before anything else in this note, then re-create the rest you still need:"]
+        lines += [f"- `{c}`" for c in bg] + [""]
     crons = (continuation or {}).get("session_crons") or []
     tasks = [t for t in (continuation or {}).get("background_tasks") or [] if t.get("status") == "running"]
     if crons or tasks:
@@ -3109,9 +3119,6 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
     running = background_processes(s["pid"])
     if running:
         log(f"  background processes that the exit stops: {len(running)}")
-        extra_note = ("These background processes were running under your old process and stopped with it "
-                      "(from `ps` at the move). Re-create the ones you still need:\n" +
-                      "\n".join(f"- `{c}`" for c in running) + ("\n\n" + extra_note if extra_note else ""))
     if runtime == "herdr" and _exit_dialog(lines) is not None and not dry_run:
         # an exit dialog left open (by anyone): Esc means "Stay", always safe, then the move goes on. It can open
         # again at once, and the input box takes a moment to come back: read until it shows, Esc again while the
@@ -3237,7 +3244,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
     os.makedirs(work, mode=0o700, exist_ok=True)
     note = handover_note(name, sid, src, target, account_of(target), cont, _iso(time.time()),
                          (extra_note or "").replace("<name>", name) or None,
-                         model=(ctx_model, model) if switch else None, why=why, restarted=restarted)
+                         model=(ctx_model, model) if switch else None, why=why, restarted=restarted, bg=running)
     _write_handover_note(note_path, note)
     held = False  # a Zellij pane whose command is claude itself is "held" after exit; Esc drops it to a shell
     if runtime == "zellij":
@@ -5999,6 +6006,104 @@ def add_bound(needs, seen, positions, dirs, docs=None, now=None, run=None):
         seen[d] = (set(seen.get(d) or ()) | have) if seen.get(d) is not None else have
 
 
+MOVE_ALLOWED_H = 2  # how long a holder's yes to a move over its background work holds (allow_move)
+
+
+def allow_move(hours=MOVE_ALLOWED_H, reason=None, session=None, now=None):
+    """The holder's yes that fill, relief and restore may move its session although background work runs under it
+    (background_work): `of capacity allow-move`, run in that session, records `of.capacity_move_allowed` for it,
+    good for `hours` (at most a day). Returns the epoch it holds until."""
+    sid = session or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not sid:
+        raise MoveError("run it in the session whose background work may stop (no CLAUDE_CODE_SESSION_ID here)")
+    now = now or time.time()
+    until = now + max(0.1, min(float(hours), 24.0)) * 3600
+    of_events.emit("capacity_move_allowed", {"session": sid, "until": _iso(until), "reason": reason or ""},
+                   session=sid)
+    return until
+
+
+def moves_allowed(now=None, conn=None):
+    """{session: epoch until} of the holders' yeses (allow_move) recorded in the last day."""
+    now = now or time.time()
+    try:
+        if conn is None:
+            import of_store
+            conn = of_store.connect()
+        rows = conn.execute("SELECT payload FROM event WHERE name = 'of.capacity_move_allowed' AND ts >= ?",
+                            (_iso(now - 86400),)).fetchall()
+    except Exception:  # noqa: BLE001 - no store: no yes, the work stays protected
+        return {}
+    out = {}
+    for (payload,) in rows:
+        try:
+            d = json.loads(payload)
+            out[d["session"]] = max(out.get(d["session"], 0), _ts(d["until"]) or 0)
+        except (ValueError, KeyError, TypeError):
+            continue
+    return out
+
+
+def background_work(sessions, allowed=None, now=None, procs=None):
+    """{session: [commands]} of the live sessions with background work running under them (background_processes:
+    its shells and monitors; or the harness's own "shell" status), which a move's exit would stop, less those whose
+    holder said yes for now (allow_move). Fill, relief and restore leave these; rescue does not, since a session
+    stopped on its limit cannot work at all. 2026-11-22: a relief move took a user organization's keeper off an
+    account about to stall while two production windows were open; their restore, close and watchdog died with the
+    old process, and the note listing them was right but nobody had agreed."""
+    procs = procs or background_processes
+    now = now or time.time()
+    out = {}
+    for xs in sessions.values():
+        for x in xs:
+            sid = x.get("session")
+            if not sid or x.get("status") not in ("idle", "shell", "waiting") or (allowed or {}).get(sid, 0) > now:
+                continue
+            cmds = procs(x["pid"]) if x.get("pid") else []
+            if cmds or x.get("status") == "shell":
+                out[sid] = cmds or ["(background shells: the session's own status)"]
+    return out
+
+
+BG_TOLD_S = 6 * 3600  # one notice per session in this time when a planned move waits on its background work
+
+
+def tell_background_waits(would, holding, positions, sender, of_bin, cache, now, log=print, send=None):
+    """Tell each holder whose session a fill, relief or restore move would have taken, but its background work
+    holds (background_work), why it stays and how to say yes: one `of send` per session in BG_TOLD_S, its time kept
+    in `cache["_bg_told"]` (pruned past that). Returns the positions told."""
+    told = {k: v for k, v in (cache.get("_bg_told") or {}).items() if now - v < BG_TOLD_S}
+    by_sid = {((p.get("holder") or {}).get("session") or "").strip(): p for p in positions}
+    out = []
+    for m in would:
+        sid = m.get("session")
+        if sid not in holding or str(m.get("reason") or "").startswith("rescue") or sid in told:
+            continue
+        p = by_sid.get(sid) or {}
+        to = f"{p['_org']}:{p['name']}" if p.get("_org") else m["position"]
+        cmds = holding[sid]
+        shown = "; ".join(c.splitlines()[0][:80] for c in cmds[:3]) + (f"; and {len(cmds) - 3} more" if len(cmds) > 3
+                                                                        else "")
+        text = (f"of_capacity: the balancer would move your session from {short(m['from'])} to {short(m['to'])} "
+                f"({m.get('reason')}), and does not: {len(cmds)} background process(es) run under it, which a move's "
+                f"exit stops ({shown}). It waits until they end. If they may stop now, run `of capacity allow-move` "
+                f"(a yes for {MOVE_ALLOWED_H} h); the move's note then lists each one first, to re-attach. If your "
+                "account stops you on its limit first, a rescue moves you anyway and they stop then.")
+        try:
+            if send:
+                send(to, text)
+            else:
+                subprocess.run([sys.executable, of_bin, "send", to, "--from", sender, text], capture_output=True,
+                               text=True, timeout=60, env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
+        except (OSError, subprocess.SubprocessError) as e:
+            log(f"balance: {m['position']}: the notice of its background work was not sent ({e})")
+            continue
+        told[sid] = now
+        out.append(m["position"])
+    cache["_bg_told"] = told
+    return out
+
+
 def held_back(position_name, docs=None):
     """{"plugin:<name>"} of the plugins the position's organization keeps out of every session it starts, whatever the
     account holds (`tools_excluded`, of_tools.excluded_plugins): no account gives them, so none is a need that a move,
@@ -6365,18 +6470,19 @@ def invariant_step(state, stalls, accepting, rescued, spent, now, numbers="", wi
 
 
 def decide(rows, sessions, positions, rates, calib, policy, now, stopped=None, skip=(), failed=(), connectors=None,
-           contexts=None, wcalib=None, remote_moves=None, woken=None, models=None):
+           contexts=None, wcalib=None, remote_moves=None, woken=None, models=None, holding=()):
     """Pure. Rescue first (observed stops, never vetoed by a prediction), then relief, restore (a holder back to its
-    tools) and fill (balance_plan) for the rest."""
+    tools) and fill (balance_plan) for the rest. `holding`: sessions whose background work runs with no yes from
+    their holder (background_work); only rescue takes them."""
     rescue = rescue_plan(rows, sessions, positions, stopped or {}, policy, now, skip=failed, wcalib=wcalib,
                          tools=connectors, remote_moves=remote_moves, woken=woken, models=models)
     incoming = {}
     for m in rescue:
         incoming[m["to"]] = incoming.get(m["to"], 0.0) + (rates or {}).get(m["session"], 0.0)
     rest = balance_plan(rows, sessions, positions, rates, calib, policy, now,
-                        skip=set(skip) | {m["session"] for m in rescue}, connectors=connectors, contexts=contexts,
-                        wcalib=wcalib, stopped=dict(stopped or {}), incoming=incoming, remote_moves=remote_moves,
-                        models=models)
+                        skip=set(skip) | {m["session"] for m in rescue} | set(holding), connectors=connectors,
+                        contexts=contexts, wcalib=wcalib, stopped=dict(stopped or {}), incoming=incoming,
+                        remote_moves=remote_moves, models=models)
     return rescue + rest
 
 
@@ -6796,9 +6902,26 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
     except (OSError, sqlite3.Error) as e:
         log(f"balance: recent moves on other machines unavailable ({e})")
         remote_moves = {}
+    holding = background_work(sessions, moves_allowed(now), now)
     plan_ = decide(rows, sessions, positions, rates, calib, policy, now, stopped=stopped, skip=set(recent),
                    failed=failed, connectors=(needs, seen), contexts=contexts, wcalib=wcalib,
-                   remote_moves=remote_moves, woken=prior_wakes, models=models)
+                   remote_moves=remote_moves, woken=prior_wakes, models=models, holding=holding)
+    if holding:  # the moves its background work held back: their holders are told why, once in a while
+        would = decide(rows, sessions, positions, rates, calib, policy, now, stopped=stopped, skip=set(recent),
+                       failed=failed, connectors=(needs, seen), contexts=contexts, wcalib=wcalib,
+                       remote_moves=remote_moves, woken=prior_wakes, models=models)
+        would = [m for m in would if m["session"] in holding and not str(m.get("reason") or "").startswith("rescue")]
+        for m in would:
+            log(f"balance: {m['position']} not moved ({m['reason']}): {len(holding[m['session']])} background "
+                "process(es) run under it, with no yes from it (`of capacity allow-move`)")
+        if would and not dry_run:
+            cache = load_cache()
+            told = tell_background_waits(would, holding, positions, capacity_position(policy) or "of_capacity",
+                                         os.path.join(os.path.dirname(os.path.realpath(__file__)), "of"), cache, now,
+                                         log=log)
+            save_cache(cache)
+            if told:
+                log(f"balance: told {', '.join(told)} why they stay")
     untrusted = {}
     offline = bool(plan_) and not dry_run and not api_online()
     if offline:
@@ -6813,6 +6936,11 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
                 log(f"balance: {len(late)} session(s) stopped on a usage limit during this run; it ends here, and the "
                     "next run rescues them first")
                 break
+            now_s = next((x for x in live_sessions(m["from"]) if x.get("session") == m["session"]), None)
+            if now_s and background_work({m["from"]: [now_s]}, moves_allowed(), time.time()):
+                log(f"balance: {m['position']} not moved: background work started under it since the plan")
+                m["done"], m["error"] = False, "background work started under it since the plan"
+                continue
         p = next((x for x in positions if x["name"] == m["position"]), None)
         why = balance_why(m.get("reason"))
         try:  # only idle holders are planned (no background shells); their scheduled tasks are in the note
