@@ -2990,6 +2990,12 @@ def cmd_resume_command(args):
                              defaults=org_agents(p.get("_org")) if p else None)
     if not line:
         return 1
+    try:  # the settings file it just wrote, by its digest, as of spawn records it (of_server, msg 01a2033f-5402)
+        import of_spawn
+        of_spawn.record_settings({"session": args.session, "position": p["name"] if p else None,
+                                  "org": p.get("_org") if p else None}, by="of resume-command")
+    except Exception:  # noqa: BLE001 - the line is printed whatever: a resume never waits on the record
+        pass
     print(line)
     return 0
 

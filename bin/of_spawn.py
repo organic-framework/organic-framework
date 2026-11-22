@@ -288,12 +288,15 @@ def settings_file(settings, sid, state_dir=None):
     return path
 
 
-def record_settings(pl, state_dir=None, emit=None):
+def record_settings(pl, state_dir=None, emit=None, by="of spawn"):
     """Record the session's settings file as it is launched: of.session_settings with its sha256, size and time. The
     event reaches the organization's server, which no sandbox reads or writes, so a session that rewrites its own or
     another session's file under OF's state folder, or backdates it, shows against it (of_server, message
     01a20337-fe93: the bootstrap's second run tells which sessions run on which settings; a deny would stop a structure
-    keeper spawning from its own session). Returns the digest, or None when the session has no settings file."""
+    keeper spawning from its own session). `of resume-command` records it too (BY), since every restored pane resumes
+    through it. It shows a session started on settings other than those written for it, not one that forges both the
+    file and the event: the event is shipped from the same writable store (of_server, message 01a2033f-5402). Returns
+    the digest, or None when the session has no settings file."""
     import hashlib
     import of_events
     path = os.path.join(state_dir or of_events.STATE_DIR, "spawn", f"{pl['session']}.settings.json")
@@ -304,7 +307,7 @@ def record_settings(pl, state_dir=None, emit=None):
         return None
     digest = hashlib.sha256(data).hexdigest()
     (emit or of_events.emit)("session_settings", {"session": pl["session"], "position": pl["position"],
-                                                  "sha256": digest, "bytes": len(data), "by": "of spawn",
+                                                  "sha256": digest, "bytes": len(data), "by": by,
                                                   "file": os.path.basename(path)},
                              position=pl["position"], session=pl["session"], org=pl.get("org"))
     return digest
