@@ -50,6 +50,7 @@ LOCAL_ONLY = frozenset({
     "of.mandate_check", "of.pulse", "of.capacity_snapshot", "of.artifact_read",
     "of.attention", "of.attention_routed",  # herdr's notices and the desk on this machine
     "of.work_record",  # imported from git and GitHub on each machine
+    "of.redacted",  # names this store's own rowids: each machine redacts its own copy
 })
 
 RETENTION_S = 30 * 86400  # the server keeps the feed this long; a new machine backfills it
