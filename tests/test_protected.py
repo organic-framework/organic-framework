@@ -674,12 +674,20 @@ class ReaderAndLoginTest(unittest.TestCase):
         with mock.patch.object(P, "DEVELOPER_DIRS", (none,)), mock.patch("sys.platform", "darwin"), \
                 mock.patch.object(P.os.path, "isfile", lambda p: p == P.SYSTEM_GIT):
             self.assertTrue(P._stub_git())
-            with self.assertRaises(P.Refused):
+            with self.assertRaises(P.Refused) as cm:
                 P._git_cmd(self.d)
+            self.assertIn("stub", str(cm.exception))                                # its own text, not "no git"
         with mock.patch.object(P, "DEVELOPER_DIRS", (self.d,)), mock.patch("sys.platform", "darwin"):
             os.makedirs(os.path.join(self.d, "usr", "bin"), exist_ok=True)
             open(os.path.join(self.d, "usr", "bin", "git"), "w").close()
             self.assertFalse(P._stub_git())                                          # the tools are there
+        selected = os.path.join(self.d, "Xcode-beta", "Contents", "Developer")       # chosen by xcode-select -s
+        os.makedirs(os.path.join(selected, "usr", "bin"))
+        open(os.path.join(selected, "usr", "bin", "git"), "w").close()
+        link = os.path.join(self.d, "xcode_select_link")
+        os.symlink(selected, link)
+        with mock.patch.object(P, "DEVELOPER_DIRS", (link, none)), mock.patch("sys.platform", "darwin"):
+            self.assertFalse(P._stub_git())                                          # the selected Xcode's git
         with mock.patch("sys.platform", "linux"):
             self.assertFalse(P._stub_git())
 

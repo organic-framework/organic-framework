@@ -142,7 +142,10 @@ HOOK_EVENTS = ("applypatch-msg", "commit-msg", "fsmonitor-watchman", "p4-changel
                "update")
 
 
-DEVELOPER_DIRS = ("/Library/Developer/CommandLineTools", "/Applications/Xcode.app/Contents/Developer")
+# the developer folders /usr/bin/git hands over to: the one `xcode-select -s` chose (its link, followed), then the two
+# defaults `xcode-select -p` falls back to (of_review on organic-framework PR 515: an Xcode selected elsewhere)
+DEVELOPER_DIRS = ("/var/db/xcode_select_link", "/Library/Developer/CommandLineTools",
+                  "/Applications/Xcode.app/Contents/Developer")
 
 
 def _stub_git():
@@ -151,14 +154,17 @@ def _stub_git():
     running the stub would pop that dialog at the person every pass. Read from the folders `xcode-select -p` would
     print, without running anything, as the guard does (of_guard._developer_tools)."""
     import sys
-    return sys.platform == "darwin" and not any(os.path.isfile(os.path.join(p, "usr", "bin", "git"))
+    return sys.platform == "darwin" and not any(os.path.isfile(os.path.join(os.path.realpath(p), "usr", "bin", "git"))
                                                 for p in DEVELOPER_DIRS)
 
 
 def _git_cmd(tree, extra=()):
     """The system's git in TREE with every setting that keeps the repository's programs from running (_git, _blob)."""
-    if not os.path.isfile(SYSTEM_GIT) or _stub_git():
+    if not os.path.isfile(SYSTEM_GIT):
         raise Refused("no system git (/usr/bin/git) on this machine")
+    if _stub_git():
+        raise Refused("/usr/bin/git on this Mac is the stub that offers Apple's developer tools: none are installed or "
+                      "selected (xcode-select --install installs them)")
     hooks = [x for ev in HOOK_EVENTS for x in ("-c", f"hook.{ev}.enabled=false")]
     return [SYSTEM_GIT, "-C", tree, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", *hooks,
             "-c", "diff.external=", "-c", "core.pager=cat", "-c", "protocol.allow=never", "-c", "gc.auto=0",
