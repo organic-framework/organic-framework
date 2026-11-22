@@ -10,6 +10,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 try:
+    try:  # the same YAML parser as every other OF process here, before anything parses (bin/of_yaml.py); a machine
+        # without PyYAML still runs the hook, any other failure denies below (of_server on organic-framework PR 572)
+        import of_yaml  # noqa: E402,F401
+    except ModuleNotFoundError as e:
+        if e.name != "yaml":
+            raise
     import of_hook  # noqa: E402
     code = of_hook.main(sys.argv[1:])
 except BaseException as e:  # noqa: BLE001 - the guard fails closed: a PreToolUse hook that cannot load or run exits 2

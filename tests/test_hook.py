@@ -769,7 +769,7 @@ class HandleTest(unittest.TestCase):
         import subprocess
         import tempfile
         d = tempfile.mkdtemp(prefix="ofhk-")
-        for name in ("of", "of-hook"):   # of-hook is what the hooks run (of_architect on PR 469)
+        for name in ("of", "of-hook", "of_yaml.py"):   # of-hook is what the hooks run (of_architect on PR 469)
             shutil.copy(os.path.join(os.path.dirname(of_hook.__file__), name), os.path.join(d, name))
         with open(os.path.join(d, "of_hook.py"), "w") as fh:
             fh.write("raise ImportError('a module the hook needs is broken')\n")
