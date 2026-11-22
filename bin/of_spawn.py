@@ -367,7 +367,8 @@ def of_checkouts():
 
 def post_door(folder="/srv/of-gh-post/of"):
     """The posting unit's door for OF's sessions, where it is set up: its requests folder and its signal file, never
-    the folder whole (of_server's interface v1, message 01a20553-b1bd; bin/of_post.py)."""
+    the folder whole (of_server's interface v1, message 01a20553-b1bd; bin/of_post.py). The owner's yes to this
+    widening of the sandbox is card OF-272, option 1."""
     req, sig = os.path.join(folder, "requests"), os.path.join(folder, "signal")
     return [req, sig] if os.path.isdir(req) and not os.path.islink(req) else []
 

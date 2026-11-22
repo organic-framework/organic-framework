@@ -66,8 +66,19 @@ class PostTest(unittest.TestCase):
         self.assertEqual(state, "waiting")
         home = os.path.join(self.d, "home")
         os.makedirs(os.path.join(home, ".local", "state", "of", "gh-post", "requests"))
-        self.assertEqual(of_post.door(home)[1], "reviewers")
+        import grp
+        mine = grp.getgrgid(os.getgid()).gr_name
+        self.assertEqual(of_post.door(home, group=mine)[1], "reviewers")          # of the reviewers' group
+        self.assertEqual(of_post.door(home, group="no-such-group-here")[1], "sessions")   # a folder by name alone
         self.assertEqual(of_post.door(os.path.join(self.d, "nobody")), (of_post.SESSIONS_DOOR, "sessions"))
+
+    def test_no_signal_no_request_left_behind(self):
+        """of_review on PR 576: a door with no unit behind it keeps nothing a later unit would post."""
+        os.remove(os.path.join(self.door, "signal"))
+        with self.assertRaisesRegex(of_post.PostError, "nothing was written"):
+            of_post.submit(of_post.request("comment", 7, "x\n", "p", "s"), self.door, "sessions", wait_s=0,
+                           results=self.results, user="u")
+        self.assertEqual(os.listdir(os.path.join(self.door, "requests")), [])
 
     def test_the_sandbox_may_write_the_doors_requests_and_signal_only(self):
         self.assertEqual(of_spawn.post_door(self.door), [os.path.join(self.door, "requests"),
