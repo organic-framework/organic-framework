@@ -6892,29 +6892,64 @@ def cmd_consent(args):
     return 0
 
 
+def _receipts_since(client, since):
+    """This machine's receipts on one server from the first one made at or after SINCE (an ISO time; None: all of
+    them). The server lists receipts from a cursor only, oldest first, a thousand at a time, so the start is found by
+    bisecting the cursor, and the list pages forward from there (2026-11-22: `of shipped` showed only the first page,
+    receipts from two weeks before, and read as if a server had had nothing since)."""
+    def page(after):
+        return client.receipts(after).get("receipts") or []
+
+    def late(rs):   # the page is empty or starts at or after SINCE; a receipt with no time counts as late
+        return not rs or str(rs[0].get("created_at") or "9") >= since
+
+    lo = 0
+    if since and not late(page(0)):
+        hi = 1024
+        while not late(page(hi)):
+            lo, hi = hi, hi * 2
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            lo, hi = (lo, mid) if late(page(mid)) else (mid, hi)
+    out, after = [], lo
+    while True:
+        rs = page(after)
+        out += [r for r in rs if not since or str(r.get("created_at") or "9") >= since]
+        nxt = max((int(r.get("seq") or 0) for r in rs), default=after)
+        if len(rs) < 1000 or nxt <= after:
+            return out
+        after = nxt
+
+
 def cmd_shipped(args):
-    """What has left this machine: receipts per server, with organizations and tiers."""
+    """What has left this machine: receipts per server, with organizations and tiers, over the last day by default."""
+    import time
     import of_client
     import of_ship
+    since = None if args.all else (args.since or time.strftime("%Y-%m-%dT%H:%M:%S",
+                                                               time.gmtime(time.time() - 86400)))
     # the servers this machine ships to: each organization's own, and the default only for one that names none
     # (of_lab, 2026-11-07: a client probed 127.0.0.1:18200, which it never ships to)
     servers = set(of_ship.org_servers(of_ship.config()).values()) or {of_ship.config()["server_url"].rstrip("/")}
     for server in sorted(servers):
         try:
-            rs = of_client.Client(server).receipts(0).get("receipts") or []
+            rs = _receipts_since(of_client.Client(server), since)
         except Exception as e:
             print(f"{server}: unreachable ({type(e).__name__})")
             continue
         per = {}
         for r in rs:
             for org, n in (r.get("by_org") or {}).items():
-                d = per.setdefault(org, {"records": 0, "batches": 0, "tiers": set()})
+                d = per.setdefault(org, {"records": 0, "batches": 0, "tiers": set(), "last": ""})
                 d["records"] += n
                 d["batches"] += 1
                 d["tiers"].update((r.get("tiers") or {}).get(org, []))
-        print(f"{server}: {len(rs)} batches")
+                d["last"] = max(d["last"], str(r.get("created_at") or "")[:19])
+        print(f"{server}: {len(rs)} batches " + (f"since {since}Z" if since else "in all"))
         for org, d in sorted(per.items()):
-            print(f"  {org:<26} {d['records']:>8} records in {d['batches']} batches; tiers {', '.join(sorted(d['tiers'])) or 'typed'}")
+            last = f"; last {d['last']}Z" if d["last"] else ""
+            print(f"  {org:<26} {d['records']:>8} records in {d['batches']} batches; "
+                  f"tiers {', '.join(sorted(d['tiers'])) or 'typed'}{last}")
     return 0
 
 
@@ -8530,7 +8565,9 @@ def main(argv=None):
     co.add_argument("--org", action="append")
     co.add_argument("--raw", choices=["on", "off"], required=True)
     co.set_defaults(fn=cmd_consent)
-    sp = sub.add_parser("shipped", help="what has left this machine, per server and organization")
+    sp = sub.add_parser("shipped", help="what has left this machine, per server and organization (the last day)")
+    sp.add_argument("--since", metavar="ISO", help="from this UTC time on (default: 24 hours ago)")
+    sp.add_argument("--all", action="store_true", help="every receipt the servers keep")
     sp.set_defaults(fn=cmd_shipped)
     sv = sub.add_parser("server", help="of-server: run, start, stop, install, uninstall, watchdog, enroll-machine, "
                                        "revoke, status (docs/server.md)")

@@ -169,6 +169,31 @@ class EnrollTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("410", r.stderr + r.stdout)
 
+    def test_shipped_starts_at_the_window_not_at_the_first_page(self):
+        """2026-11-22: `of shipped` listed only the first thousand receipts, two weeks old, so a server that had
+        taken a hundred thousand records since read as if it had taken none."""
+        import importlib.machinery
+        import importlib.util
+        sys.path.insert(0, os.path.join(HERE, "..", "bin"))
+        loader = importlib.machinery.SourceFileLoader("of_cli_shipped", OF)
+        spec = importlib.util.spec_from_loader("of_cli_shipped", loader)
+        cli = importlib.util.module_from_spec(spec)
+        loader.exec_module(cli)
+        rows = [{"seq": 10 * i, "created_at": f"2026-11-{5 + i // 1000:02d}T00:00:{i % 60:02d}",
+                 "by_org": {"acme": 1}} for i in range(1, 3501)]
+        calls = []
+
+        class Client:
+            def receipts(self, after):
+                calls.append(after)
+                return {"receipts": [r for r in rows if r["seq"] > after][:1000]}
+        got = cli._receipts_since(Client(), "2026-11-08T00:00:00")
+        self.assertEqual([r["seq"] for r in got], [r["seq"] for r in rows if r["created_at"] >= "2026-11-08"])
+        self.assertEqual(len(got), 501)
+        self.assertLess(len(calls), 30)                                    # bisected, not paged from the start
+        self.assertEqual(len(cli._receipts_since(Client(), None)), 3500)   # --all pages through every one
+        self.assertEqual(cli._receipts_since(Client(), "2026-12-01T00:00:00"), [])
+
     def test_invite_consent_shipped(self):
         os.makedirs(os.path.join(self.tmp.name, "config"))
         with open(os.path.join(self.tmp.name, "config", "orgs.yaml"), "w") as fh:
@@ -186,6 +211,10 @@ class EnrollTest(unittest.TestCase):
         r = self.of("shipped")
         self.assertIn("acme", r.stdout)
         self.assertIn("3 records", r.stdout)
+        self.assertIn("since", r.stdout)
+        r = self.of("shipped", "--all")
+        self.assertIn("3 records", r.stdout)
+        self.assertIn("in all", r.stdout)
         self.of("invite", "--server", self.url, "--org", "acme", "--person", "dana")
         self.assertEqual([b for p, b, _ in Fake.seen if p == "/v1/invites"][-1]["person"], "dana")
         r = self.of("machines", "revoke", "--server", self.url, "--person", "dana")
