@@ -416,17 +416,24 @@ class BenchOwnerSetTest(unittest.TestCase):
                 mark = of_guard.GATE_MARK
                 fh.write((mark if isinstance(mark, bytes) else mark.encode()) + b"\n")
             saved = of_init.owner_settings().get("bench")
-            import tempfile as _tf
             try:
+                # the test's folders lie in a temporary folder, which sessions write: here only the gate is judged
                 with mock.patch.object(of_asks_answer, "not_the_owner", lambda: False), \
-                        mock.patch.object(_tf, "gettempdir", lambda: "/nonexistent-tmp"):
+                        mock.patch.object(of, "_session_folders", lambda: []):
                     self.assertNotEqual(of.main(["owner", "set", "bench", os.path.join(d, "dev")]), 0)
                     self.assertEqual(of.main(["owner", "set", "bench", os.path.join(d, "plain")]), 0)
-                with mock.patch.object(of_asks_answer, "not_the_owner", lambda: True):
+                with mock.patch.object(of_asks_answer, "not_the_owner", lambda: True), \
+                        mock.patch.object(of, "_session_folders", lambda: []):
                     self.assertNotEqual(of.main(["owner", "set", "bench", os.path.join(d, "plain")]), 0)
-                # a folder sessions write is refused too: the temporary folders, OF's state folder
+                # a folder sessions write is refused: one inside OF's state folder, and the temporary folders
+                import of_events
+                inside = os.path.join(of_events.STATE_DIR, "bench-here")
+                os.makedirs(os.path.join(inside, "bin"), exist_ok=True)
+                open(os.path.join(inside, "bin", "bench.py"), "w").close()
                 with mock.patch.object(of_asks_answer, "not_the_owner", lambda: False):
+                    self.assertNotEqual(of.main(["owner", "set", "bench", inside]), 0)
                     self.assertNotEqual(of.main(["owner", "set", "bench", os.path.join(d, "plain")]), 0)
+                self.assertIn(os.path.realpath("/tmp"), of._session_folders())
             finally:
                 of_init.write_owner_setting("bench", saved)
 
