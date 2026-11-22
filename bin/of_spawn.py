@@ -243,6 +243,30 @@ def _orgs_file():
                                                      os.path.expanduser("~/.config/of"), "orgs.yaml")
 
 
+_ORGS_DOC = {}
+
+
+def _orgs_doc(f):
+    """orgs.yaml parsed, once per process while the file stays the same (its folder lookups ran it for every document
+    path: 90 parses in one registry load; message 01a20537-12ad); None when it cannot be read."""
+    import yaml
+    try:
+        st = os.stat(f)
+    except OSError:
+        return None
+    key = (os.path.realpath(f), st.st_mtime_ns, st.st_size, st.st_ino)
+    if key not in _ORGS_DOC:
+        try:
+            with open(f) as fh:
+                doc = yaml.safe_load(fh) or {}
+        except (OSError, ValueError, yaml.YAMLError):
+            return None
+        _ORGS_DOC.clear()
+        _ORGS_DOC[key] = doc
+    import copy
+    return copy.deepcopy(_ORGS_DOC[key])
+
+
 def clone_refused(clone, entries, base=None):
     """Why CLONE may not be a work clone, or None: it is, holds or lies in any organization's path or checkout (orgs.yaml
     `path`, `paths`), the checkout OF runs from, or the home itself; a sandbox's allowWrite would open those (of_review
@@ -286,12 +310,9 @@ def work_clones(orgs_file=None, include_refused=False):
     pushes, so it never names one. A clone that clone_refused refuses is left out, unless INCLUDE_REFUSED (then each
     row ends with the refusal, or None): its copy stays denied all the same. Outside the sandbox only `of diff`, in a
     session, reads it (of_server, message 01a20471-8284)."""
-    import yaml
     f = orgs_file or _orgs_file()
-    try:
-        with open(f) as fh:
-            doc = yaml.safe_load(fh) or {}
-    except (OSError, ValueError, yaml.YAMLError):
+    doc = _orgs_doc(f)
+    if doc is None:
         return []
     base = os.path.dirname(os.path.abspath(f))
     entries = [o for o in ((doc.get("orgs") if isinstance(doc, dict) else None) or []) if isinstance(o, dict)]

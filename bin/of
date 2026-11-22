@@ -46,6 +46,7 @@ if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "hook":
 
 try:
     import yaml
+    import of_yaml  # noqa: F401 - yaml.safe_load through libyaml where PyYAML has it
 except ImportError:
     sys.exit("of: PyYAML is missing. Install it with `python3 -m pip install --user pyyaml`.")
 
