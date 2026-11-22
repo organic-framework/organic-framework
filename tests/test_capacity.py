@@ -2111,7 +2111,11 @@ class Resume(unittest.TestCase):
                                              "2026-11-22T15:01:00Z", log=lambda *_: None)
             return r, start.call_args.args
 
-        r, args = restore(trusted=False)        # no account trusts it: where it ran, as a move does
+        import of_spawn
+        orgs, real = [], of_spawn.session_settings
+        with mock.patch.object(of_spawn, "session_settings", lambda *a, **k: orgs.append(k.get("org")) or real(*a, **k)):
+            r, args = restore(trusted=False)    # no account trusts it: where it ran, as a move does
+        self.assertEqual(set(orgs), {"team"})                           # the position's organization (OF-265)
         self.assertEqual(args[2], self.cwd)
         self.assertEqual(r["untrusted_start"], work)                    # and the note says so (of_review, PR 524)
         with open(os.path.join(r["work"], "note.md")) as fh:
@@ -3158,6 +3162,19 @@ class ToolProfiles(unittest.TestCase):
         self.assertEqual(settings["allowedMcpServers"], [{"serverName": "grafana-read"}, {"serverUrl": self.SLACK}])
         self.assertEqual(settings["enabledPlugins"], {"slack@anthropic-plugin-directory": True})
         self.assertEqual((settings["permissions"]["deny"], settings["autoMemoryDirectory"]), (["Read(/k/**)"], "/m/aws"))
+
+    def test_a_start_gives_the_settings_its_organization_for_the_work_clone(self):
+        """Card OF-265, hand-over ab9ed07b (of_platform, message 01a204ac-af90): of spawn passes the organization to
+        session_settings, whose Linux sandbox then lets the session write its organization's work clone; a move, a
+        restart and a restore passed none, so a session started by them on the agent host had no clone."""
+        import of_spawn
+        seen = []
+        real = of_spawn.session_settings
+        with tempfile.TemporaryDirectory() as t, mock.patch.object(
+                of_spawn, "session_settings", lambda *a, **k: seen.append(k.get("org")) or real(*a, **k)):
+            of_capacity.launch_command("/w", "/h/.claude-b", "s1", "aws", "/n.md", state_dir=t, org="acme")
+            of_capacity.launch_command("/w", "/h/.claude-b", "s1", "aws", "/n.md", state_dir=t)
+        self.assertEqual(seen, ["acme", None])
 
     def test_a_launch_records_its_settings_file_and_a_dry_run_leaves_it(self):
         """of_server, message 01a20340-445c: the bootstrap compares each running session's settings file with its

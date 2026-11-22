@@ -2020,12 +2020,14 @@ def launch_prompt(note_path, resumed=False, model=None, restarted=False):
 
 
 def launch_command(cwd, target, sid, name, note_path, model=None, effort=None, bypass=True, resumed=False,
-                   memory_dir=None, prompt=None, deny=None, state_dir=None, tools=None, write=True):
+                   memory_dir=None, prompt=None, deny=None, state_dir=None, tools=None, write=True, org=None):
     """memory_dir: the position's own memory (RFC 0006), the same on every account; deny: its credential deny rules
     (deny_for), so a moved or resumed session keeps what of spawn gave it. Both go into one settings file, as of spawn
     writes it (of_spawn.settings_file): a fresh pane's shell takes at most 1,024 bytes a line, and the deny rules
     alone can pass 4 KB (of_platform, 2026-11-11). tools: (argv, settings keys) of the position's tool profile
     (tools_for; docs/tools.md §4): its --mcp-config and its allowedMcpServers / enabledPlugins, in the same file.
+    org: the position's organization, whose work clone the Linux sandbox lets it write, as of spawn passes it (card
+    OF-265, hand-over ab9ed07b; of_platform, message 01a204ac-af90).
     write=False: name the file and leave it as it is. A move, a resume and a restore build the line that way for
     their log and their dry run, and build it again with write=True right before record_launch, after the last step
     that can stop the launch. Until then the live session's file is the one its launch recorded, and a move that
@@ -2038,7 +2040,7 @@ def launch_command(cwd, target, sid, name, note_path, model=None, effort=None, b
     # the agents' settings as at spawn: feedback drafts off (PR 185), env GIT_CEILING_DIRECTORIES (of_platform,
     # PR 216), a tool profile's env joined to it
     settings = of_spawn.session_settings(json.dumps({"autoMemoryDirectory": memory_dir}) if memory_dir else None,
-                                         list(deny) if deny else None, t_settings, scratch=(cwd, sid))
+                                         list(deny) if deny else None, t_settings, scratch=(cwd, sid), org=org)
     parts += ["--settings", _q(of_spawn.settings_file(settings, sid, state_dir) if write
                                else os.path.join(state_dir or STATE_DIR, "spawn", f"{sid}.settings.json"))]
     parts += [_q(str(x)) for x in t_argv or []]
@@ -3301,7 +3303,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
     mem_dir = of_memory.directory(p) if on_own or load_policy().get("position_memory") else None
     prompt = launch_prompt(note_path, model=model if switch else None, restarted=restarted)
     launch = dict(model=model, effort=effort, bypass=bypass, memory_dir=mem_dir, prompt=prompt, deny=deny_for(p, log),
-                  tools=tools_for(p, sid, target, log))
+                  tools=tools_for(p, sid, target, log), org=p.get("_org"))
     cmd = launch_command(run_cwd, target, sid, name, note_path, write=False, **launch)  # written right before the start
     key = project_key(src, sid)
     mem_src, mem_dst = os.path.join(src, "projects", key, "memory"), os.path.join(target, "projects", key, "memory")
@@ -3553,7 +3555,7 @@ def resume(name, sid, target, pane, extra_note=None, log=print, of_bin=None, dry
     import of_memory
     mem_dir = of_memory.directory(position) if position and load_policy().get("position_memory") else None
     launch = dict(model=model, effort=effort, bypass=bypass, resumed=True, memory_dir=mem_dir,
-                  deny=deny_for(position, log), tools=tools_for(position, sid, target, log))
+                  deny=deny_for(position, log), tools=tools_for(position, sid, target, log), org=org)
     cmd = launch_command(cwd, target, sid, name, note_path, write=False, **launch)  # written right before the start
     log(f"{name}: resume session {sid} on {short(target)} ({account_of(target)}) in herdr pane {pane}")
     log(f"  context model {model}, effort {effort}, permission mode {'bypass' if bypass else 'default'}")
@@ -4071,7 +4073,7 @@ def _restore_one(e, p, plan, ts, log=print, dry_run=False, home=None, claimed=No
     prompt = (f"of_capacity carried this session to another machine. Read {note_path} and follow it." if carried else
               f"The Mac restarted, and of_capacity resumed this session. Read {note_path} and follow it.")
     launch = dict(model=model, effort=effort, bypass=bypass, resumed=True, memory_dir=mem, prompt=prompt,
-                  deny=deny_for(p, log), tools=tools_for(p, sid, target, log))
+                  deny=deny_for(p, log), tools=tools_for(p, sid, target, log), org=(p or {}).get("_org"))
     cmd = launch_command(run_cwd, target, sid, name, note_path, write=False, **launch)  # written right before the start
     if home:  # its own workspace; the tab it had there, if it was there (not on the desk)
         ws_label, tab_label = home[0], saved[1] if saved[0] == home[0] and saved[1] else home[1]
