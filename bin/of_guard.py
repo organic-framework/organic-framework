@@ -2895,6 +2895,15 @@ def _developer_tools():
     return _DEV_TOOLS[0]
 
 
+def _committed_git_env():
+    """The environment of the guard's own git (_committed_clean): no system configuration, no lock, no prompt, no
+    lazy fetch, and no transport at all. A git older than 2.44 does not read GIT_NO_LAZY_FETCH, and a repository's
+    own protocol.<name>.allow wins over protocol.allow=never, so a promisor's program would run; an empty
+    GIT_ALLOW_PROTOCOL wins over both (of_review on organic-framework PR 510; of_agent-server, msg 01a20305-0958)."""
+    return {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/"), "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1", "GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": ""}
+
+
 def _committed_clean(path):
     """Is this local file committed at HEAD and unchanged, byte for byte? (a committed script: the sanctioned pattern)
     The guard runs no program a repository names (of_review on organic-framework PR 283: `git ls-files` and `git diff`
@@ -2911,8 +2920,7 @@ def _committed_clean(path):
     if sys.platform == "darwin" and not _developer_tools():
         return False
     d = os.path.dirname(os.path.abspath(path)) or "."
-    env = {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/"), "GIT_OPTIONAL_LOCKS": "0",
-           "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1", "GIT_NO_LAZY_FETCH": "1"}
+    env = _committed_git_env()
     git = [_SYSTEM_GIT, "-C", d, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
            "-c", "protocol.allow=never"]
     try:

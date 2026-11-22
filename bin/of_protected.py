@@ -125,10 +125,10 @@ def _env():
     return {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_NO_REPLACE_OBJECTS": "1", "GIT_NO_LAZY_FETCH": "1", "GIT_TERMINAL_PROMPT": "0",
             "GIT_OPTIONAL_LOCKS": "0", "GIT_GRAFT_FILE": "/dev/null",
-            # a transport no git has: protocol.allow is only the default, and a repository's own
+            # no transport: protocol.allow is only the default, and a repository's own
             # protocol.<name>.allow wins over it, while this list wins over both (git(1); of_architect, msg
             # 01a202ea-781a)
-            "GIT_ALLOW_PROTOCOL": "none"}
+            "GIT_ALLOW_PROTOCOL": ""}
 
 
 # every hook event of githooks(5) at git 2.56: a hook a repository's configuration names (hook.<name>.command and
