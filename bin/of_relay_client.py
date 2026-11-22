@@ -30,6 +30,32 @@ import of_store
 import of_tmux
 
 
+NOFOLLOW = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+
+
+def _open_own(path, flags, mode=0o600):
+    """A descriptor for PATH in OF's state folder, never through a link put at its name: on the agent host every
+    sandboxed session may write that folder and the relay runs outside the sandbox, so a link there would make it write
+    into any file of its user's (docs/guard.md, Gaps, "A process outside the sandbox follows a link"). Anything but a
+    regular file of ours is refused."""
+    fd = os.open(path, flags | NOFOLLOW, mode)
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+        os.close(fd)
+        raise OSError(f"{path} is not a regular file of ours")
+    return fd
+
+
+def _open_new(tmp, mode=0o600):
+    """A new file at TMP, to be renamed over the file it replaces: whatever lies at that name, a link included, is
+    removed first (never followed), and the file is made with O_EXCL, so one planted meanwhile stops the write."""
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    return os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW, mode)
+
+
 def _term(pane):
     """The module that drives an agent outside herdr, of_tmux or of_screen (docs/remote.md §3 row 5), or None for a
     herdr pane."""
@@ -259,7 +285,7 @@ def note_box(pane, text, now=None):
         return
     try:
         tmp = _stuck_path() + f".{os.getpid()}"
-        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+        with open(_open_new(tmp), "w") as fh:
             json.dump(doc, fh)
         os.replace(tmp, _stuck_path())
     except OSError:
@@ -281,7 +307,7 @@ def _read_typed():
 def _write_typed(doc):
     try:
         tmp = _typed_path() + f".{os.getpid()}"
-        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+        with open(_open_new(tmp), "w") as fh:
             json.dump(doc, fh)
         os.replace(tmp, _typed_path())
     except OSError:
@@ -343,7 +369,7 @@ def press_held_enter(pane, last):
                                            "reason": "the relay's own delivery held in the input box, its Enter lost: "
                                                      "Enter pressed once"})
     path = os.path.join(of_events.STATE_DIR, "injections.jsonl")
-    with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as fh:
+    with open(_open_own(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND), "a") as fh:
         fh.write(json.dumps(mark) + "\n")
     if _term(pane):
         ok = _term(pane).send_enter(pane)[0]
@@ -426,7 +452,7 @@ def herdr_deliver(pane, text, session=None, sender=None, wait_s=DELIVER_WAIT_S, 
                                            "text_sha256": digest, "reason": "relayed message",
                                            "mentions_neutralized": mentions})
     path = os.path.join(of_events.STATE_DIR, "injections.jsonl")
-    with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as fh:
+    with open(_open_own(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND), "a") as fh:
         fh.write(json.dumps(mark) + "\n")
     if term:
         ok, err = term.prompt(pane, text)
@@ -481,7 +507,7 @@ def mark_seen(msg_id, outcome, to=None):
     with _SEEN_LOCK:
         _SEEN[p][0].add(msg_id)
         try:
-            with open(os.open(p, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as fh:
+            with open(_open_own(p, os.O_WRONLY | os.O_CREAT | os.O_APPEND), "a") as fh:
                 fh.write(json.dumps({"msg_id": msg_id, "at": of_events.now_iso(), "outcome": outcome,
                                      **({"to": to} if to else {})}) + "\n")
         except OSError:
@@ -516,7 +542,7 @@ def set_arriving(key, msg_id, on, now=None):
     doc = {k: v for k, v in doc.items() if v}
     try:
         tmp = _arriving_path() + f".{os.getpid()}"
-        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+        with open(_open_new(tmp), "w") as fh:
             json.dump(doc, fh)
         os.replace(tmp, _arriving_path())
     except OSError:
@@ -756,7 +782,7 @@ def record_queues(queued, now=None, unsent=None, keep_orgs=()):
         kept = {k for k in set(prev) | set(_LAST_QUEUES) if k != "_seeded" and mine(k)}
     try:
         tmp = _queues_path() + f".{os.getpid()}"
-        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+        with open(_open_new(tmp), "w") as fh:
             json.dump({"at": now, "queues": out, "unsent": unsent}, fh)
         os.replace(tmp, _queues_path())
     except OSError:
@@ -773,7 +799,7 @@ def record_queues(queued, now=None, unsent=None, keep_orgs=()):
     _LAST_QUEUES.update(held)
     try:
         tmp = _emitted_path() + f".{os.getpid()}"
-        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+        with open(_open_new(tmp), "w") as fh:
             json.dump({k: v for k, v in _LAST_QUEUES.items() if k != "_seeded"}, fh)
         os.replace(tmp, _emitted_path())
     except OSError:
@@ -797,7 +823,7 @@ def set_queue(key, n, oldest, now=None):
         qs.pop(key, None)
     try:
         tmp = _queues_path() + f".{os.getpid()}"
-        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+        with open(_open_new(tmp), "w") as fh:
             json.dump(doc, fh)
         os.replace(tmp, _queues_path())
     except OSError:
@@ -915,7 +941,7 @@ def mark_shown(key, session, msg_ids, now=None):
         if not data[k]:
             del data[k]
     tmp = _shown_path() + ".tmp"
-    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+    with open(_open_new(tmp), "w") as fh:
         json.dump(data, fh)
     os.replace(tmp, _shown_path())
 
@@ -939,7 +965,7 @@ def keep_taken(key, session, m, now=None):
     rec = {"taken_at": now, "to": key, "session": session,
            "message": {k: v for k, v in m.items() if not k.startswith("_")}}
     path = _taken_path()
-    with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as fh:
+    with open(_open_own(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND), "a") as fh:
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
@@ -1202,7 +1228,7 @@ def read_coord_cursor():
 def write_coord_cursor(cursor):
     try:
         tmp = _coord_cursor_path() + f".{os.getpid()}"
-        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+        with open(_open_new(tmp), "w") as fh:
             json.dump(cursor, fh)
         os.replace(tmp, _coord_cursor_path())
     except OSError:
@@ -1250,7 +1276,7 @@ def write_heartbeat(ticks, now=None):
     """{ts, pid, loops: {loop: last time it ran}}, written by the presence loop every PRESENCE_CHECK seconds."""
     path = heartbeat_path()
     try:
-        with open(path + ".tmp", "w") as fh:
+        with open(_open_new(path + ".tmp"), "w") as fh:
             json.dump({"ts": time.time() if now is None else now, "pid": os.getpid(), "loops": dict(ticks)}, fh)
         os.replace(path + ".tmp", path)
     except OSError:
