@@ -1,22 +1,27 @@
-# The unit suite on every pull request to main, on GitHub's runners and never on a laptop (AGENTS.md: test suites
-# run remotely or in CI). Before this workflow every position ran the whole suite on the founder's Mac before naming
+# The unit suite on every pull request to main and every push to main, on GitHub's runners and never on a laptop
+# (AGENTS.md: test suites run remotely or in CI). Before this workflow every position ran the whole suite on the founder's Mac before naming
 # a commit; on 2026-11-15 those runs were part of the load when the hooks fell behind (of_platform, message
 # 01a1dc96-33b9). The suite is pure logic: tests/isolate.py gives it a temporary HOME with no organization, no git
 # config and no SSH agent, so the log names no organization, person or host. The run only reads the repository.
 # Actions are pinned by commit; the tag is in the comment. Owner: of_release.
+# On main it gives each merge commit a `unit` check, whatever paths the merge changed: a protected checkout moved by
+# `of protected ff` counts the checks on that commit (of_architect, message 01a20303-7536, 2026-11-22).
 name: tests
 
 on:
   pull_request:
+    branches: [main]
+  push:
     branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# A new push to a pull request's branch makes its older run moot.
+# A new push to a pull request's branch makes its older run moot. Any other run has a group of its own: a group keeps
+# one run in progress and by default one pending, so on main a later merge would cancel an earlier commit's check.
 concurrency:
-  group: tests-${{ github.ref }}
+  group: tests-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
