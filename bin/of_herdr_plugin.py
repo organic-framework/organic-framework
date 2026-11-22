@@ -41,6 +41,26 @@ def _state():
     return of_events.STATE_DIR
 
 
+NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+def _open_own(path, flags):
+    """Open a file of ours, never through a link. OF's state folder is writable by the agents' sandboxed sessions,
+    while these files are opened by herdr's hooks and by configure, outside any sandbox: a link planted there would
+    make us write where it points (of_agent-server's finding, 2026-11-22, msg 01a20452-0396)."""
+    return os.open(path, flags | NOFOLLOW, 0o600)
+
+
+def own_dir(path=None):
+    """configure's own folder beside herdr's config.toml (`of-state`), which no session writes: the questions popup's
+    log and the backups of config.toml live there, since the backup is what a failed check would put back."""
+    d = os.path.join(os.path.dirname(path or herdr_config_path()), "of-state")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    if os.path.islink(d) or not os.path.isdir(d):
+        raise OSError(f"{d} is not a folder of ours")
+    return d
+
+
 def log(line, state=None):
     path = os.path.join(state or _state(), "herdr-plugin.log")
     try:
@@ -48,7 +68,7 @@ def log(line, state=None):
             os.replace(path, path + ".1")
     except OSError:
         pass
-    with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as fh:
+    with open(_open_own(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND), "a") as fh:
         fh.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {line}\n")
 
 
@@ -98,10 +118,9 @@ def coalesced(run, state=None):
     """Run `run()` now, or have the run in progress run once more after it. Returns the number of runs made here."""
     state = state or _state()
     pending = os.path.join(state, "herdr-plugin.pending")
-    with open(pending, "a"):
-        pass
+    os.close(_open_own(pending, os.O_WRONLY | os.O_CREAT | os.O_APPEND))
     runs = 0
-    with open(os.open(os.path.join(state, "herdr-plugin.lock"), os.O_WRONLY | os.O_CREAT, 0o600), "w") as lock:
+    with open(_open_own(os.path.join(state, "herdr-plugin.lock"), os.O_WRONLY | os.O_CREAT), "w") as lock:
         while True:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -225,13 +244,12 @@ def configure(of_home=None, python=None, path=None, run=None, backups=None, now=
     replaces a binding of prefix+a the person already has, and says so. It backs the file up first, runs `herdr config
     check`, puts the backup back if the check fails, and reloads a running server. Returns (True, [notes]) or
     (False, reason)."""
-    import shutil
     import tomllib
     run = run or subprocess.run
     of_home = os.path.abspath(of_home or os.path.join(HERE, ".."))
     python = python or sys.executable
     path = path or herdr_config_path()
-    log_file = os.path.join(_state(), "asks-popup.err")  # OF's state dir, $OF_STATE when set
+    log_file = os.path.join(own_dir(path), "asks-popup.err")  # the shell's 2>> follows links: not in OF's state
     # They go into a TOML string and into sh -c '…': a quote, an apostrophe, a backslash or a control character
     # would break the key (of_platform's review of PR 31), so such a path is refused, as resume_argv refuses it.
     bad = [x for x in (python, of_home, log_file) if re.search(r"['\"\\\x00-\x1f\x7f]", x)]
@@ -260,10 +278,11 @@ def configure(of_home=None, python=None, path=None, run=None, backups=None, now=
         return True, notes
     backup = None
     if text:
-        bdir = backups or os.path.join(os.path.expanduser("~"), ".local", "state", "of", "herdr-config-backups")
-        os.makedirs(bdir, exist_ok=True)
+        bdir = backups or own_dir(path)
+        os.makedirs(bdir, mode=0o700, exist_ok=True)
         backup = os.path.join(bdir, time.strftime("config.toml.%Y%m%dT%H%M%SZ", time.gmtime(now)) + ".before-of-init")
-        shutil.copy2(path, backup)
+        with open(_open_own(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL), "w") as fh:  # a fresh file, never a link
+            fh.write(text)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as fh:
         fh.write(text + ("" if not text or text.endswith("\n") else "\n") + "".join(add))
@@ -274,8 +293,9 @@ def configure(of_home=None, python=None, path=None, run=None, backups=None, now=
         chk = None
         notes.append(f"herdr config check did not run ({type(e).__name__})")
     if chk is not None and (chk.returncode != 0 or "ok" not in (chk.stdout or "").lower()):
-        if backup:
-            shutil.copy2(backup, path)
+        if text:
+            with open(path, "w") as fh:  # what was read, held in memory: a file can be swapped under us
+                fh.write(text)
         else:
             os.unlink(path)
         return False, "herdr config check refused the change; the file is as it was: " + \

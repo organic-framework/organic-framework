@@ -181,18 +181,44 @@ class HookTest(unittest.TestCase):
                 self.assertIn("apostrophe", why)
             self.assertFalse(os.path.exists(path))  # nothing written
 
-    def test_configure_logs_into_ofs_state_dir(self):
+    def test_configure_keeps_its_files_beside_herdrs_config_not_in_ofs_state(self):
+        """OF's state folder is writable by sandboxed sessions; configure runs outside any sandbox (of_agent-server,
+        msg 01a20452-0396): the popup's log and the backup live in herdr's own config folder."""
         import tomllib
         with tempfile.TemporaryDirectory() as d:
-            saved = plugin._state
-            plugin._state = lambda: os.path.join(d, "state")
-            try:
-                path = os.path.join(d, "config.toml")
-                self.assertTrue(plugin.configure("/of", python="/py/python3", path=path, run=self._check())[0])
-            finally:
-                plugin._state = saved
+            path = os.path.join(d, "config.toml")
+            with open(path, "w") as fh:
+                fh.write("onboarding = false\n")
+            self.assertTrue(plugin.configure("/of", python="/py/python3", path=path, run=self._check(), now=0)[0])
             key = tomllib.load(open(path, "rb"))["keys"]["command"][0]
-            self.assertIn(os.path.join(d, "state", "asks-popup.err"), key["command"])
+            self.assertIn(os.path.join(d, "of-state", "asks-popup.err"), key["command"])
+            self.assertEqual(os.listdir(os.path.join(d, "of-state")), ["config.toml.19700101T000000Z.before-of-init"])
+
+    def test_configure_never_writes_through_a_planted_link(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, victim, bdir = os.path.join(d, "config.toml"), os.path.join(d, "victim"), os.path.join(d, "b")
+            with open(path, "w") as fh:
+                fh.write("onboarding = false\n")
+            with open(victim, "w") as fh:
+                fh.write("untouched\n")
+            os.makedirs(bdir)
+            os.symlink(victim, os.path.join(bdir, "config.toml.19700101T000000Z.before-of-init"))
+            with self.assertRaises(OSError):
+                plugin.configure("/of", python="/py/python3", path=path, run=self._check(), backups=bdir, now=0)
+            self.assertEqual(open(victim).read(), "untouched\n")
+            self.assertEqual(open(path).read(), "onboarding = false\n")  # nothing written before the backup
+
+    def test_hook_files_are_never_opened_through_a_link(self):
+        with tempfile.TemporaryDirectory() as d:
+            victim = os.path.join(d, "victim")
+            os.symlink(victim, os.path.join(d, "herdr-plugin.pending"))
+            with self.assertRaises(OSError):
+                plugin.coalesced(lambda: None, state=d)
+            os.unlink(os.path.join(d, "herdr-plugin.pending"))
+            os.symlink(victim, os.path.join(d, "herdr-plugin.log"))
+            with self.assertRaises(OSError):
+                plugin.log("x", state=d)
+            self.assertFalse(os.path.exists(victim))
 
     def test_configure_leaves_the_persons_own_key_and_rows_alone(self):
         with tempfile.TemporaryDirectory() as d:
