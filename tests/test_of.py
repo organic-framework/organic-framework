@@ -958,6 +958,18 @@ class AsksActorTest(unittest.TestCase):
         self.assertEqual(self.actor({"OF_POSITION": "x"}, True), "agent")          # a position never is the owner
 
 
+class DeniedPromptNoteTest(AsksActorTest):
+    def test_a_refused_prompt_is_told_to_its_position(self):
+        """A user organization's structure keeper, message 01a2048e-27d8: a subagent ran parts of a refused command."""
+        sent = []
+        ask = {"position": "liq_a", "org": "acme", "text": "rm -rf build && rustfmt --check src"}
+        self.assertTrue(self.of._tell_denied(ask, "AC-9", "ops_lead", send=lambda to, t: sent.append((to, t)) or True))
+        to, text = sent[0]
+        self.assertEqual(to, "acme:liq_a")
+        for part in ("AC-9", "ops_lead", "rm -rf build && rustfmt --check src", "every part of it stand refused",
+                     "tell any subagent"):
+            self.assertIn(part, text)
+        self.assertFalse(self.of._tell_denied({"text": "x"}, "AC-9", "ops_lead", send=lambda *a: True))   # no position
 class AsksCitedAnswerTest(AsksActorTest):
     """A user organization's structure keeper, message 01a20320-debb, and of_review on PR 514: an agent closes the
     owner's question only citing a prompt he typed after it, and reads a card with `show`."""

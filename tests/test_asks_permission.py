@@ -27,6 +27,7 @@ SCREEN = ("Bash command\ncheck-service\n1. No options configured\nDo you want to
 
 class PermissionTest(unittest.TestCase):
     def setUp(self):
+        self.told = []
         stack = contextlib.ExitStack()
         self.addCleanup(stack.close)
         state = stack.enter_context(tempfile.TemporaryDirectory())
@@ -78,6 +79,9 @@ class PermissionTest(unittest.TestCase):
                     return subprocess.CompletedProcess(cmd, 1, SCREEN, "read failed")
             elif cmd[1:] == ["pane", "send-keys", "asking", "esc"]:
                 return subprocess.CompletedProcess(cmd, send_status, "", "")
+            elif cmd[2:3] == ["send"]:   # the refusal told to the asker (message 01a2048e-27d8)
+                self.told.append(cmd[3:])
+                return subprocess.CompletedProcess(cmd, 0, "", "")
             else:
                 self.fail(f"unexpected command {cmd}")
             return subprocess.CompletedProcess(cmd, 0, data, "")
@@ -146,7 +150,9 @@ class PermissionTest(unittest.TestCase):
         with self.fake_herdr([SCREEN, SCREEN, cleared]) as herdr, mock.patch("time.sleep"):
             status, msg = self.cli("deny", "AC-1")
         self.assertEqual(status, 0, msg)
-        self.assertEqual([c.args[0][2] for c in herdr.call_args_list], ["list", "read", "read", "send-keys", "read"])
+        self.assertEqual([c.args[0][2] for c in herdr.call_args_list if c.args[0][2] != "send"],
+                         ["list", "read", "read", "send-keys", "read"])
+        self.assertEqual(self.told[0][0], "acme:worker")                       # the refusal told to its position
         pl, session, pos = self.conn.execute("SELECT payload, session_id, position FROM event "
                                              "WHERE name = 'of.permission_resolved'").fetchone()
         self.assertEqual(json.loads(pl), {"reply_to": self.aid, "outcome": "denied", "by": "lead", "via": "asks-deny"})
