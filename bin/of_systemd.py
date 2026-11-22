@@ -25,10 +25,9 @@ def service(command, python, of_bin, watchdog=False):
     if "$" in python or "$" in of_bin:
         python = ":" + python  # suppress environment expansion in this ExecStart command
     name = command + ("-watchdog" if watchdog else "")
-    # never in the state folder (hand-over 58681935); the relay's and the server's logs move with their keeper's side
-    # (of_server), so theirs stay there for now (of_review on PR 545)
-    log = (os.path.join(of_events.STATE_DIR, name + ".log") if command in ("relay", "server")
-           else of_events.log_path(name + ".log")).replace("%", "%%")
+    # never in the state folder (hand-over 58681935): systemd opens the path itself, outside any sandbox; the relay's
+    # and the server's too since their keeper's change (of_server, 2026-11-22)
+    log = of_events.log_path(name + ".log").replace("%", "%%")
     policy = "Type=oneshot" if watchdog else "Restart=always\nRestartSec=10"
     relation = f"PartOf=of-{name}.timer" if watchdog else "After=of-server.service"
     path = _word("PATH=" + of_init.service_path())  # herdr can live in the installing user's ~/.local/bin

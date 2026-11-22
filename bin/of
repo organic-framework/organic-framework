@@ -8712,7 +8712,7 @@ def main(argv=None):
                                        "revoke", "status", "export-secret-key", "export", "import",
                                        "moving", "backup", "clickhouse-init", "clickhouse-setup"])
     sv.add_argument("--daemon", action="store_true", help="run: detach (the same as `of server start`)")
-    sv.add_argument("--log", help="start: the log file (default ~/.local/state/of/server.log)")
+    sv.add_argument("--log", help="start: the log file (default ~/.local/log/of/server.log)")
     sv.add_argument("path", nargs="?", help="export-secret-key: a new file (mode 600) for the derived masking key; "
                                              "export, import: the bundle's folder")
     sv.add_argument("--check", action="store_true",

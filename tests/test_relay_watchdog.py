@@ -163,8 +163,9 @@ class UnitTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}), \
                 mock.patch.object(of_events, "STATE_DIR", os.path.join(home, "state")), \
+                mock.patch.object(of_events, "LOG_DIR", os.path.join(home, "logs")), \
                 mock.patch.object(of_init, "service_path", return_value="/herdr tools:/usr/bin"):
-            log = os.path.join(of_events.STATE_DIR, "relay.log")
+            log = os.path.join(home, "logs", "relay.log")   # never in the state folder a sandbox writes
             units = R.systemd_units(python="/py", of_bin="/of")
             self.assertEqual(list(units), [name])
             for directive in ("ExecStart=/py /of relay run", "Restart=always", "RestartSec=10", "WantedBy=default.target",

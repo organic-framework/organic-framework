@@ -2844,7 +2844,8 @@ def start_daemon(config=None, log_path=None, wait=15.0):
                 return pid, f"of-server started under launchd ({LAUNCHD_LABEL}): pid {pid}, {cfg['host']}:{cfg['port']}"
             time.sleep(0.3)
         return None, f"launchd started {LAUNCHD_LABEL} but it does not answer yet; see `launchctl print gui/{os.getuid()}/{LAUNCHD_LABEL}`"
-    log_path = os.path.expanduser(log_path or os.path.join(of_events.STATE_DIR, "server.log"))
+    # in LOG_DIR, never in the state folder a sandboxed session writes (docs/guard.md, Gaps)
+    log_path = os.path.expanduser(log_path or of_events.log_path("server.log"))
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     env = {**os.environ, "OF_AUTOMATION": "1", "SSH_AUTH_SOCK": ""}
     cmd = [sys.executable, os.path.abspath(__file__)] + (["--config", config] if config else []) + ["run"]
