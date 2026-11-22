@@ -610,6 +610,30 @@ class ProtectedFfTest(unittest.TestCase):
         with self.assertRaises(P.Refused):                                          # a string entry has no ff
             P.run(os.path.join(self.d, "other"), b, orgs_file=orgs, api=green({b: 9}))
 
+    def test_the_owners_list_in_orgs_yaml_stands_over_the_registry(self):
+        """The founder's card OF-266: on the agent host the registry follows what any session pushes, so an
+        organization's ff entries come from orgs.yaml alone when the owner wrote a list there."""
+        reg = os.path.join(self.d, "org", "registry")
+        os.makedirs(reg)
+        with open(os.path.join(reg, "positions.yaml"), "w") as fh:   # what a pushed registry could say
+            fh.write(f"positions: []\nprotected_code:\n  - path: \"{self.wt}\"\n    ff:\n"
+                     "      repo: someone/fork\n      branch: other\n      human: [README]\n")
+        orgs = os.path.join(self.d, "orgs.yaml")
+        with open(orgs, "w") as fh:
+            fh.write(f"orgs:\n  - name: acme\n    path: {os.path.join(self.d, 'org')}\n    protected_code:\n"
+                     f"      - path: \"{self.wt}\"\n        ff:\n          repo: acme/vault\n          branch: main\n"
+                     "          human: [scripts/vault.sh]\n          checks: [unit]\n")
+        got = P.entries(orgs)
+        self.assertEqual([(o, f["repo"], f["branch"]) for o, p, f in got], [("acme", "acme/vault", "main")])
+        self.write("scripts/other.sh", "#!/bin/sh\necho b\n")
+        b = self.commit("b")
+        said = []
+        P.run(self.wt, b, orgs_file=orgs, api=green({b: 9}), emit=lambda name, data, **k: said.append(data))
+        self.assertEqual((said[0]["repo"], said[0]["branch"]), ("acme/vault", "main"))
+        with open(orgs, "w") as fh:                                          # an empty list: no ff entry at all
+            fh.write(f"orgs:\n  - name: acme\n    path: {os.path.join(self.d, 'org')}\n    protected_code: []\n")
+        self.assertEqual(P.entries(orgs), [])
+
     def test_the_registry_field_is_checked(self):
         self.assertEqual(P.ff_problems({"path": "~/x/y", "ff": SPEC}), [])
         self.assertTrue(P.ff_problems({"path": "~/x/y", "ff": {k: v for k, v in SPEC.items() if k != "repo"}}))

@@ -99,22 +99,46 @@ def _rel_ok(p):
         and "\n" not in p
 
 
-def entries(orgs_file=None):
-    """[(org, absolute path, ff mapping)] of every protected_code entry that names `ff:` and has no problem."""
+def owner_entries(orgs_file=None):
+    """{org: [protected_code item, ...]} the owner wrote into orgs.yaml, the machine's file only he writes (docs/guard.md
+    G33). An organization named here takes its ff entries from here alone: on the agent host its registry follows what
+    any session pushes (the founder's card OF-266), so a registry's `ff:` could change what vouches for the fast-forward
+    of the code the guard runs (of_server's proposal, of_architect's yes, msg 01a20462-349f)."""
     import yaml
     import of_credentials
-    out = []
+    try:
+        with open(of_credentials._orgs_file(orgs_file)) as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    return {o["name"]: o["protected_code"] for o in doc.get("orgs") or []
+            if isinstance(o, dict) and o.get("name") and isinstance(o.get("protected_code"), list)}
+
+
+def entries(orgs_file=None):
+    """[(org, absolute path, ff mapping)] of every protected_code entry that names `ff:` and has no problem: an
+    organization's own list in orgs.yaml when the owner wrote one there, else its registry's."""
+    import yaml
+    import of_credentials
+    out, own = [], owner_entries(orgs_file)
+
+    def take(org, items):
+        for item in items or []:
+            p = entry_path(item)
+            if isinstance(item, dict) and item.get("ff") and p and of_credentials._code_path_ok(p) \
+                    and not ff_problems(item):
+                out.append((org, of_credentials._abs(p), item["ff"]))
+    for org, items in own.items():
+        take(org, items)
     for org, reg in of_credentials._registries(orgs_file):
+        if org in own:
+            continue   # the owner's list stands for this organization: its registry's ff entries are not read
         try:
             with open(reg) as fh:
                 doc = yaml.safe_load(fh) or {}
         except (OSError, yaml.YAMLError):
             continue
-        for item in doc.get("protected_code") or []:
-            p = entry_path(item)
-            if isinstance(item, dict) and item.get("ff") and p and of_credentials._code_path_ok(p) \
-                    and not ff_problems(item):
-                out.append((org, of_credentials._abs(p), item["ff"]))
+        take(org, doc.get("protected_code"))
     return out
 
 
@@ -861,10 +885,11 @@ def run(entry, target, position=None, orgs_file=None, api=default_api, emit=None
     _trusted(of_credentials._orgs_file(orgs_file))
     found = next(((o, p, f) for o, p, f in entries(orgs_file) if os.path.realpath(p) == os.path.realpath(want)), None)
     if not found:
-        raise Refused(f"{entry} is no protected_code entry with ff: in any registry here (docs/registry.md, Protected "
-                      "code): its fast-forward is the owner's")
+        raise Refused(f"{entry} is no protected_code entry with ff: in orgs.yaml or any registry here (docs/registry.md, "
+                      "Protected code): its fast-forward is the owner's")
     org, path, spec = found
-    _trusted(dict(of_credentials._registries(orgs_file))[org])
+    if org not in owner_entries(orgs_file):   # an entry from orgs.yaml rests on that file, checked above
+        _trusted(dict(of_credentials._registries(orgs_file))[org])
     res = ff(path, spec, target, api=api)
     (emit or of_events.emit)("protected_ff", {"entry": path.replace(os.path.expanduser("~"), "~", 1), "from": res["from"],
                                               "to": res["to"], "pr": res["pr"], "changed": res["changed"],
