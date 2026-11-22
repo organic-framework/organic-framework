@@ -126,7 +126,7 @@ class Store(unittest.TestCase):
               timestamp TEXT, input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,
               cache_write_tokens INTEGER, cache_write_5m_tokens INTEGER, cache_write_1h_tokens INTEGER, model TEXT);
             CREATE TABLE event (event_id TEXT, ts TEXT, name TEXT, session_id TEXT, position TEXT, source TEXT,
-              org TEXT, payload TEXT);""")
+              org TEXT, payload TEXT, host_id TEXT, host_name TEXT);""")
         self.n = 0
 
     def tearDown(self):
@@ -140,9 +140,10 @@ class Store(unittest.TestCase):
         self.conn.execute("INSERT INTO transcript_record VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                           (self.n, path, "agent-1" if sub else sid, mid, iso(t), inp, out, cr, None, 0, cw1, model))
 
-    def ev(self, t, name, sid, pos, payload=None, org="acme"):
-        self.conn.execute("INSERT INTO event VALUES (?,?,?,?,?,?,?,?)",
-                          (f"e{t}{name}", iso(t), name, sid, pos, "hook", org, json.dumps(payload or {})))
+    def ev(self, t, name, sid, pos, payload=None, org="acme", host="H-here", host_name="here"):
+        self.conn.execute("INSERT INTO event VALUES (?,?,?,?,?,?,?,?,?,?)",
+                          (f"e{t}{name}{host}", iso(t), name, sid, pos, "hook", org, json.dumps(payload or {}), host,
+                           host_name))
 
     def test_each_response_once_subagents_to_their_session_and_old_months_dropped(self):
         now = T0 + 10 * 86400
@@ -194,29 +195,83 @@ class Store(unittest.TestCase):
         self.rec("S2", "m3", T0 + 86400 + 5 * H, inp=500_000, out=0, model="claude-sonnet-5-5")
         self.rec("S9", "m4", T0 + 86400 + 6 * H, inp=1_000, out=0)                 # no position held S9
         of_spend.ingest(self.conn, now)
-        day = of_spend.periods(DOCS, self.conn, T0 + 3 * H, now, by="day", now=now)   # from 03:00: day 1 whole
+        day = of_spend.periods(DOCS, self.conn, T0 + 3 * H, now, by="day", now=now, here="H-here")  # day 1 whole
         self.assertEqual([p["start"] for p in day["periods"]], [T0, T0 + 86400])
         d1, d2 = day["periods"]
         self.assertEqual(d1["total"]["cost_usd"], 4.0)
         self.assertEqual(d1["accounts"], {"/h/.claude-a": {"fresh": 1_000_000, "cost_usd": 4.0, "responses": 1,
                                                           "outside_fresh": 0, "outside_runs": 0}})
+        self.assertEqual(d1["machines"]["here"]["accounts"]["/h/.claude-a"]["positions"]["acme/acme_a"]["cost_usd"], 4.0)
         self.assertEqual(d1["works"]["acme/w-retry"]["cost_usd"], 4.0)
-        self.assertEqual(d1["goals"]["acme/g-orders"]["cost_usd"], 4.0)     # a work's spend counts to its goal
+        self.assertEqual(d1["goals"]["acme/g-orders"]["cost_usd"], 4.0)          # a work's spend counts to its goal
         self.assertEqual(d2["accounts"]["/h/.claude-b"]["cost_usd"], 4.0)
         self.assertEqual(d2["positions"]["acme/acme_b"]["cost_usd"], 1.0)   # Sonnet's price
         self.assertEqual(d2["positions"]["(no position)"]["responses"], 1)
         self.assertEqual(day["positions"]["acme/acme_a"]["cost_usd"], 8.0)
         self.assertEqual(day["total"]["responses"], 4)
-        hour = of_spend.periods(DOCS, self.conn, T0 + 86400, T0 + 86400 + 7 * H, by="hour", now=now)
+        hour = of_spend.periods(DOCS, self.conn, T0 + 86400, T0 + 86400 + 7 * H, by="hour", now=now, here="H-here")
         self.assertEqual([(p["start"] - T0 - 86400) // H for p in hour["periods"]], [5, 6])
         self.assertEqual(hour["periods"][0]["total"]["responses"], 2)
-        only = of_spend.periods(DOCS, self.conn, T0, now, by="day", org="acme", now=now)
+        only = of_spend.periods(DOCS, self.conn, T0, now, by="day", org="acme", now=now, here="H-here")
         self.assertNotIn("(no position)", only["positions"])                 # one organization's positions only
         text = of_spend.render_periods(day, top=1)
         self.assertIn("2026-11-01 (part)  $4", text)                          # asked from 03:00
         self.assertIn("2026-11-02  $5", text)
-        self.assertIn("positions: acme_a $4, 2 more $1", text)
-        self.assertIn("by position: acme_a $8", text)
+        self.assertIn("  here  $5", text)
+        self.assertIn("    /h/.claude-b $4: acme_a $4", text)
+        self.assertIn("by account, all machines: /h/.claude-a $5, /h/.claude-b $4", text)
+
+    def test_a_carried_sessions_history_counts_on_the_machine_it_was_spent_on(self):
+        """2026-11-22: the agent host's store read the moved sessions' laptop turns again. Each response counts on the
+        machine its session's last carry restore put it on, and before its first restore on the one it came from."""
+        restores = {"S1": [(T0 + 10 * H, "host")],                                   # laptop -> host at 10:00
+                    "S2": [(T0 + 10 * H, "host"), (T0 + 12 * H, "laptop")]}           # and back at 12:00
+        self.assertEqual(of_spend.away_spans(restores, "laptop"), {"S1": [(T0 + 10 * H, float("inf"))],
+                                                                   "S2": [(T0 + 10 * H, T0 + 12 * H)]})
+        self.assertEqual(of_spend.away_spans(restores, "host"), {"S1": [(float("-inf"), T0 + 10 * H)],
+                                                                 "S2": [(float("-inf"), T0 + 10 * H),
+                                                                        (T0 + 12 * H, float("inf"))]})
+        self.assertEqual(of_spend.counted_parts(T0, T0 + 24 * H, [(T0 + 10 * H, T0 + 12 * H)]),
+                         [(T0, T0 + 10 * H), (T0 + 12 * H, T0 + 24 * H)])
+        now = T0 + 86400
+        self.ev(T0 + H, "of.hook", "S1", "acme_a")
+        self.ev(T0 + 10 * H, "of.holder_changed", "S1", "acme_a",
+                {"position": "acme_a", "new_session": "S1", "evidence": "of capacity carry restore"}, host="H-host")
+        self.rec("S1", "m1", T0 + 2 * H, inp=1_000_000, out=0)          # spent here, carried along to the host
+        self.rec("S1", "m2", T0 + 11 * H, inp=1_000_000, out=0)         # spent on the host
+        of_spend.ingest(self.conn, now)
+        here = of_spend.periods(DOCS, self.conn, T0, now, by="day", now=now, here="H-here")
+        self.assertEqual(here["total"]["cost_usd"], 4.0)
+        host = of_spend.periods(DOCS, self.conn, T0, now, by="day", now=now, here="H-host")
+        self.assertEqual(host["total"]["cost_usd"], 4.0)                # the host's store: only its own
+        self.assertEqual(of_spend.compute(DOCS, self.conn, now=now, here="H-host")["total"]["cost_usd"], 4.0)
+
+    def test_each_machine_reports_its_hours_and_the_others_show_them(self):
+        """The founder, 2026-11-22, prompt 01a204f4-e8e2: the day and hour views missed the agent host's spend."""
+        now = T0 + 2 * 86400 + 30 * 60
+        self.ev(T0 + H, "of.hook", "S1", "acme_a")
+        self.rec("S1", "m1", T0 + 2 * 86400 + 60, inp=1_000_000, out=0)
+        self.rec("S9", "m2", T0 + 2 * 86400 + 60, inp=1_000, out=0)     # no position: stays on its machine
+        of_spend.ingest(self.conn, now)
+        sent = []
+        emit = lambda kind, payload, **k: sent.append((kind, payload, k))  # noqa: E731
+        self.assertEqual(of_spend.emit_hours(DOCS, self.conn, now, here="H-here", emit=emit), 1)
+        (kind, pl, kw), = sent
+        self.assertEqual((kind, kw, pl["hour"]), ("spend_hours", {"org": "acme"}, T0 + 2 * 86400))
+        self.assertEqual(pl["rows"], [["/h/.claude-a", "acme_a", None, None, 1_000_000, 4.0, 1, 0, 0]])
+        self.assertEqual(of_spend.emit_hours(DOCS, self.conn, now + 60, here="H-here", emit=emit), 0)  # 15 minutes
+        self.assertEqual(of_spend.emit_hours(DOCS, self.conn, now + 1000, here="H-here", emit=emit), 0)  # no change
+        # another machine's two reports of the same hour: the latest counts
+        for t, cost in ((now, 9.0), (now + 600, 2.0)):
+            self.ev(t, "of.spend_hours", None, None, {"v": 1, "hour": T0 + 2 * 86400, "machine": "host-b",
+                                                      "rows": [["~/.claude-b", "acme_b", None, None, 10, cost, 3, 0, 0]]},
+                    host="H-host", host_name="host-b")
+        out = of_spend.periods(DOCS, self.conn, T0 + 2 * 86400, now + 3600, by="hour", now=now + 700, here="H-here")
+        self.assertEqual(out["reported"], ["host-b"])
+        self.assertEqual(out["machines"]["host-b"]["accounts"]["~/.claude-b"]["positions"]["acme/acme_b"]["cost_usd"], 2.0)
+        self.assertEqual(out["machines"]["here"]["accounts"]["/h/.claude-a"]["positions"]["acme/acme_a"]["cost_usd"], 4.0)
+        self.assertEqual(out["positions"]["acme/acme_b"]["cost_usd"], 2.0)
+        self.assertIn("machines: here (this one), host-b (its reports)", of_spend.render_periods(out))
 
     def test_two_organizations_rows_of_one_name_stay_apart(self):
         """of_review on PR 558: positions, works and goals were keyed by bare name, so two organizations' rows of one

@@ -560,19 +560,23 @@ def advance(conn, now, budget_s=TICK_BUDGET_S):
     return a and b
 
 
-def compute(docs, conn, month=None, now=None):
-    """The month's attribution and sums from view_spend_month and the event store (`conn`: the store)."""
+def compute(docs, conn, month=None, now=None, here=None):
+    """The month's attribution and sums from view_spend_month and the event store (`conn`: the store): this machine's
+    own spend, a carried session's history left to the machine it was spent on (away_spans)."""
     now = now or time.time()
     start, end = month_bounds(month, now)
     conn.executescript(MONTH_DDL)
     spans, decl = _store_inputs(docs, conn)
+    away = away_spans(carry_restores(conn), here or of_events.machine_id())
     seen = set(spans)
     seg_sums = []
     for sid, a, b, org, pos, work in segments(spans, decl, start, end):
-        f, c, k = conn.execute("SELECT COALESCE(SUM(fresh), 0), COALESCE(SUM(cost), 0), count(*) FROM view_spend_month "
-                               "WHERE session_id = ? AND epoch >= ? AND epoch < ?", (sid, a, b)).fetchone()
-        if k:
-            seg_sums.append((org, pos, work, {"fresh": int(f), "cost_usd": float(c), "responses": int(k)}))
+        for x, y in counted_parts(a, b, away.get(sid)):
+            f, c, k = conn.execute("SELECT COALESCE(SUM(fresh), 0), COALESCE(SUM(cost), 0), count(*) FROM "
+                                   "view_spend_month WHERE session_id = ? AND epoch >= ? AND epoch < ?",
+                                   (sid, x, y)).fetchone()
+            if k:
+                seg_sums.append((org, pos, work, {"fresh": int(f), "cost_usd": float(c), "responses": int(k)}))
     ph = ",".join("?" * len(seen)) or "''"
     f, c, k = conn.execute(f"SELECT COALESCE(SUM(fresh), 0), COALESCE(SUM(cost), 0), count(*) FROM view_spend_month "
                            f"WHERE epoch >= ? AND epoch < ? AND session_id NOT IN ({ph})",
@@ -585,94 +589,255 @@ def compute(docs, conn, month=None, now=None):
     return out
 
 
-STEPS = {"day": 86400, "hour": 3600}
+def carry_restores(conn):
+    """{session: [(epoch, host id)]}: each machine a carry restore put a session on, and when (of.holder_changed with
+    the evidence `of capacity carry restore`; a coordination event, so every machine has the others')."""
+    out = {}
+    for ts, host, pl in conn.execute("SELECT ts, host_id, payload FROM event WHERE name = 'of.holder_changed' "
+                                     "AND payload LIKE '%carry restore%'"):
+        try:
+            j = json.loads(pl or "{}")
+        except ValueError:
+            continue
+        sid, t = j.get("new_session") or j.get("previous_session"), _epoch(ts)
+        if sid and host and t is not None and "carry restore" in str(j.get("evidence") or ""):
+            out.setdefault(sid, []).append((t, host))
+    return {k: sorted(v) for k, v in out.items()}
 
 
-def periods(docs, conn, since, until, by="day", org=None, now=None):
-    """Spend per day or hour (UTC) in [since, until), from the same attributed responses as the month's sums: each
-    period's total, and by account (the config dir a response was written under), position, work and goal (a work's
-    spend counts to its goal; no sub-goal roll-up here), with the sessions no position held and the runs on other
-    harnesses. `org` keeps that organization's positions only. Reads view_spend_month, which keeps the responses
-    from the start of the previous month (the founder, 2026-11-22, prompt 01a204e5-0acb, through of_conductor: "of
-    capacity spend should be able to show by day and by hour")."""
+def away_spans(restores, here):
+    """{session: [(a, b)]}: the times a carried session counted on another machine than `here`. A carried transcript
+    holds its history from the machine it left, and the store there reads it again: each response counts on the
+    machine a carry restore had last put its session on, and before its first restore on the machine it came from
+    (2026-11-22: the agent host's store held the moved sessions' laptop turns too)."""
+    out = {}
+    for sid, rs in restores.items():
+        spans = [(float("-inf"), rs[0][0])] if rs[0][1] == here else []
+        for i, (t, host) in enumerate(rs):
+            if host != here:
+                spans.append((t, rs[i + 1][0] if i + 1 < len(rs) else float("inf")))
+        if spans:
+            out[sid] = spans
+    return out
+
+
+def counted_parts(a, b, spans):
+    """[a, b) less the spans when the session counted on another machine."""
+    parts = [(a, b)]
+    for x, y in spans or ():
+        cut = []
+        for p, q in parts:
+            if y <= p or x >= q:
+                cut.append((p, q))
+                continue
+            if p < x:
+                cut.append((p, x))
+            if y < q:
+                cut.append((y, q))
+        parts = cut
+    return parts
+
+
+def _target(docs, o, pos, work):
+    """(work or None, goal or None) a response goes to, as the month's sums attribute it."""
+    doc = docs.get(o) or {}
+    works = doc.get("works") if isinstance(doc.get("works"), dict) else {}
+    kind, target = ("work", work) if work else fallback_target(o, pos, doc)
+    if kind == "work":
+        w = works.get(target) if isinstance(works.get(target), dict) else {}
+        return target, w.get("goal")
+    return None, (target if kind == "goal" else None)
+
+
+def _cells(docs, conn, since, until, step, here):
+    """{(period, account, org, position, work, goal): sums} of this machine's own responses in [since, until), per
+    period of `step` seconds from `since`: the month's attribution, the carried history left to its machine
+    (away_spans), the sessions no position held under position None, the runs on other harnesses with account None."""
     import of_capacity
-    now = now or time.time()
-    step = STEPS[by]
-    asked, since = since, since - since % step
-    conn.executescript(MONTH_DDL)
     spans, decl = _store_inputs(docs, conn)
-    canon = canon_map(docs)
-    buckets = {}
+    away = away_spans(carry_restores(conn), here)
+    cells = {}
 
-    def bucket(k):
-        return buckets.setdefault(k, {"total": _zero(), "accounts": {}, "positions": {}, "works": {}, "goals": {}})
-
-    def key(org, name):  # two organizations' rows never add up: a position, work or goal is its organization's
-        return f"{org}/{name}" if org else name
-
-    def put(k, cd, s, pos=None, porg=None, work=None, goal=None):
-        b = bucket(k)
-        _add(b["total"], s)
-        if cd is not None:
-            _add(b["accounts"].setdefault(of_capacity.short(cd) if cd else "?", _zero()), s)
-        _add(b["positions"].setdefault(key(porg, pos) if pos else "(no position)", dict(_zero(), org=porg)), s)
-        if work:
-            _add(b["works"].setdefault(key(porg, work), dict(_zero(), org=porg)), s)
-        if goal:
-            _add(b["goals"].setdefault(key(porg, goal), dict(_zero(), org=porg)), s)
+    def put(k, acct, o, pos, work, goal, s):
+        _add(cells.setdefault((int(k), acct, o, pos, work, goal), _zero()), s)
 
     sql = ("SELECT CAST((epoch - ?) / ? AS INTEGER), config_dir, COALESCE(SUM(fresh), 0), COALESCE(SUM(cost), 0), "
            "count(*) FROM view_spend_month WHERE session_id = ? AND epoch >= ? AND epoch < ? GROUP BY 1, 2")
     for sid, a, b, o, pos, work in segments(spans, decl, since, until):
-        if org and o != org:
-            continue
-        doc = docs.get(o) or {}
-        works = doc.get("works") if isinstance(doc.get("works"), dict) else {}
-        kind, target = ("work", work) if work else fallback_target(o, pos, doc)
-        goal = ((works.get(target) or {}).get("goal") if kind == "work" and isinstance(works.get(target), dict)
-                else target if kind == "goal" else None)
-        for k, cd, f, c, n in conn.execute(sql, (since, step, sid, a, b)):
-            put(k, cd, {"fresh": int(f), "cost_usd": float(c), "responses": int(n)}, pos, o,
-                target if kind == "work" else None, goal)
-    if not org:
-        seen = sorted(spans)
-        ph = ",".join("?" * len(seen)) or "''"
-        for k, cd, f, c, n in conn.execute(
-                "SELECT CAST((epoch - ?) / ? AS INTEGER), config_dir, COALESCE(SUM(fresh), 0), COALESCE(SUM(cost), 0), "
-                f"count(*) FROM view_spend_month WHERE epoch >= ? AND epoch < ? AND session_id NOT IN ({ph}) "
-                "GROUP BY 1, 2", [since, step, since, until] + seen):
-            put(k, cd, {"fresh": int(f), "cost_usd": float(c), "responses": int(n)})
+        w, g = _target(docs, o, pos, work)
+        for x, y in counted_parts(a, b, away.get(sid)):
+            for k, cd, f, c, n in conn.execute(sql, (since, step, sid, x, y)):
+                put(k, of_capacity.short(cd) if cd else "?", o, pos, w, g,
+                    {"fresh": int(f), "cost_usd": float(c), "responses": int(n)})
+    seen = sorted(spans)
+    ph = ",".join("?" * len(seen)) or "''"
+    for k, cd, f, c, n in conn.execute(
+            "SELECT CAST((epoch - ?) / ? AS INTEGER), config_dir, COALESCE(SUM(fresh), 0), COALESCE(SUM(cost), 0), "
+            f"count(*) FROM view_spend_month WHERE epoch >= ? AND epoch < ? AND session_id NOT IN ({ph}) GROUP BY 1, 2",
+            [since, step, since, until] + seen):
+        put(k, of_capacity.short(cd) if cd else "?", None, None, None, None,
+            {"fresh": int(f), "cost_usd": float(c), "responses": int(n)})
+    canon = canon_map(docs)
     k = 0
     while since + k * step < until:  # the runs on other harnesses: their tokens, no list cost (flat plans)
         segs, _ = outside_runs(conn, canon, decl, since + k * step, min(until, since + (k + 1) * step))
         for o, pos, work, s in segs:
-            if not org or o == org:
-                put(k, None, s, pos, o, work)
+            w, g = _target(docs, o, pos, work) if o else (None, None)
+            put(k, None, o, pos, w, g, s)
         k += 1
-    total, accounts, positions = _zero(), {}, {}
-    rows = []
-    for k in sorted(buckets):
-        b = buckets[k]
-        _add(total, b["total"])
-        for name, s in b["accounts"].items():
-            _add(accounts.setdefault(name, _zero()), s)
-        for name, s in b["positions"].items():
-            _add(positions.setdefault(name, dict(_zero(), org=s.get("org"))), s)
-        # rows of one bare name in two organizations keep their organization in the text too
-        rows.append(dict(b, start=since + k * step))
+    return cells
+
+
+def machine_name(conn, host):
+    """A machine's name: its latest events' host name, else this one's (socket)."""
+    r = conn.execute("SELECT host_name FROM event WHERE host_id = ? AND host_name IS NOT NULL ORDER BY rowid DESC "
+                     "LIMIT 1", (host,)).fetchone()
+    if r and r[0]:
+        return r[0]
+    import socket
+    return socket.gethostname()
+
+
+HOURS_EVENT = "of.spend_hours"
+HOURS_EVERY_S = 900        # a machine reports its changed hours at most this often
+HOURS_LATE = 3             # the last hours are compared again: a long turn's records reach the store at its end
+HOURS_BACK_S = 30 * 86400  # a machine's first report goes back as far as the coordination feed keeps (of_coord)
+
+
+def remote_hours(conn, here, since, until):
+    """[(machine, hour, org, rows)] the other machines reported for the hours in [since, until): of.spend_hours from
+    the coordination feed, the latest per machine, organization and hour."""
+    latest = {}
+    for host, name, o, pl in conn.execute(
+            "SELECT host_id, host_name, org, payload FROM event WHERE name = ? AND host_id IS NOT NULL AND host_id != ? "
+            "AND ts >= ? ORDER BY ts, rowid", (HOURS_EVENT, here, _iso(since))):
+        try:
+            j = json.loads(pl or "{}")
+        except ValueError:
+            continue
+        hour = j.get("hour")
+        if isinstance(hour, (int, float)) and since <= hour < until and isinstance(j.get("rows"), list):
+            latest[(host, o, hour)] = (j.get("machine") or name or host[:8], j["rows"])
+    return [(m, hour, o, rows) for (_, o, hour), (m, rows) in sorted(latest.items(), key=lambda x: x[0][2])]
+
+
+def emit_hours(docs, conn, now, here=None, emit=None):
+    """Report this machine's hours to the organization's other machines: one of.spend_hours per organization and
+    hour that changed since the last report, its rows (account, position, work, goal, fresh, cost, responses,
+    outside fresh, outside runs). Shared through the coordination feed, so `of capacity spend --by` on any machine
+    shows every machine's spend (the founder, 2026-11-22, prompt 01a204f4-e8e2: "of capacity spend --by hour does not
+    show the costs on the second machine"). The sessions no position held stay here: no organization's feed
+    is theirs. Returns the events sent."""
+    import hashlib
+    import socket
+    here = here or of_events.machine_id()
+    last = float(_meta(conn, "spend_hours_at") or 0)
+    if now - last < HOURS_EVERY_S:
+        return 0
+    hour = now - now % 3600
+    final = _meta(conn, "spend_hours_final")
+    lo = min(float(final) if final else hour - HOURS_BACK_S, hour - HOURS_LATE * 3600)
+    lo = max(lo, month_bounds(now=month_bounds(now=now)[0] - 1)[0])   # nothing before the view keeps
+    lo -= lo % 3600
+    by = {}
+    for (k, acct, o, pos, work, goal), s in _cells(docs, conn, lo, hour + 3600, 3600, here).items():
+        if o:
+            by.setdefault((lo + k * 3600, o), []).append(
+                [acct, pos, work, goal, s["fresh"], round(s["cost_usd"], 4), s["responses"], s["outside_fresh"],
+                 s["outside_runs"]])
+    conn.execute("CREATE TABLE IF NOT EXISTS view_spend_hours_sent (hour REAL, org TEXT, digest TEXT, "
+                 "PRIMARY KEY (hour, org))")
+    sent = 0
+    for (h, o), rows in sorted(by.items()):
+        rows.sort(key=lambda r: [str(x) for x in r])
+        digest = hashlib.sha256(json.dumps(rows).encode()).hexdigest()
+        was = conn.execute("SELECT digest FROM view_spend_hours_sent WHERE hour = ? AND org = ?", (h, o)).fetchone()
+        if was and was[0] == digest:
+            continue
+        (emit or of_events.emit)("spend_hours", {"v": 1, "hour": h, "machine": socket.gethostname(), "rows": rows},
+                                 org=o)
+        conn.execute("INSERT OR REPLACE INTO view_spend_hours_sent VALUES (?, ?, ?)", (h, o, digest))
+        sent += 1
+    conn.execute("DELETE FROM view_spend_hours_sent WHERE hour < ?", (hour - HOURS_BACK_S - 86400,))
+    _meta(conn, "spend_hours_final", hour - HOURS_LATE * 3600)
+    _meta(conn, "spend_hours_at", now)
+    return sent
+
+
+STEPS = {"day": 86400, "hour": 3600}
+
+
+def periods(docs, conn, since, until, by="day", org=None, now=None, here=None):
+    """Spend per day or hour (UTC) in [since, until), from the same attributed responses as the month's sums: each
+    period's total, by machine, then account, then position, and by account, position, work and goal over all machines
+    (a work's spend counts to its goal; no sub-goal roll-up here). This machine's own responses come from its store,
+    its carried history left to the machine it was spent on; the other machines' from their of.spend_hours reports.
+    The sessions no position held show as "(no position)" for this machine only. `org` keeps that organization's
+    positions. The view keeps the responses from the start of the previous month (the founder, 2026-11-22, prompts
+    01a204e5-0acb, "by day and by hour", and 01a204f4-e8e2, the second machine)."""
+    now = now or time.time()
+    step = STEPS[by]
+    asked, since = since, since - since % step
+    here = here or of_events.machine_id()
+    conn.executescript(MONTH_DDL)
+    cells = {}
+    mine = machine_name(conn, here)
+    for (k, acct, o, pos, work, goal), s in _cells(docs, conn, since, until, step, here).items():
+        if not org or o == org:
+            _add(cells.setdefault((k, mine, acct, o, pos, work, goal), _zero()), s)
+    reported = set()
+    for m, hour, o, rows in remote_hours(conn, here, since, until):
+        if org and o != org:
+            continue
+        reported.add(m)
+        for r in rows:
+            acct, pos, work, goal, f, c, n, of_, orun = (list(r) + [0] * 9)[:9]
+            _add(cells.setdefault((int((hour - since) // step), m, acct, o, pos, work, goal), _zero()),
+                 {"fresh": f, "cost_usd": c, "responses": n, "outside_fresh": of_, "outside_runs": orun})
+
+    def tree():
+        return {"total": _zero(), "machines": {}, "accounts": {}, "positions": {}, "works": {}, "goals": {}}
+
+    def key(o, name):  # two organizations' rows never add up: a position, work or goal is its organization's
+        return f"{o}/{name}" if o else name
+
+    def put(t, m, acct, o, pos, work, goal, s):
+        _add(t["total"], s)
+        mm = t["machines"].setdefault(m, {"total": _zero(), "accounts": {}})
+        _add(mm["total"], s)
+        aa = mm["accounts"].setdefault(acct or "other harnesses", {"total": _zero(), "positions": {}})
+        _add(aa["total"], s)
+        p = key(o, pos) if pos else "(no position)"
+        _add(aa["positions"].setdefault(p, dict(_zero(), org=o)), s)
+        if acct:
+            _add(t["accounts"].setdefault(acct, _zero()), s)
+        _add(t["positions"].setdefault(p, dict(_zero(), org=o)), s)
+        if work:
+            _add(t["works"].setdefault(key(o, work), dict(_zero(), org=o)), s)
+        if goal:
+            _add(t["goals"].setdefault(key(o, goal), dict(_zero(), org=o)), s)
+
+    whole, rows = tree(), {}
+    for (k, m, acct, o, pos, work, goal), s in cells.items():
+        put(rows.setdefault(k, tree()), m, acct, o, pos, work, goal, s)
+        put(whole, m, acct, o, pos, work, goal, s)
     keep_from = month_bounds(now=month_bounds(now=now)[0] - 1)[0]
-    return _round({"v": 1, "by": by, "from": since, "asked_from": asked, "to": until, "computed_at": now, "org": org,
-                   "kept_from": keep_from, "complete": _meta(conn, "spend_month_caught_up") == "1",
-                   "periods": rows, "total": total, "accounts": accounts, "positions": positions})
+    return _round(dict(whole, v=2, by=by, org=org, computed_at=now, kept_from=keep_from, machine=mine,
+                       reported=sorted(reported), complete=_meta(conn, "spend_month_caught_up") == "1",
+                       periods=[dict(rows[k], start=since + k * step) for k in sorted(rows)], to=until,
+                       asked_from=asked, **{"from": since}))
 
 
 def render_periods(out, top=10):
-    """`of capacity spend --by day|hour`: each period's total, its accounts and its top positions, as text."""
+    """`of capacity spend --by day|hour`: each period's total, then each machine, its accounts and their top
+    positions, as text."""
     fmt = "%Y-%m-%d" if out["by"] == "day" else "%Y-%m-%d %H:00Z"
     span = (f"{time.strftime('%Y-%m-%d %H:%MZ', time.gmtime(out['from']))} to "
             f"{time.strftime('%Y-%m-%d %H:%MZ', time.gmtime(min(out['to'], out['computed_at'])))}")
     lines = [f"Spend by {out['by']}, {span}{', ' + out['org'] + ' only' if out.get('org') else ''}: list cost at each "
-             f"model's prices and fresh tokens (input, cache writes, output; cache reads are in the cost only)"]
+             f"model's prices and fresh tokens (input, cache writes, output; cache reads are in the cost only)",
+             f"  machines: {out['machine']} (this one)"
+             + "".join(f", {m} (its reports)" for m in out.get("reported") or [])]
     if not out.get("complete", True):
         lines.append("  the store is still being read into the view, so recent periods are low")
     if out["from"] < out.get("kept_from", 0):
@@ -687,28 +852,31 @@ def render_periods(out, top=10):
         b = k.split("/", 1)[-1]
         return b if len(bare.get(b, ())) <= 1 else k
 
-    def tops(d, n):
+    def tops(d, n, name=label):
         items = sorted(d.items(), key=lambda x: -x[1]["cost_usd"])
-        shown = ", ".join(f"{label(k)} ${v['cost_usd']:,.0f}" for k, v in items[:n])
+        shown = ", ".join(f"{name(k)} ${v['cost_usd']:,.0f}" for k, v in items[:n])
         rest = sum(v["cost_usd"] for _, v in items[n:])
         return shown + (f", {len(items) - n} more ${rest:,.0f}" if len(items) > n else "")
+
+    def sums(t):
+        return (f"${t['cost_usd']:,.0f}  fresh {_num(t['fresh'])}  {t['responses']:,} responses"
+                + (f"  + {_num(t.get('outside_fresh'))} in {t['outside_runs']} outside run(s)"
+                   if t.get("outside_runs") else ""))
+
+    def machines(t):
+        for m, mm in sorted(t["machines"].items(), key=lambda x: -x[1]["total"]["cost_usd"]):
+            lines.append(f"  {m}  {sums(mm['total'])}")
+            for a, aa in sorted(mm["accounts"].items(), key=lambda x: -x[1]["total"]["cost_usd"]):
+                lines.append(f"    {a} ${aa['total']['cost_usd']:,.0f}: {tops(aa['positions'], top)}")
     step = STEPS[out["by"]]
     for p in out["periods"]:
-        t = p["total"]
         part = p["start"] < out.get("asked_from", out["from"]) or p["start"] + step > min(out["to"], out["computed_at"])
-        lines.append(f"\n{time.strftime(fmt, time.gmtime(p['start']))}{' (part)' if part else ''}  "
-                     f"${t['cost_usd']:,.0f}  fresh {_num(t['fresh'])}"
-                     f"  {t['responses']:,} responses"
-                     + (f"  + {_num(t.get('outside_fresh'))} in {t['outside_runs']} outside run(s)"
-                        if t.get("outside_runs") else ""))
-        if p["accounts"]:
-            lines.append("  accounts:  " + tops(p["accounts"], 99))
-        lines.append("  positions: " + tops(p["positions"], top))
-    lines.append("")
-    lines.append(_line("all", out["total"]))
+        lines.append(f"\n{time.strftime(fmt, time.gmtime(p['start']))}{' (part)' if part else ''}  {sums(p['total'])}")
+        machines(p)
+    lines.append(f"\nall  {sums(out['total'])}")
+    machines(out)
     if out["accounts"]:
-        lines.append("  by account:  " + tops(out["accounts"], 99))
-    lines.append("  by position: " + tops(out["positions"], top))
+        lines.append("  by account, all machines: " + tops(out["accounts"], 99, name=str))
     return "\n".join(lines)
 
 
@@ -730,17 +898,24 @@ def load(path=None):
         return None
 
 
-def tick(conn, now, docs_fn=None):
-    """of_capacity's listener tick: advance the views; recompute the sums at most every REFRESH_S."""
+def tick(conn, now, docs_fn=None, emit=None):
+    """of_capacity's listener tick: advance the views; report this machine's changed hours to the others at most every
+    HOURS_EVERY_S (emit_hours); recompute the sums at most every REFRESH_S."""
     caught_up = advance(conn, now)
-    last = load()
-    if not caught_up or (last and now - (last.get("computed_at") or 0) < REFRESH_S
-                         and last.get("month") == _month_name(month_bounds(now=now)[0])):
-        return False
     if docs_fn is None:
         import of_tools
         docs_fn = of_tools.registries
-    write(compute(docs_fn(), conn, now=now))
+    if not caught_up:
+        return False
+    docs = None
+    if now - float(_meta(conn, "spend_hours_at") or 0) >= HOURS_EVERY_S:
+        docs = docs_fn()
+        emit_hours(docs, conn, now, emit=emit)
+    last = load()
+    if last and now - (last.get("computed_at") or 0) < REFRESH_S \
+            and last.get("month") == _month_name(month_bounds(now=now)[0]):
+        return False
+    write(compute(docs if docs is not None else docs_fn(), conn, now=now))
     return True
 
 
