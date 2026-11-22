@@ -878,6 +878,16 @@ class NoWriteThroughALinkTest(unittest.TestCase):
                 with self.assertRaises(OSError):                                # refused: nothing written, no
                     of_events._with_refs(lambda c: c.update(x=1))               # number given (of_review, PR 545)
                 self.assertIsNone(of_events.next_ref("acme"))
+                of_events.seen_ref("ACME-42")                                   # a server's number: no raise
+                # an id is always given, whatever lies at the repair lock (of_review on PR 545)
+                os.remove(os.path.join(state, "machine_id"))
+                with open(os.path.join(state, "machine_id"), "w"):
+                    pass                                                        # empty: the repair path
+                lockp = os.path.join(state, ".machine_id.lock")
+                if os.path.lexists(lockp):
+                    os.remove(lockp)
+                os.symlink(target, lockp)
+                self.assertTrue(of_events.machine_id(wait_s=0.1))
                 self.assertEqual(of_hook.load_session("s9"), {"_refused": True})
                 of_hook.save_session("s9", of_hook.load_session("s9"))           # never saved over
                 self.assertTrue(os.path.islink(os.path.join(state, "sessions", "s9.json")))

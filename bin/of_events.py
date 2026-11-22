@@ -99,7 +99,11 @@ def machine_id(wait_s=5.0):
             # and the others then read that id (of_review's note on organic-framework PR 414: os.replace per caller
             # gave six processes two ids)
             import fcntl
-            with os.fdopen(open_own(os.path.join(d, ".machine_id.lock")), "a") as lock:   # open_own (PR 545)
+            try:
+                lock = os.fdopen(open_own(os.path.join(d, ".machine_id.lock")), "a")   # open_own (PR 545)
+            except OSError:
+                return fallback()   # an id is always given
+            with lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
                 try:
                     cur = read()
@@ -402,7 +406,10 @@ def seen_ref(ref):
         prefix, n = m.group(1).upper(), int(m.group(2))
         if n > int(c.get(prefix) or 0):
             c[prefix] = n
-    _with_refs(raise_)
+    try:
+        _with_refs(raise_)
+    except OSError:   # a refused counter file: the number the server gave stands, the counter is not raised
+        pass
 
 
 HOOK_TIMEOUT = None  # set by `of hook`: wait at most this long for the database, then spool
