@@ -1991,6 +1991,31 @@ class Resume(unittest.TestCase):
         self.assertEqual(self.calls[rec][2]["by"], "of capacity resume")      # of_server, message 01a20340-445c
         self.assertLess(rec, kinds.index("pane run"))                        # recorded before the launch
 
+    def test_a_move_whose_declaration_cannot_be_recorded_stops_before_the_exit(self):
+        """of_review on PR 566: the declaration's file refused after the exit left a moved session down."""
+        target = os.path.join(self.home.name, ".claude-b")
+        os.makedirs(target)
+        shutil.copy2(os.path.join(self.cfg, ".claude.json"), target)
+        victim = os.path.join(self.home.name, "victim")
+        with open(victim, "w") as fh:
+            fh.write("keep")
+        os.symlink(victim, os.path.join(self.home.name, "injections.jsonl"))
+        exits = []
+        live = {"session": "s1", "cwd": self.cwd, "pid": 9, "status": "idle"}
+        with mock.patch.multiple(of_capacity, live_sessions=lambda d: [live] if d == self.cfg else [],
+                                 _agent_by_session=lambda _: {"pane_id": "w6:p18", "agent_status": "idle"},
+                                 _continuation=lambda _: {}, load_policy=lambda: {}, proc_env=lambda _: {},
+                                 proc_args=lambda _: "claude", background_processes=lambda _: [], missing_signins=lambda *_: [],
+                                 connectors_seen=lambda _: set(), plugins_ready=lambda _: set(), granted_labels=lambda _: {},
+                                 with_labels=lambda have, _: have, tools_for=lambda *_: None, deny_for=lambda *_: None,
+                                 exit_session=lambda *a, **k: exits.append(1)):
+            with self.assertRaisesRegex(of_capacity.MoveError, "declaration cannot be recorded"):
+                of_capacity.move({"name": "runners_keeper", "holder": {"session": "s1"}}, target,
+                                 assume_empty_input=True, log=lambda *_: None)
+        self.assertEqual(exits, [])
+        with open(victim) as fh:
+            self.assertEqual(fh.read(), "keep")
+
     def test_move_updates_the_private_note_after_exit_and_copy_before_resume(self):
         target = os.path.join(self.home.name, ".claude-b")
         os.makedirs(target)
@@ -3191,8 +3216,20 @@ class ToolProfiles(unittest.TestCase):
             os.makedirs(os.path.join(t, "capacity"))
             for name in ("injections.jsonl", "capacity/tick.lock", "capacity/balance.lock", "capacity/balance.replan"):
                 os.symlink(victim, os.path.join(t, name))
-            with self.assertRaises(OSError):
+            with self.assertRaises(of_capacity.MoveError):            # that session's, never another error
                 of_capacity._inject("s1", "hello", "test")
+            with self.assertRaises(of_capacity.MoveError):
+                of_capacity.check_injections()
+            ran = []
+            with mock.patch.object(of_capacity.subprocess, "Popen", lambda argv, **k: ran.append(argv[-1])):
+                for name in ("capacity/balance.log", "capacity/tick.log"):
+                    os.symlink(victim, os.path.join(t, name))
+                of_capacity.spawn_balance()                                   # a refused log costs only the log
+                os.unlink(os.path.join(t, "capacity/tick.lock"))
+                self.assertTrue(of_capacity.spawn_tick())
+                os.unlink(os.path.join(t, "capacity/tick.lock"))              # the lock spawn_tick made
+                os.symlink(victim, os.path.join(t, "capacity/tick.lock"))
+            self.assertEqual(ran, ["balance", "tick"])
             with self.assertRaises(OSError):
                 of_capacity._tick_lock()
             with self.assertRaises(OSError):
