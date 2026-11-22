@@ -366,6 +366,32 @@ class OptionBranchTest(unittest.TestCase):
             self.assertRegex(seen[-1][0][-1], r"^[0-9a-f]{40}$")          # the commit id, never the name
 
 
+class UnreadCheckoutTest(unittest.TestCase):
+    def test_one_checkout_that_does_not_read_stops_none_of_the_others(self):
+        """of_review on PR 509: a treeless clone, or no system git, stopped its whole organization's import."""
+        import of_store
+        with tempfile.TemporaryDirectory() as root:
+            saved = of_events.STATE_DIR
+            of_events.STATE_DIR = os.path.join(root, "state")
+            try:
+                roots = [os.path.join(root, n) for n in ("bad", "good")]
+                for r in roots:
+                    os.makedirs(os.path.join(r, ".git"))
+
+                def lister(r, since, branch):
+                    if r.endswith("bad"):
+                        raise RuntimeError("git log bad: fatal: could not fetch abc from promisor remote")
+                    return [{"sha": "a" * 40, "author": "t", "at": "2026-11-22T00:00:00Z", "title": "t",
+                             "message": "t\n\nPosition: of_platform", "paths": ["x"]}]
+                lines = []
+                n = of_github.import_local(of_store.connect(), "ofb", {}, roots, "2020-01-01", works={},
+                                           log=lines.append, lister=lister, resolve=lambda r, o=None: ("main", "t"))
+                self.assertEqual(n, 1)
+                self.assertTrue(any("bad: not read: RuntimeError" in x for x in lines), lines)
+            finally:
+                of_events.STATE_DIR = saved
+
+
 class DefaultBranchTest(unittest.TestCase):
     """The founder, 2026-11-11: of import git read only main; a repository's default may be another branch."""
 

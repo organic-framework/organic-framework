@@ -2906,8 +2906,10 @@ class ToolProfiles(unittest.TestCase):
     def test_a_move_carries_the_profile_in_its_one_settings_file(self):
         import of_tools
         from unittest import mock
+        import of_spawn
         with tempfile.TemporaryDirectory() as t, mock.patch.object(of_tools, "registries", lambda *a: self.DOCS), \
-                mock.patch.object(of_tools, "STATE_DIR", t):
+                mock.patch.object(of_tools, "STATE_DIR", t), mock.patch.object(of_spawn, "PLATFORM", "darwin"):
+            # macOS: the caller's deny list alone; on Linux the sandbox block adds its own (tests/test_spawn.py)
             tools = of_capacity.tools_for({"name": "aws"}, "s1", os.path.join(t, "acct"))
             self.assertEqual(of_capacity.tools_for({"name": "nobody"}, "s1", t), ([], {}))
             line = of_capacity.launch_command("/w", "/h/.claude-b", "s1", "aws", "/n.md", deny=["Read(/k/**)"],

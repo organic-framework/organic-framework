@@ -356,7 +356,8 @@ class SandboxBlock(unittest.TestCase):
                 self.assertNotIn(f"Read(/{p}/**)", rules)
                 continue
             self.assertIn(f"Read(/{p}/**)", rules)
-            self.assertIn(f"Read(/{p})", rules)
+            if not os.path.isdir(p):                   # a folder takes its tree alone; a file both (PR 509 review)
+                self.assertIn(f"Read(/{p})", rules)
         self.assertIn(f"Read(/{os.path.expanduser('~/.ssh')}/**)", rules)
         self.assertEqual(rules.count("Read(//home/alex/.config/other/**)"), 1)   # the catalogue's own rule not doubled
         self.assertNotIn("additionalDirectories", s["permissions"])            # no scratch named: none added
@@ -386,6 +387,11 @@ class SandboxBlock(unittest.TestCase):
                 fh.write(f'#!/bin/sh\n# written by deploy/host/plane.py\nexec /usr/bin/python3 {home}/co/bin/of "$@"\n')
             self.assertEqual(of_spawn.of_checkouts(), [os.path.realpath(os.path.join(home, "co")), here])
             self.assertNotIn(os.path.realpath(os.path.join(home, ".local")), of_spawn.of_checkouts())
+            export = os.path.join(home, "export", "bin")                     # spawn's own tree with no .git: kept
+            os.makedirs(export)
+            with mock.patch.object(of_spawn, "__file__", os.path.join(export, "of_spawn.py")):
+                self.assertEqual(of_spawn.of_checkouts(), [os.path.realpath(os.path.join(home, "co")),
+                                                           os.path.realpath(os.path.join(home, "export"))])
 
     def test_other_sessions_scratch_is_denied_and_its_own_allowed(self):
         """Tried on the agent host (2026-11-20): the temp root must stay writable (the sandbox's sockets, $TMPDIR),
