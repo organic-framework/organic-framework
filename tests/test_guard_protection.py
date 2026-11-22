@@ -423,6 +423,35 @@ class GuardStateTest(unittest.TestCase):
                 self.assertIn("guard's own cache", bash(cmd, d) or "", cmd)
             self.assertIsNone(bash(f"cp f {link}/other.json", d))
         self.assertIsNone(bash("cat ~/.local/state/of/guard-credentials.json"))
+
+    def test_every_name_the_cache_writer_writes_is_kept_from_agents(self):
+        """of_review, 2026-11-22: the writer's temporary name moved and the rule kept the old one. The names come from
+        what of_credentials.cached really writes, not from a hand-written list."""
+        from unittest import mock
+        state = os.path.expanduser("~/.local/state/of")
+        os.makedirs(state, exist_ok=True)
+        written, real_replace = [], os.replace
+        with tempfile.TemporaryDirectory() as d:
+            orgs = os.path.join(d, "orgs.yaml")
+            with open(orgs, "w") as fh:
+                fh.write("orgs: []\n")
+
+            def spy(src, dst, *a, **k):
+                written.extend([src, dst])
+                return real_replace(src, dst, *a, **k)
+            with mock.patch.object(of_credentials.os, "replace", spy):
+                of_credentials.cached(state, orgs)
+        self.assertTrue(written)
+        with tempfile.TemporaryDirectory() as d:
+            link = os.path.join(d, "s")                                   # by its real path too, through a link
+            os.symlink(state, link)
+            for path in written:
+                self.assertIn("guard's own cache", bash(f"echo x > {path}", os.path.expanduser("~")) or "", path)
+                hit = of_guard.critical_deny("Write", {"file_path": path})
+                self.assertIn("guard's own cache", (hit or [""])[0], path)
+                via = os.path.join(link, os.path.basename(path))
+                self.assertIn("guard's own cache", bash(f"echo x > {via}", d) or "", via)
+                self.assertIn("guard's own cache", bash(f"cp f {link}/guard-credentials.json.*", d) or "", "glob")
         self.assertIsNone(bash("ls -la ~/.local/state/of/"))
 
 
