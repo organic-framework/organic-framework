@@ -662,8 +662,18 @@ def import_local(conn, org, systems, roots, since=None, works=None, log=print, l
         except Exception as e:  # noqa: BLE001 - said plainly; its own cursor stays where it was
             log(f"  {repo}: not read: {type(e).__name__}: {str(e)[-200:]}")
             continue
+        # a commit already recorded under another hash, after a history rewrite that kept its time and title
+        # (organic-framework-build's of 2026-11-22: every commit got a new hash, dates and messages unchanged):
+        # never a second work record for it
+        first = min((c["at"] for c in commits), default=None)
+        seen = {(t, ti) for t, ti in conn.execute(
+            "SELECT json_extract(payload, '$.merged_at'), json_extract(payload, '$.title') FROM event "
+            "WHERE name = 'of.work_record' AND ts >= ? AND json_extract(payload, '$.source') = 'git' "
+            "AND json_extract(payload, '$.repo') = ?", (first or "9999", repo))} if commits else set()
         for c in commits:
             eid = str(uuid.uuid5(NS, f"{repo}@{c['sha']}:git"))
+            if (c["at"], of_hook.clip(c["title"] or "", 200)[0]) in seen:
+                continue
             if conn.execute("SELECT 1 FROM event WHERE event_id = ?", (eid,)).fetchone():
                 continue
             m = POSITION_LINE.findall(c["message"] or "")
