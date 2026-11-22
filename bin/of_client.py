@@ -353,8 +353,8 @@ def connect_target(url):
     §1), or `tcp:<IP address>:<port>`, an address literal and never a name to look up (the Mac reaching the agent
     host's server over its tailnet port instead of the SSH bridge: the founder through of_conductor, prompt
     01a20389-14b4; hand-over c004dfc6). The connection keeps this URL's name for TLS and its pinned certificate, so the
-    file moves the route, not the trust; like the pin beside it, it is the owner's to write."""
-    import ipaddress
+    file moves the route, not the trust. `of server route` writes it, the owner's command; no guard rule keeps an agent
+    from writing it yet (docs/guard.md, Gaps)."""
     import urllib.parse
     u = urllib.parse.urlsplit(url)
     if not u.hostname:
@@ -365,6 +365,14 @@ def connect_target(url):
             text = fh.read().strip()
     except OSError:
         return None
+    return parse_route(text)
+
+
+def parse_route(text):
+    """("unix", path) for an absolute path, ("tcp", (address, port)) for `tcp:<IP address>:<port>`, else None: what a
+    server's route file may hold (connect_target; `of server route`, `of enroll --socket`)."""
+    import ipaddress
+    text = (text or "").strip()
     if text.startswith("/"):
         return "unix", text
     if text.startswith("tcp:"):

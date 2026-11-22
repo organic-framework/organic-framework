@@ -3531,6 +3531,47 @@ def _server_yaml_tls(cert, port):
     return True
 
 
+def _write_route(dest, text):
+    """A server's route file (of_client.connect_target), replaced whole and never written through, mode 600."""
+    os.makedirs(os.path.dirname(dest), mode=0o700, exist_ok=True)
+    tmp = f"{dest}.{os.getpid()}"
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+        fh.write(text.strip() + "\n")
+    os.replace(tmp, dest)
+
+
+def _server_route(args):
+    """`of server route <https URL> --via tcp:<IP address>:<port>|<socket path>|direct`: how this machine reaches a
+    server it pins, without a new invite (the founder through of_conductor, prompt 01a20389-14b4; hand-over c004dfc6;
+    of_review on organic-framework PR 521). The URL, its TLS name and its pinned certificate stay; only the route
+    changes. The owner's alone, in a plain terminal, by the positive test his answers use: the route decides where
+    this machine's OF traffic goes."""
+    import of_asks_answer
+    import of_client
+    if of_asks_answer.not_the_owner():
+        raise OfError("a server's route is the owner's to set: run `of server route <url> --via …` in a plain terminal")
+    url = (args.path or "").rstrip("/")
+    if url[:8].lower() != "https://":
+        raise OfError("give the server's https URL, the one its pinned certificate is kept for")
+    pin = of_client.pin_path(url)
+    if not os.path.isfile(pin):
+        raise OfError(f"no pinned certificate for {url} on this machine: enroll it with --pin first")
+    dest = pin[:-len(".pem")] + ".socket"
+    before = of_client.connect_target(url)
+    via = (args.via or "").strip()
+    if via == "direct":
+        if os.path.exists(dest):
+            os.remove(dest)
+        print(f"{url}: reached at its own address now (was {before or 'its own address'})")
+        return 0
+    if not of_client.parse_route(via):
+        raise OfError("--via is tcp:<IP address>:<port>, an absolute socket path, or direct")
+    _write_route(dest, via)
+    print(f"{url}: reached through {via} now (was {before or 'its own address'}), its pin unchanged; "
+          "restart the relay and the listener, whose open connections took the old route")
+    return 0
+
+
 def cmd_server(args):
     import of_server
     if args.action == "start" or (args.action == "run" and args.daemon):
@@ -3562,6 +3603,8 @@ def cmd_server(args):
               + ("server.yaml now has tls:; restart the server to open the listener"
                  if added else "server.yaml names tls: already, left as it is"))
         return 0
+    if args.action == "route":
+        return _server_route(args)
     if args.action == "enroll-machine":
         import of_client
         import of_events
@@ -6762,12 +6805,11 @@ def cmd_enroll(args):
     if getattr(args, "socket", None):  # docs/server-several-machines.md 4.8: never TCP to that address
         if not (getattr(args, "pin", None) and args.server[:6].lower() == "https:"):
             raise OfError("--socket goes with an https server and --pin")
-        if not os.path.isabs(args.socket):
-            raise OfError("--socket is an absolute path")
+        if not of_client.parse_route(args.socket):
+            raise OfError("--socket is an absolute path, or tcp:<IP address>:<port>")
         dest = of_client.pin_path(args.server)[:-len(".pem")] + ".socket"
-        with open(dest, "w") as fh:
-            fh.write(args.socket + "\n")
-        print(f"{args.server} is reached through the socket {args.socket} ({dest})")
+        _write_route(dest, args.socket)
+        print(f"{args.server} is reached through {args.socket} ({dest})")
     if args.code == "-":  # out of the process arguments, which other users of the machine can list
         import getpass
         args.code = getpass.getpass("invite code: ").strip()
@@ -8472,7 +8514,7 @@ def main(argv=None):
     sv = sub.add_parser("server", help="of-server: run, start, stop, install, uninstall, watchdog, enroll-machine, "
                                        "revoke, status (docs/server.md)")
     sv.add_argument("action", choices=["run", "start", "stop", "install", "uninstall", "watchdog", "enroll-machine",
-                                       "tls-init",
+                                       "tls-init", "route",
                                        "revoke", "status", "export-secret-key", "export", "import",
                                        "moving", "backup", "clickhouse-init", "clickhouse-setup"])
     sv.add_argument("--daemon", action="store_true", help="run: detach (the same as `of server start`)")
@@ -8490,6 +8532,7 @@ def main(argv=None):
     sv.add_argument("--index-sha", help="import, export --delete: the sha256 of index.json that the export printed")
     sv.add_argument("--delete", action="store_true",
                     help="export: remove the bundle after its import checked out, and read back that it is gone")
+    sv.add_argument("--via", help="route: tcp:<IP address>:<port>, an absolute socket path, or direct")
     sv.add_argument("--machine-id")
     sv.add_argument("--tls-port", type=int, help="tls-init: the TLS listener's port (default 18201)")
     sv.add_argument("--pubkey", help="the machine's public key file (default: this machine's key)")
