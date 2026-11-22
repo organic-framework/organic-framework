@@ -879,6 +879,13 @@ class NoWriteThroughALinkTest(unittest.TestCase):
                     of_events._with_refs(lambda c: c.update(x=1))               # number given (of_review, PR 545)
                 self.assertIsNone(of_events.next_ref("acme"))
                 of_events.seen_ref("ACME-42")                                   # a server's number: no raise
+
+                given = of_events.card_prefix("acme") + "-42"
+
+                class _Server:
+                    def card_ref(self, *a, **k):
+                        return given
+                self.assertEqual(of_events.card_ref("acme", "e1", client=_Server()), given)  # the server's, kept
                 # an id is always given, whatever lies at the repair lock (of_review on PR 545)
                 os.remove(os.path.join(state, "machine_id"))
                 with open(os.path.join(state, "machine_id"), "w"):
@@ -888,6 +895,7 @@ class NoWriteThroughALinkTest(unittest.TestCase):
                     os.remove(lockp)
                 os.symlink(target, lockp)
                 self.assertTrue(of_events.machine_id(wait_s=0.1))
+                self.assertTrue(of_events.record("note", {"x": 1})["of.event.id"])  # an event still records
                 self.assertEqual(of_hook.load_session("s9"), {"_refused": True})
                 of_hook.save_session("s9", of_hook.load_session("s9"))           # never saved over
                 self.assertTrue(os.path.islink(os.path.join(state, "sessions", "s9.json")))
