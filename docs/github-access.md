@@ -47,18 +47,24 @@ in the guard or the sandbox away from a session; only another OS user is a wall 
 - **Who runs it.** A root-owned program, `/usr/local/libexec/of-gh-post`, run by root's units as its own OS user,
   `of-gh`. That user's home, mode 700, holds the token.
 - **The door.** A session writes a request, then touches a signal file, and a path unit starts the service. The request
-  names the repository, the pull request, the kind and a body file, and lies in a folder under OF's state folder. The
-  service reads it as data: no link, regular files only, a size bound. It writes the result where the session reads
-  it, in a folder only the service writes.
+  names the repository, the pull request, the kind and a body file. It lies in a folder of its own outside OF's state
+  folder, which is mode 700 and so closed to `of-gh`: owned by the agents' user, group `of-gh`, setgid, so that what a
+  session writes there the service can read and nothing else can. The service reads it as data: no link, regular files
+  only, a size bound. It writes the result where the session reads it, in a folder only the service writes.
 - **What it allows.** Two actions only: a comment on a pull request, and a review whose event is a comment (never an
   approval, which branch protection could count). Both only on OF's repositories, named in the program and never in
   the registry, since the registry follows agents' pushes (card `OF-266`). It refuses everything else.
 - **The gate.** The body is publication, so it passes the export gate's checks. The unit runs them from a copy that the
   owner's sitting installs root-owned, pinned by its sha256. It never runs them from organic-framework-build's
   `release/`, which follows pushes.
-- **Attribution.** The body is posted as written, followed by the id of the session that wrote the request. This
-  attributes the text and does not authenticate it: every position is `of`, so a request names its position as text,
-  as a verdict does today (card `379274c4`, third flaw). The unit does not make this worse, and it does not fix it.
+- **Attribution.** The body is posted as written, followed by the session id the request names. That id is the
+  writer's own claim: every position is `of`, so neither the id nor a verdict's `Position:` line is checked by
+  anything (card `379274c4`, third flaw).
+- **The cost, stated.** Any session on the host can then post a comment or a review verdict on OF's pull requests,
+  under any position's name, and a verdict is what the release process reads before a merge. That is no wider than
+  today's `gh` on the laptop, where every session posts as the owner, but on the host today no session can post at
+  all, so the unit opens that path there. What still stands between a forged verdict and a merge is `of_release`, who
+  merges, and the owner's review of what he approves.
 - **Reads.** Reads take no token. A diff comes by fetching the pull request's refs over HTTPS, which the API limit
   does not count, and the rest comes through `gh`'s unauthenticated reads. If the shared limit bites, sessions get a
   second token that can only read public data: leaked, it gives away nothing but a rate limit.
@@ -101,6 +107,7 @@ in the guard or the sandbox away from a session; only another OS user is a wall 
 ## 7. Open
 
 - **Caller identity (above).** Telling positions apart needs either one OS user per position or an identity no session
-  can forge. Neither is designed here.
+  can forge. Neither is designed here, and until one is, a verdict posted through the unit carries no more weight than
+  one typed today.
 - **The gate's copy** changes only in the owner's sitting, so the posting unit runs the gate as it stood at the last
   sitting.
