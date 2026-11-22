@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -178,6 +179,23 @@ class RelayTest(unittest.TestCase):
         with self.assertRaises(OSError):
             of_relay._open_own(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
         os.unlink(path)
+        qpath = of_relay._queues_path()                                # a read never follows a link either
+        with open(victim, "w") as fh:
+            json.dump({"queues": {"zeta:x": {"n": 7}}}, fh)
+        if os.path.exists(qpath):
+            os.unlink(qpath)
+        os.symlink(victim, qpath)
+        self.assertEqual(of_relay.read_queues(), {})
+        os.unlink(qpath)
+        with open(victim, "w") as fh:
+            fh.write("kept\n")
+        self.assertNotEqual(of_relay._tmp_suffix(), "")
+        names = set()                                                 # each thread its own temporary name
+        gate = threading.Barrier(4)                                   # all alive at once: no ident reused
+        ths = [threading.Thread(target=lambda: (gate.wait(), names.add(of_relay._tmp_suffix()))) for _ in range(4)]
+        [th.start() for th in ths]
+        [th.join() for th in ths]
+        self.assertEqual(len(names), 4)
         os.symlink(victim, path + ".2")
         of_relay.record_queues({"ofb:of_a": {"n": 1, "oldest": "2026-11-22T10:00:00Z"}}, now=1000.0)  # still works
         self.assertEqual(of_relay.read_queues()["ofb:of_a"]["n"], 1)
