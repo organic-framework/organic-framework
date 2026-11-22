@@ -2090,7 +2090,8 @@ def _transcripts_visible(cache=[]):
     01a202cd-f226): with none in sight, a missing one tells nothing."""
     if not cache:
         import glob
-        cache.append(next(glob.iglob(os.path.expanduser("~/.claude*/projects/*/*.jsonl")), None) is not None)
+        cache.append(any(next(glob.iglob(os.path.expanduser(p), recursive=True), None) is not None
+                         for p in ("~/.claude*/projects/*/*.jsonl", "~/.codex/sessions/**/*.jsonl")))
     return cache[0]
 
 
@@ -4551,7 +4552,9 @@ def relay_alive():
         import time as _time
         import of_relay_client
         hb = of_relay_client.read_heartbeat()
-        if hb and _time.time() - hb["ts"] <= of_relay_client.STALE_S:
+        # a live relay writes it every PRESENCE_CHECK; a killed or stopped one leaves it behind, so the bound is a few
+        # of those, not the watchdog's STALE_S, which hid a dead relay for 15 minutes (of_review on PR 505)
+        if hb and _time.time() - hb["ts"] <= 6 * of_relay_client.PRESENCE_CHECK:
             return True
     except Exception:  # noqa: BLE001 - no heartbeat to read: pgrep tells
         pass
