@@ -273,6 +273,46 @@ class Store(unittest.TestCase):
         self.assertEqual(out["positions"]["acme/acme_b"]["cost_usd"], 2.0)
         self.assertIn("machines: here (this one), host-b (its reports)", of_spend.render_periods(out))
 
+    def test_an_hour_reported_before_is_reported_again_when_late_records_change_it(self):
+        """of_review on PR 567: an hour once reported was never sent again, so a response read late (a transcript read
+        after the hour's report, a carried history) never reached the other machines; nor did a carry restore that
+        gives an old hour to another machine, nor an hour whose rows all went."""
+        now = T0 + 2 * 86400 + 30 * 60
+        self.ev(T0 + H, "of.hook", "S1", "acme_a")
+        self.rec("S1", "m1", T0 + 2 * 86400 + 60, inp=1_000_000, out=0)
+        of_spend.advance(self.conn, now)
+        sent = []
+        emit = lambda kind, payload, **k: sent.append(payload)  # noqa: E731
+        self.assertEqual(of_spend.emit_hours(DOCS, self.conn, now, here="H-here", emit=emit), 1)
+        # a day later: a response of the first day, read only now (six hours before the last report's window)
+        later = now + 86400
+        self.rec("S1", "m2", T0 + 86400 + 2 * H, inp=1_000_000, out=0)
+        of_spend.advance(self.conn, later)
+        self.assertEqual(of_spend.emit_hours(DOCS, self.conn, later, here="H-here", emit=emit), 1)
+        self.assertEqual((sent[-1]["hour"], sent[-1]["rows"][0][5]), (T0 + 86400 + 2 * H, 4.0))
+        self.assertEqual(of_spend.emit_hours(DOCS, self.conn, later + 1000, here="H-here", emit=emit), 0)  # nothing new
+        # a carry restore brings the session here now: what it spent before counts on the machine it came from, so
+        # both hours it was reported in go again, empty
+        self.ev(later + 2000, "of.holder_changed", "S1", "acme_a",
+                {"position": "acme_a", "new_session": "S1", "evidence": "of capacity carry restore"})
+        of_spend.advance(self.conn, later + 2000)
+        self.assertEqual(of_spend.emit_hours(DOCS, self.conn, later + 2000, here="H-here", emit=emit), 2)
+        self.assertEqual([(p["hour"], p["rows"]) for p in sent[-2:]], [(T0 + 86400 + 2 * H, []), (T0 + 2 * 86400, [])])
+
+    def test_carry_restores_read_the_view_once_it_caught_up(self):
+        """tests/test_log_reads.py (of_review on PR 567): the restores come from view_spend_event, each machine by its
+        event's rowid, and the same from the log before the view caught up."""
+        now = T0 + 86400
+        self.ev(T0 + 10 * H, "of.holder_changed", "S1", "acme_a",
+                {"position": "acme_a", "new_session": "S1", "evidence": "of capacity carry restore"}, host="H-host")
+        self.ev(T0 + 11 * H, "of.holder_changed", "S2", "acme_a",
+                {"position": "acme_a", "new_session": "S2", "evidence": "of capacity move"}, host="H-host")
+        before = of_spend.carry_restores(self.conn, now)
+        of_spend.advance_events(self.conn)
+        self.assertTrue(of_spend._events_ready(self.conn))
+        self.assertEqual(of_spend.carry_restores(self.conn, now), before)
+        self.assertEqual(before, {"S1": [(T0 + 10 * H, "H-host")]})
+
     def test_two_organizations_rows_of_one_name_stay_apart(self):
         """of_review on PR 558: positions, works and goals were keyed by bare name, so two organizations' rows of one
         name printed as one sum."""
