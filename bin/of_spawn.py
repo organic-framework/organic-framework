@@ -164,6 +164,45 @@ def _accounts_dirs():
         return sorted(glob.glob(os.path.expanduser("~/.claude*")))
 
 
+# What git or Claude Code runs or reads as configuration in a repository, never written from a session in its work
+# clone: hooks, config (a hook path, a filter, an fsmonitor), info (attributes, excludes), submodules, worktrees (their
+# config.worktree and commondir), and the folder's own Claude Code settings (of_server's conditions for a work clone,
+# message 01a2044e-a1e4; hand-over ab9ed07b)
+CLONE_CONTROL = (".git/config", ".git/config.worktree", ".git/commondir", ".git/hooks", ".git/info", ".git/modules",
+                 ".git/worktrees", ".claude", ".mcp.json")
+
+
+def _orgs_file():
+    return os.environ.get("OF_ORGS") or os.path.join(os.environ.get("OF_CONFIG_DIR") or
+                                                     os.path.expanduser("~/.config/of"), "orgs.yaml")
+
+
+def work_clones(orgs_file=None):
+    """[(the work clone, the organization's services' copy)] for each organization whose entry in this machine's
+    orgs.yaml names a `work_clone` (card OF-265, the founder's yes; hand-over ab9ed07b): a clone of its repository a
+    session may write from its sandbox, while the copy its services and the registry run from (`path`) stays denied.
+    orgs.yaml is the owner's file, which no agent writes (docs/guard.md G33); the registry follows agents' pushes, so it
+    never names one. Nothing outside the sandbox reads this key: no work folder, document path or importer adopts the
+    clone."""
+    import yaml
+    f = orgs_file or _orgs_file()
+    try:
+        with open(f) as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, ValueError, yaml.YAMLError):
+        return []
+    base = os.path.dirname(os.path.abspath(f))
+    out = []
+    for o in (doc.get("orgs") if isinstance(doc, dict) else None) or []:
+        if not isinstance(o, dict) or not o.get("work_clone") or not o.get("path"):
+            continue
+        clone = os.path.realpath(os.path.join(base, os.path.expanduser(str(o["work_clone"]))))
+        svc = os.path.realpath(os.path.join(base, os.path.expanduser(str(o["path"]))))
+        if clone != svc and not clone.startswith(svc + os.sep) and not svc.startswith(clone + os.sep):
+            out.append((clone, svc))
+    return out
+
+
 def _muse_dir():
     try:
         import of_subagent
@@ -276,13 +315,18 @@ def sandbox_settings(deny=None, platform=None, scratch=None):
     # review); every denied path is denied for writes too, and so is the guard's session index, which only the hook
     # writes, outside the sandbox (docs/guard.md G36; hand-over a18341af), and the checkout OF runs from, whole, since
     # its .git's objects and refs are code too (of_checkouts; a host position works in its own clone, never in it)
+    # a work clone the owner named: writable, its control files never, and the services' copy denied (hand-over
+    # ab9ed07b); a clone not there gets nothing, its services' copy is denied all the same
+    clones = work_clones()
+    writable = [c for c, _ in clones if os.path.isdir(c)]
+    guarded = [svc for _, svc in clones] + [os.path.join(c, x) for c in writable for x in CLONE_CONTROL]
     return {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
             "autoAllowBashIfSandboxed": True,
             "filesystem": {"denyRead": denied,
                            "denyWrite": denied + [os.path.expanduser("~/.local/state/of/index.json")]
-                           + of_checkouts(),
+                           + of_checkouts() + [g for g in guarded if g not in of_checkouts()],
                            "allowRead": allow,
-                           "allowWrite": [os.path.expanduser("~/.local/state/of")]},
+                           "allowWrite": [os.path.expanduser("~/.local/state/of")] + writable},
             "network": {"allowAllUnixSockets": True, "strictAllowlist": True,
                         "allowedDomains": list(SANDBOX_DOMAINS)}}
 
@@ -323,6 +367,17 @@ def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=
         # scratchpad is not (tried by of_server on Claude Code 2.1.330)
         if box["filesystem"]["allowRead"]:
             perms["additionalDirectories"] = list(box["filesystem"]["allowRead"])
+        # the work clone for the file tools too, and its control files and the services' copy denied to them
+        clones = work_clones()
+        writable = [c for c, _ in clones if os.path.isdir(c)]
+        if writable:
+            perms["additionalDirectories"] = list(dict.fromkeys(perms.get("additionalDirectories", []) + writable))
+        for _, svc in clones:
+            if f"Edit(/{svc}/**)" not in rules:
+                rules.append(f"Edit(/{svc}/**)")
+        for c in writable:
+            for x in CLONE_CONTROL:
+                rules += [r for r in (f"Edit(/{c}/{x})", f"Edit(/{c}/{x}/**)") if r not in rules]
     for k, v in (extra or {}).items():
         if k == "env" and isinstance(v, dict):
             s["env"] = dict(s.get("env") or {}, **v)  # a tool profile's env joins the agents' own

@@ -319,6 +319,87 @@ class AgentDefaultsTest(unittest.TestCase):
 
 
 
+class WorkCloneTest(unittest.TestCase):
+    """Card OF-265 v2, hand-over ab9ed07b (of_server's four conditions, message 01a2044e-a1e4): a session on Linux may
+    write the work clone the owner names in orgs.yaml, never its control files or the services' copy."""
+
+    def test_the_clone_is_writable_its_control_files_and_the_services_copy_are_not(self):
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            d = os.path.realpath(d)
+            svc, clone = os.path.join(d, "build"), os.path.join(d, "work", "build")
+            os.makedirs(os.path.join(svc, "registry"))
+            orgs = os.path.join(d, "orgs.yaml")
+            with open(orgs, "w") as fh:
+                fh.write(f"orgs:\n  - name: ofb\n    path: {svc}\n    work_clone: {clone}\n  - name: other\n    path: x\n")
+            with mock.patch.dict(os.environ, {"OF_ORGS": orgs}), \
+                    mock.patch.object(of_spawn, "_accounts_dirs", return_value=[]):
+                absent = json.loads(of_spawn.session_settings(None, [], platform="linux"))
+                os.makedirs(os.path.join(clone, ".git"))
+                s = json.loads(of_spawn.session_settings(None, [], platform="linux"))
+                mac = json.loads(of_spawn.session_settings(None, [], platform="darwin") or "{}")
+        f = absent["sandbox"]["filesystem"]
+        self.assertNotIn(clone, f["allowWrite"])                                      # (1) absent: nothing more
+        self.assertIn(svc, f["denyWrite"])                                            # (2) denied all the same
+        f, rules = s["sandbox"]["filesystem"], s["permissions"]["deny"]
+        self.assertIn(clone, f["allowWrite"])                                         # (1)
+        self.assertIn(clone, s["permissions"]["additionalDirectories"])
+        self.assertIn(svc, f["denyWrite"])                                            # (2)
+        self.assertIn(f"Edit(/{svc}/**)", rules)
+        for x in (".git/config", ".git/hooks", ".git/info", ".git/modules", ".git/worktrees", ".git/config.worktree",
+                  ".git/commondir", ".claude", ".mcp.json"):                          # (3), there or not yet
+            self.assertIn(os.path.join(clone, x), f["denyWrite"], x)
+            self.assertIn(f"Edit(/{clone}/{x})", rules, x)
+        self.assertNotIn("sandbox", mac)                                              # Linux only
+
+    def test_nothing_outside_the_sandbox_adopts_the_clone(self):
+        """(4): the key is read only by the sandbox block; the organization's paths, its registry and its work
+        folders come from `path` and `paths` as before."""
+        import importlib.machinery
+        import importlib.util
+        import tempfile
+        loader = importlib.machinery.SourceFileLoader("of_cli_clone", os.path.join(HERE, "..", "bin", "of"))
+        of = importlib.util.module_from_spec(importlib.util.spec_from_loader("of_cli_clone", loader))
+        loader.exec_module(of)
+        with tempfile.TemporaryDirectory() as d:
+            orgs = os.path.join(d, "orgs.yaml")
+            with open(orgs, "w") as fh:
+                fh.write(f"orgs:\n  - name: ofb\n    path: {d}/build\n    paths: [{d}/fw]\n    work_clone: {d}/clone\n")
+            self.assertEqual(of._org_paths(orgs), {"ofb": [f"{d}/fw"]})
+            self.assertEqual([r for _, r, _ in of.org_registries(orgs)],
+                             [os.path.join(d, "build", "registry", "positions.yaml")])
+        for name in ("of_works.py", "of_github.py", "of_capacity.py", "of_studio.py", "of_loops.py"):
+            with open(os.path.join(HERE, "..", "bin", name)) as fh:
+                self.assertNotIn("work_clone", fh.read(), name)          # only of_spawn reads it (bin/of only sets it)
+
+    def test_the_owner_sets_the_clone_and_an_agent_does_not(self):
+        import importlib.machinery
+        import importlib.util
+        import tempfile
+        from unittest import mock
+        import of_asks_answer
+        loader = importlib.machinery.SourceFileLoader("of_cli_clone2", os.path.join(HERE, "..", "bin", "of"))
+        of = importlib.util.module_from_spec(importlib.util.spec_from_loader("of_cli_clone2", loader))
+        loader.exec_module(of)
+        with tempfile.TemporaryDirectory() as d:
+            d = os.path.realpath(d)
+            os.makedirs(os.path.join(d, "build", "registry"))
+            os.makedirs(os.path.join(d, "clone", ".git"))
+            orgs = os.path.join(d, "orgs.yaml")
+            with open(orgs, "w") as fh:
+                fh.write(f"orgs:\n  - name: ofb\n    path: {d}/build\n")
+            of.ORGS_FILE = orgs
+            with mock.patch.object(of_asks_answer, "not_the_owner", lambda: True):
+                self.assertEqual(of.main(["org", "set", "ofb", "work_clone", f"{d}/clone"]), 2)
+            with mock.patch.object(of_asks_answer, "not_the_owner", lambda: False):
+                self.assertEqual(of.main(["org", "set", "ofb", "work_clone", f"{d}/build"]), 2)   # the services' copy
+                self.assertEqual(of.main(["org", "set", "ofb", "work_clone", f"{d}/clone"]), 0)
+                self.assertEqual(of_spawn.work_clones(orgs), [(f"{d}/clone", f"{d}/build")])
+                self.assertEqual(of.main(["org", "set", "ofb", "work_clone", "none"]), 0)
+                self.assertEqual(of_spawn.work_clones(orgs), [])
+
+
 class SettingsDigestTest(unittest.TestCase):
     def test_the_settings_file_is_recorded_by_its_digest_at_launch(self):
         """of_server, message 01a20337-fe93: a session can rewrite or backdate a settings file under OF's state folder;
