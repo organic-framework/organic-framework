@@ -60,6 +60,26 @@ class ClickHouseInitTest(unittest.TestCase):
         return of_server.clickhouse_init(self.cfg, run=lambda argv, **kw: self.runs.append(argv), client=Client,
                                          sleep=lambda s: None)
 
+    def test_the_disk_source_is_granted_for_backups_where_clickhouse_knows_it(self):
+        """The agent host, 2026-11-22: BACKUP ... TO Disk(...) failed with ACCESS_DENIED for want of WRITE ON DISK
+        (ClickHouse PR 117406, in 26.8 and 26.9). A server that does not know the DISK source is no failure."""
+        out = self.init()
+        self.assertIn("GRANT READ, WRITE ON DISK TO of_server", Client.seen)
+        self.assertIn("the DISK source granted", out[-1])
+        real_post = Client.post
+
+        def old_server(self, query, **kw):
+            if "ON DISK" in query:
+                raise RuntimeError("Syntax error")
+            return real_post(self, query, **kw)
+        Client.seen, Client.users = [], set()
+        try:
+            Client.post = old_server
+            out = self.init()
+        finally:
+            Client.post = real_post
+        self.assertIn("knows no DISK source grant", out[-1])
+
     def test_from_no_user_to_the_schema_and_the_servers_user_with_nothing_secret_shown(self):
         out = self.init()
         pwdir = os.path.dirname(self.pw)
