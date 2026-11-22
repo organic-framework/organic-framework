@@ -3687,7 +3687,14 @@ def _actor_act(words):
         return False  # `of asks withdraw --help` records nothing (of_review on organic-framework PR 387)
     return (words[:1] == ["asks"] and len(words) > 1 and words[1] in ACTOR_ACTS) or \
         (words[:1] == ["access"] and len(words) > 1 and words[1] in ("grant", "revoke", "link", "record")) or \
-        _org_path_act(words)
+        _org_path_act(words) or _server_route_act(words)
+
+
+def _server_route_act(words):
+    """`of server route <url> --via …`: where this machine's OF traffic goes, the owner's by the positive test
+    (of_review on organic-framework PR 521: a cleared caller passed it)."""
+    words = [w for w in words if w != "--"]
+    return words[:2] == ["server", "route"]
 
 
 def _org_path_act(words):

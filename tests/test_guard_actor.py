@@ -183,5 +183,18 @@ class OrgPathActByPosition(unittest.TestCase):
             self.assertTrue(of_guard._org_path_act(words), words)     # a double dash is no positional (of_review)
         self.assertFalse(of_guard._org_path_act(["org", "set", "--", "path", "hold", "on"]))
 
+
+class ServerRouteAct(unittest.TestCase):
+    def test_of_server_route_keeps_its_caller(self):
+        """of_review on organic-framework PR 521: the route decides where the machine's OF traffic goes."""
+        import of_guard
+        self.assertTrue(of_guard._server_route_act(["server", "route", "https://h:1", "--via", "direct"]))
+        self.assertTrue(of_guard._server_route_act(["server", "--", "route", "https://h:1"]))
+        self.assertFalse(of_guard._server_route_act(["server", "status"]))
+        for cmd in ("env -u CLAUDE_CODE_SESSION_ID -u OF_POSITION of server route https://h:1 --via direct",
+                    "OF_POSITION= CLAUDE_CODE_SESSION_ID= python3 bin/of server route https://h:1 --via tcp:192.0.2.1:9"):
+            self.assertTrue(deny(cmd), cmd)
+        self.assertIsNone(deny("of server route https://h:1 --via direct"))   # the session as it is: of refuses it
+
 if __name__ == "__main__":
     unittest.main()
