@@ -7905,6 +7905,31 @@ def cmd_capacity(args):
             print(f"{h:<6} " + (f"training {r.get('training')} since {r.get('ts')}; {r.get('account')}; {r.get('source')}"
                                 if r else "not read"))
         return 0
+    if args.action == "spend" and args.by:  # per day or hour (the founder, 2026-11-22, prompt 01a204e5-0acb)
+        import calendar
+        import time
+        import of_spend
+        import of_store
+        import of_tools
+
+        def when(v, default):
+            if not v:
+                return default
+            v = v.strip().rstrip("Z")
+            for f in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%dT%H", "%Y-%m-%d"):
+                try:
+                    return calendar.timegm(time.strptime(v, f))
+                except ValueError:
+                    pass
+            raise SystemExit(f"of capacity spend: --since/--until {v!r}: give YYYY-MM-DD[THH[:MM]] (UTC)")
+        now = time.time()
+        until = when(args.until, now)
+        since = when(args.since, until - (7 * 86400 if args.by == "day" else 86400))
+        conn = of_store.connect()
+        of_spend.advance(conn, now, budget_s=60)
+        out = of_spend.periods(of_tools.registries(), conn, since, until, by=args.by, org=args.org, now=now)
+        print(json.dumps(out, indent=1, sort_keys=True) if args.json else of_spend.render_periods(out, top=args.top))
+        return 0
     if args.action == "spend":  # docs/registry.md, Goals, "Spend per goal": the month's spend per work, goal and condition
         import time
         import of_spend
@@ -8831,7 +8856,12 @@ def main(argv=None):
                                                   "vault", "vault-setup", "mint", "babysit", "memory", "reboot", "spend",
                                                   "carry", "tick", "training", "allow-move"],
                     default="status")
-    cp.add_argument("--since", help="babysit: from this date (default: 7 days ago)")
+    cp.add_argument("--since", help="babysit: from this date (default: 7 days ago); spend --by: from this UTC day or "
+                    "time, YYYY-MM-DD[THH[:MM]] (default: 7 days for --by day, 24 hours for --by hour)")
+    cp.add_argument("--by", choices=["day", "hour"], help="spend: per UTC day or hour, by account, position, work "
+                    "and goal, instead of the month's tree")
+    cp.add_argument("--top", type=int, default=10, help="spend --by: positions named per period in the text "
+                    "(default 10; --json has them all)")
     cp.add_argument("--month", help="spend: YYYY-MM (default: this month, UTC)")
     cp.add_argument("--set", choices=["off", "on"], help="training <harness>: record whether the provider may train "
                     "on that account's runs (RFC 0008 §3.1)")
@@ -8840,7 +8870,7 @@ def main(argv=None):
     cp.add_argument("--consents", help="carry restore: the owner's card that said yes to carrying folder trust and the "
                     "Bypass Permissions acceptance to this machine (its first option)")
     cp.add_argument("--org", help="spend: this organization only; carry restore: the organization the bundle carries")
-    cp.add_argument("--until", help="babysit: until this date or time (default: now)")
+    cp.add_argument("--until", help="babysit, spend --by: until this date or time (default: now)")
     cp.add_argument("--op-account", dest="op_account", help="vault-setup: the 1Password account (default: the business one)")
     cp.add_argument("--all-due", dest="all_due", action="store_true",
                     help="mint: every account with no setup-token, or one expiring within 7 days")

@@ -34,7 +34,7 @@ import time
 
 import of_events
 
-VERSION = "1"                 # bump to rebuild view_spend_month from the first record
+VERSION = "2"                 # bump to rebuild view_spend_month from the first record (2: account, model, per-model cost)
 TICK_BUDGET_S = 20            # the listener's share per tick while the view catches up
 REFRESH_S = 1800              # the sums are recomputed at most this often by the listener
 DECLARING = ("of.state_declared",)  # `of status --work` only: an ask about a work is not the work being done (PR 86)
@@ -42,9 +42,28 @@ DONE = {"done", "parked", "park"}
 
 MONTH_DDL = """
 CREATE TABLE IF NOT EXISTS view_spend_month (message_id TEXT PRIMARY KEY, session_id TEXT, epoch REAL,
-  fresh INTEGER, cost REAL);
+  fresh INTEGER, cost REAL, config_dir TEXT, model TEXT);
 CREATE INDEX IF NOT EXISTS view_spend_month_session ON view_spend_month (session_id, epoch);
+CREATE INDEX IF NOT EXISTS view_spend_month_epoch ON view_spend_month (epoch);
 """
+# a response's model to its list prices (of_capacity.MODEL_PRICES) by family when the exact name is not listed: a
+# Fable response costs 2.5 times an Opus one and a Sonnet one half, so one Opus price for all misread a day by model
+FAMILIES = ("fable", "opus-5", "opus-4", "sonnet", "haiku")
+
+
+def response_cost(model, inp, out, cr, cw, cw5, cw1):
+    """The list cost of one response at its model's prices; Opus 5.5's (of_capacity.row_cost) for a model with none."""
+    import of_capacity
+    prices = of_capacity.MODEL_PRICES
+    p = prices.get(model or "")
+    if p is None:
+        fam = next((f for f in FAMILIES if f in (model or "")), None)
+        p = next((v for k, v in prices.items() if fam and fam in k), None)
+    if p is None:
+        return of_capacity.row_cost(inp, out, cr, cw, cw5, cw1)
+    if cw5 is None and cw1 is None:
+        cw5, cw1 = 0, cw or 0
+    return ((inp or 0) * p[0] + (out or 0) * p[1] + (cw5 or 0) * p[2] + (cw1 or 0) * p[3] + (cr or 0) * p[4]) / 1e6
 # What the attribution reads of the event log, kept by a cursor over its rowid (the founder, 2026-11-14, through
 # of_conductor msg 01a1d68e-8ef9: no reader projects the whole log). view_spend_owner: each (session, organization,
 # position) the events name, with their count and first and last time; org '' for none. view_spend_event: the
@@ -105,9 +124,10 @@ def ingest(conn, now, budget_s=TICK_BUDGET_S, batch=5000):
     """Advance view_spend_month over the transcript records by its own cursor, within `budget_s` seconds. Keeps the
     responses from the start of the previous month. Returns (rows read, caught up)."""
     import of_capacity
+    if _meta(conn, "spend_month_version") != VERSION:
+        conn.execute("DROP TABLE IF EXISTS view_spend_month")  # its columns changed: made again, read from the start
     conn.executescript(MONTH_DDL)
     if _meta(conn, "spend_month_version") != VERSION:
-        conn.execute("DELETE FROM view_spend_month")
         _meta(conn, "spend_month_cursor", 0)
         _meta(conn, "spend_month_caught_up", 0)
         _meta(conn, "spend_month_version", VERSION)
@@ -120,17 +140,18 @@ def ingest(conn, now, budget_s=TICK_BUDGET_S, batch=5000):
     while time.monotonic() - t0 < budget_s:
         rows = conn.execute(
             "SELECT id, source_path, session_id, message_id, timestamp, input_tokens, output_tokens, "
-            "cache_read_tokens, cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens "
+            "cache_read_tokens, cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens, model "
             f"FROM {src} WHERE id > ? ORDER BY id LIMIT ?", (cur, batch)).fetchall()
         if not rows:
             caught_up = True
             break
         keep = []
-        for rid, path, sid, mid, ts, inp, out, cr, cw, cw5, cw1 in rows:
+        for rid, path, sid, mid, ts, inp, out, cr, cw, cw5, cw1, model in rows:
             if not mid or inp is None:
                 continue
             t = _epoch(ts)
-            if not t or t < keep_from or not of_capacity._CONFIG_DIR_RE.match(path or ""):
+            m = of_capacity._CONFIG_DIR_RE.match(path or "")
+            if not t or t < keep_from or not m:
                 continue
             if f"{os.sep}subagents{os.sep}" in (path or ""):
                 sid = path.split(os.sep)[-3]
@@ -138,14 +159,16 @@ def ingest(conn, now, budget_s=TICK_BUDGET_S, batch=5000):
             if w5 is None and w1 is None:
                 w5, w1 = 0, cw or 0
             fresh = (inp or 0) + (out or 0) + (w5 or 0) + (w1 or 0)
-            keep.append((mid, sid, t, fresh, of_capacity.row_cost(inp, out, cr, cw, cw5, cw1)))
+            # the account is the config dir the record was first written under: the store keeps a record's first
+            # source_path, so a move's copy of the history never credits it to the account it moved to
+            keep.append((mid, sid, t, fresh, response_cost(model, inp, out, cr, cw, cw5, cw1), m.group(1), model))
         cur, n = rows[-1][0], n + len(rows)
         # one short write per batch, its cursor with it: the store's other writers (hooks, the listener's views)
         # wait milliseconds, never the whole slice, and a stop loses nothing
         own_tx = not conn.in_transaction
         if own_tx and not _begin(conn, t0 + budget_s):
             return n, False  # the store stayed locked: this batch again at the next tick, from the cursor
-        conn.executemany("INSERT OR REPLACE INTO view_spend_month VALUES (?,?,?,?,?)", keep)
+        conn.executemany("INSERT OR REPLACE INTO view_spend_month VALUES (?,?,?,?,?,?,?)", keep)
         _meta(conn, "spend_month_cursor", cur)
         if own_tx:
             conn.execute("COMMIT")
@@ -549,6 +572,119 @@ def compute(docs, conn, month=None, now=None):
     out = summarize(seg_sums + segs, docs, start, end, now, totals={"outside": by})
     out["complete"] = _meta(conn, "spend_month_caught_up") == "1"
     return out
+
+
+STEPS = {"day": 86400, "hour": 3600}
+
+
+def periods(docs, conn, since, until, by="day", org=None, now=None):
+    """Spend per day or hour (UTC) in [since, until), from the same attributed responses as the month's sums: each
+    period's total, and by account (the config dir a response was written under), position, work and goal (a work's
+    spend counts to its goal; no sub-goal roll-up here), with the sessions no position held and the runs on other
+    harnesses. `org` keeps that organization's positions only. Reads view_spend_month, which keeps the responses
+    from the start of the previous month (the founder, 2026-11-22, prompt 01a204e5-0acb, through of_conductor: "of
+    capacity spend should be able to show by day and by hour")."""
+    import of_capacity
+    now = now or time.time()
+    step = STEPS[by]
+    since = since - since % step
+    conn.executescript(MONTH_DDL)
+    spans, decl = _store_inputs(docs, conn)
+    canon = canon_map(docs)
+    buckets = {}
+
+    def bucket(k):
+        return buckets.setdefault(k, {"total": _zero(), "accounts": {}, "positions": {}, "works": {}, "goals": {}})
+
+    def put(k, cd, s, pos=None, porg=None, work=None, goal=None):
+        b = bucket(k)
+        _add(b["total"], s)
+        if cd is not None:
+            _add(b["accounts"].setdefault(of_capacity.short(cd) if cd else "?", _zero()), s)
+        row = b["positions"].setdefault(pos or "(no position)", dict(_zero(), org=porg))
+        _add(row, s)
+        if work:
+            _add(b["works"].setdefault(work, dict(_zero(), org=porg)), s)
+        if goal:
+            _add(b["goals"].setdefault(goal, dict(_zero(), org=porg)), s)
+
+    sql = ("SELECT CAST((epoch - ?) / ? AS INTEGER), config_dir, COALESCE(SUM(fresh), 0), COALESCE(SUM(cost), 0), "
+           "count(*) FROM view_spend_month WHERE session_id = ? AND epoch >= ? AND epoch < ? GROUP BY 1, 2")
+    for sid, a, b, o, pos, work in segments(spans, decl, since, until):
+        if org and o != org:
+            continue
+        doc = docs.get(o) or {}
+        works = doc.get("works") if isinstance(doc.get("works"), dict) else {}
+        kind, target = ("work", work) if work else fallback_target(o, pos, doc)
+        goal = ((works.get(target) or {}).get("goal") if kind == "work" and isinstance(works.get(target), dict)
+                else target if kind == "goal" else None)
+        for k, cd, f, c, n in conn.execute(sql, (since, step, sid, a, b)):
+            put(k, cd, {"fresh": int(f), "cost_usd": float(c), "responses": int(n)}, pos, o,
+                target if kind == "work" else None, goal)
+    if not org:
+        seen = sorted(spans)
+        ph = ",".join("?" * len(seen)) or "''"
+        for k, cd, f, c, n in conn.execute(
+                "SELECT CAST((epoch - ?) / ? AS INTEGER), config_dir, COALESCE(SUM(fresh), 0), COALESCE(SUM(cost), 0), "
+                f"count(*) FROM view_spend_month WHERE epoch >= ? AND epoch < ? AND session_id NOT IN ({ph}) "
+                "GROUP BY 1, 2", [since, step, since, until] + seen):
+            put(k, cd, {"fresh": int(f), "cost_usd": float(c), "responses": int(n)})
+    k = 0
+    while since + k * step < until:  # the runs on other harnesses: their tokens, no list cost (flat plans)
+        segs, _ = outside_runs(conn, canon, decl, since + k * step, min(until, since + (k + 1) * step))
+        for o, pos, work, s in segs:
+            if not org or o == org:
+                put(k, None, s, pos, o, work)
+        k += 1
+    total, accounts, positions = _zero(), {}, {}
+    rows = []
+    for k in sorted(buckets):
+        b = buckets[k]
+        _add(total, b["total"])
+        for name, s in b["accounts"].items():
+            _add(accounts.setdefault(name, _zero()), s)
+        for name, s in b["positions"].items():
+            _add(positions.setdefault(name, dict(_zero(), org=s.get("org"))), s)
+        rows.append(dict(b, start=since + k * step))
+    keep_from = month_bounds(now=month_bounds(now=now)[0] - 1)[0]
+    return _round({"v": 1, "by": by, "from": since, "to": until, "computed_at": now, "org": org,
+                   "kept_from": keep_from, "complete": _meta(conn, "spend_month_caught_up") == "1",
+                   "periods": rows, "total": total, "accounts": accounts, "positions": positions})
+
+
+def render_periods(out, top=10):
+    """`of capacity spend --by day|hour`: each period's total, its accounts and its top positions, as text."""
+    fmt = "%Y-%m-%d" if out["by"] == "day" else "%Y-%m-%d %H:00Z"
+    span = (f"{time.strftime('%Y-%m-%d %H:%MZ', time.gmtime(out['from']))} to "
+            f"{time.strftime('%Y-%m-%d %H:%MZ', time.gmtime(min(out['to'], out['computed_at'])))}")
+    lines = [f"Spend by {out['by']}, {span}{', ' + out['org'] + ' only' if out.get('org') else ''}: list cost at each "
+             f"model's prices and fresh tokens (input, cache writes, output; cache reads are in the cost only)"]
+    if not out.get("complete", True):
+        lines.append("  the store is still being read into the view, so recent periods are low")
+    if out["from"] < out.get("kept_from", 0):
+        lines.append(f"  nothing before {time.strftime('%Y-%m-%d', time.gmtime(out['kept_from']))}: the view keeps "
+                     f"this and the previous month")
+
+    def tops(d, n):
+        items = sorted(d.items(), key=lambda x: -x[1]["cost_usd"])
+        shown = ", ".join(f"{k} ${v['cost_usd']:,.0f}" for k, v in items[:n])
+        rest = sum(v["cost_usd"] for _, v in items[n:])
+        return shown + (f", {len(items) - n} more ${rest:,.0f}" if len(items) > n else "")
+    for p in out["periods"]:
+        t = p["total"]
+        lines.append(f"\n{time.strftime(fmt, time.gmtime(p['start']))}  ${t['cost_usd']:,.0f}  fresh {_num(t['fresh'])}"
+                     f"  {t['responses']:,} responses"
+                     + (f"  + {_num(t.get('outside_fresh'))} in {t['outside_runs']} outside run(s)"
+                        if t.get("outside_runs") else ""))
+        if p["accounts"]:
+            lines.append("  accounts:  " + tops(p["accounts"], 99))
+        lines.append("  positions: " + tops(p["positions"], top))
+    lines.append("")
+    lines.append(_line("all", out["total"]))
+    if out["accounts"]:
+        lines.append("  by account:  " + tops(out["accounts"], 99))
+    lines.append("  by position: " + tops(out["positions"], top))
+    return "\n".join(lines)
 
 
 def write(out, path=None):
