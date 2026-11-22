@@ -966,10 +966,20 @@ class DeniedPromptNoteTest(AsksActorTest):
         self.assertTrue(self.of._tell_denied(ask, "AC-9", "ops_lead", send=lambda to, t: sent.append((to, t)) or True))
         to, text = sent[0]
         self.assertEqual(to, "acme:liq_a")
-        for part in ("AC-9", "ops_lead", "rm -rf build && rustfmt --check src", "every part of it stand refused",
+        for part in ("AC-9", "ops_lead", "rm -rf build && rustfmt --check src", "All of it stands refused",
                      "tell any subagent"):
             self.assertIn(part, text)
         self.assertFalse(self.of._tell_denied({"text": "x"}, "AC-9", "ops_lead", send=lambda *a: True))   # no position
+        # of_review on PR 548: no file mention, the cut said, the owner's refusal sent from the routed position
+        mention = "@" + "docs/x.md"
+        sent.clear()
+        ask2 = dict(ask, text=f"cat {mention} && rm -rf dist", to="ops_lead")
+        self.assertTrue(self.of._tell_denied(ask2, "AC-9", "owner", send=lambda to, t: sent.append((to, t)) or True))
+        self.assertNotIn(mention, sent[0][1])
+        self.assertIn("refused by the owner", sent[0][1])
+        self.assertIn("any part this card does not show included", sent[0][1])
+        self.assertIn("with `of ask`", sent[0][1])
+        self.assertFalse(self.of._tell_denied(dict(ask, to="founder"), "AC-9", "owner", send=lambda *a: True))
 class AsksCitedAnswerTest(AsksActorTest):
     """A user organization's structure keeper, message 01a20320-debb, and of_review on PR 514: an agent closes the
     owner's question only citing a prompt he typed after it, and reads a card with `show`."""
