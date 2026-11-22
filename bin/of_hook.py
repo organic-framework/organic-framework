@@ -2043,6 +2043,45 @@ def _archive_detached(path):
         pass
 
 
+SHIP_EVERY_S = 60   # what this machine stored leaves for its servers at least this often (hand-over 8679ce1c)
+
+
+def _spawn_of(*args):
+    """Start `of <args>` detached: its own session, no terminal, OF_AUTOMATION, never the owner's SSH agent."""
+    import subprocess
+    here = os.path.dirname(os.path.realpath(__file__))
+    subprocess.Popen([sys.executable, os.path.join(here, "of"), *args],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True, env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
+
+
+def ship_detached_if_due(now=None, force=False, spawn=None):
+    """Start a detached `of ship` when the last one from this machine is SHIP_EVERY_S old, or FORCE. The mark
+    (ship.last's mtime) is set before the start, so callers in the same window start one ship between them, and a
+    server that does not answer holds only that ship, under its own lock, never the drain or a hook (of_review on
+    PR 525: an inline ship waited up to 4 x 120 s and the worker ingested 60 s in every nine minutes). Called by the
+    ingest worker on its way and at its end, and by a hook that finds the worker's lock held: a holder stuck for an
+    hour then still lets the store's rows leave (of_server, hand-over 8679ce1c). Returns whether it started one."""
+    if _no_detach() and spawn is None:
+        return False   # the pre-commit smoke check starts no background child
+    mark = os.path.join(STATE, "ship.last")
+    now = time.time() if now is None else now
+    try:
+        if not force and now - os.path.getmtime(mark) < SHIP_EVERY_S:
+            return False
+    except OSError:
+        pass
+    try:
+        with open(os.open(mark, os.O_WRONLY | os.O_CREAT, 0o600)):
+            pass
+        os.utime(mark, (now, now))
+        (spawn or _spawn_of)("ship")
+    except Exception as e:  # noqa: BLE001 - the next due one tries again
+        _log_error("ship", e)
+        return False
+    return True
+
+
 def _ingest_detached(path):
     """Queue the transcript for the ingest worker, and start the worker unless one is running.
     One worker per machine: no lock fight between dozens of ingests (lab finding 3)."""
@@ -2060,12 +2099,11 @@ def _ingest_detached(path):
             try:
                 fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                return  # a worker is running and will pick the marker up
+                # a worker is running and will pick the marker up; if it is stuck, what is stored still leaves
+                ship_detached_if_due()
+                return
             fcntl.flock(lk, fcntl.LOCK_UN)
-        here = os.path.dirname(os.path.realpath(__file__))
-        subprocess.Popen([sys.executable, os.path.join(here, "of"), "ingest", "--pending", "--quiet"],
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True, env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
+        _spawn_of("ingest", "--pending", "--quiet")
     except Exception as e:
         _log_error("ingest", e)
 

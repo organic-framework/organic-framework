@@ -118,7 +118,7 @@ The source is a store every process of its machine's one OS user can write, so t
 
 - **Why ClickHouse.** The data is append-only, wide and large (about 1 GB a day of raw transcripts from one founder). The questions are aggregations over time, positions and organizations. ClickHouse's columnar compression and `MergeTree` fit this. `ReplacingMergeTree` keyed on the record id makes re-shipping idempotent.
 - **Tables** mirror the local ones, with `tenant_id`, `org_id` and `host_id` on every row. Raw content is stored in a `ZSTD`-compressed column, not as files.
-- **The shipper** sends batches (thousands of rows, not single inserts) over HTTPS, records what ClickHouse confirmed, and retries. Moving the store to another host changes only the shipper's target.
+- **The shipper** sends batches (thousands of rows, not single inserts) over HTTPS, records what ClickHouse confirmed, and retries. It runs as a detached `of ship`, under its own lock, at least every 60 seconds while the ingest worker drains its queue and once at its end, and a hook that finds the worker's lock held starts one when the last is that old (`of_hook.ship_detached_if_due`; `of_server`, hand-over `8679ce1c`: on 2026-11-22 one worker held the lock for over an hour and nothing left the laptop). A feed that stands still past that points at the server or the forward, not at the queue. Moving the store to another host changes only the shipper's target.
 
 ## Tenancy and placement
 
