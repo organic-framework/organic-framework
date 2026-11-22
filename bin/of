@@ -2917,6 +2917,8 @@ def cmd_bench(args):
             raise OfError(f"orgs.yaml gives no path for {org}")
         rest += ["--project", os.path.expanduser(str(path))]
     try:
+        import of_benchpath
+        of_benchpath.ensure()   # says where it looked and how to name the folder, when Bench is not there
         import of_method
         import bench
     except ImportError as e:
