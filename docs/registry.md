@@ -426,14 +426,16 @@ in `orgs.yaml`. Claude Code loads the file at every session's start and again af
 `info/exclude` keeps the file out of every commit. OF writes it again whenever `AGENTS.md` changes; edit `AGENTS.md`,
 never the file.
 
-A folder where two organizations' registries put positions gets no rules file: Claude Code loads every rules file of
-a folder into every session in it. A session of another organization that only started in a folder takes nothing
-away: the folder keeps its organization's rules, and `of apply`, the pulse and `of registry check` name that session
-as a stray, to be restarted in its own organization's folder (2026-11-22: one such restart removed a user
+A folder where two organizations' registries put positions gets no rules file, and so does a folder above another
+organization's registry folder: Claude Code loads every rules file of a folder and of the folders above it into every
+session there. A session of another organization that only started in a folder takes nothing away: the folder keeps
+its organization's rules, and `of apply` and `of registry check` name that session as a stray (the nearest registry
+folder above it names its organization), to be restarted in its own organization's folder (2026-11-22: one such restart removed a user
 organization's root rules file, and its sessions there would have started without their binding rules; of_architect,
-message `01a204f7-ef0e`). `of spawn` refuses a folder of another organization's positions. A position in a shared
+message `01a204f7-ef0e`). `of spawn` refuses a folder whose nearest registry folder is only another organization's. A position in a shared
 folder, or with no folder, gets its rules only in the capped start context; `of registry check` fails on each enrolled
-one, for its registry folder and for the folder its last session started in, and warns on one not enrolled. The start
+one, for its registry folder and for the folder its last session started in (a start of the last 7 days, so a
+deploy that stops on a failed `of registry check` stops on it too), and warns on one not enrolled. The start
 context names the rules file instead of the rules when the session's folder holds the current one; when it has to
 carry the rules and cuts them, its first line says so loudly and points to `AGENTS.md`.
 
