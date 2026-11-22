@@ -2251,9 +2251,10 @@ def _write_handover_note(path, note, stopped=(), log=print):
         log(f"  recorded {len(stopped)} stopped scheduled task(s) in the hand-over note")
 
 
-# Claude Code's own bridge to its sandbox's network proxy on Linux (2026-11-22, on the agent host: every sandboxed
-# session has one, so each read as holding background work and no balancer move would take it)
-_SANDBOX_PROXY = _re.compile(r"^socat UNIX-LISTEN:\S*/claude-[\w.-]+\.sock\b")
+# Claude Code's own bridges to its sandbox's network proxies on Linux (2026-11-22, on the agent host: every sandboxed
+# session has them, so each read as holding background work and no balancer move would take it). Their names exactly,
+# as sandbox-runtime makes them: any other socat on a claude-*.sock is someone's work (of_review on PR 535).
+_SANDBOX_PROXY = _re.compile(r"^socat UNIX-LISTEN:\S*/claude-(?:http|socks)-[0-9a-f]{16}\.sock,")
 
 
 def background_processes(pid):
