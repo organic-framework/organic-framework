@@ -374,6 +374,27 @@ class BenchPathTest(unittest.TestCase):
                     sys.path.remove(os.path.join(co, "bin"))
 
 
+class BenchLineTest(unittest.TestCase):
+    def test_owner_yaml_bench_reads_as_the_guard_reads_it(self):
+        """of_secrets-review on PR 575: one reading for OF and the guard; YAML and the line must agree."""
+        import of_benchpath
+        with tempfile.TemporaryDirectory() as d:
+            f = os.path.join(d, "owner.yaml")
+            for text, want in (("bench: /opt/bench\n", "/opt/bench"), ('bench: "/opt/b c"\n', "/opt/b c"),
+                               ("language: en\nbench: /opt/bench  # mine\n", "/opt/bench"), ("bench: null\n", None),
+                               ("language: en\n", None), ("'bench': /opt/x\n", "/opt/x")):
+                with self.subTest(text=text):
+                    with open(f, "w") as fh:
+                        fh.write(text)
+                    self.assertEqual(of_benchpath._plain(f), want)
+            for text in ("{bench: /opt/a}\n", "x: &a /opt/a\nbench: *a\n", "bench: |\n  /opt/a\n"):
+                with self.subTest(text=text):
+                    with open(f, "w") as fh:
+                        fh.write(text)
+                    with self.assertRaises(ValueError):
+                        of_benchpath._plain(f)
+
+
 class BenchOwnerSetTest(unittest.TestCase):
     def test_a_development_clone_is_refused_as_benchs_folder(self):
         """of_secrets-review on PR 575: a clone that runs the release gate is one positions write."""

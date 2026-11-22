@@ -180,7 +180,7 @@ def _hook_text(project, package, rel):
     if (len(parts) != 3 or parts[0] != EXTENSIONS_DIR or parts[1] != package or not parts[2].endswith(".lua")
             or parts[2] in (".lua",) or "\\" in rel or any(x in ("", ".", "..") for x in parts)):
         return None
-    return _read_regular(project, parts, bench.FILE_MAX)
+    return _read_regular(project, parts, getattr(bench, "FILE_MAX", 1024 * 1024))
 
 
 def _read_regular(base, parts, limit):
