@@ -520,8 +520,10 @@ def check_parked_until(positions, now=None):
             continue
         v, tag = p.get("parked_until"), f"{p.get('_file') or p.get('_org')}: {p['name']}"
         t = parked_until_ts(v)
-        if t is None:
-            out.append(f"{tag}: parked_until {v!r} is no ISO 8601 time (e.g. 2026-11-23T08:00:00Z)")
+        if t is None:   # a date or time as YAML wrote it, never Python's repr (of_platform on 414422a4)
+            import datetime as _dt
+            shown = str(v) if isinstance(v, _dt.date) else repr(v)
+            out.append(f"{tag}: parked_until {shown} is no ISO 8601 time (e.g. 2026-11-23T08:00:00Z)")
             continue
         if (p.get("status") or "active") != "parked":
             out.append(f"{WARN}{tag}: parked_until on a position that is not parked: drop it, it was the park's")

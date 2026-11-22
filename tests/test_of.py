@@ -249,7 +249,7 @@ class RegistryTest(unittest.TestCase):
             quick = "\n".join(of.load_positions(orgs)[1])
             for ok in ("acme_bare", "acme_quoted"):                             # PyYAML's datetime and a string alike
                 self.assertNotIn(f"{ok}: parked_until", deep)
-            self.assertIn("acme_day: parked_until datetime.date(2999, 11, 23) is no ISO 8601 time", quick)
+            self.assertIn("acme_day: parked_until 2999-11-23 is no ISO 8601 time", quick)
             self.assertIn("acme_word: parked_until 'next week' is no ISO 8601 time", quick)
             self.assertIn("warning: acme:registry/positions.yaml: acme_left: parked_until on a position that is not "
                           "parked", deep)
