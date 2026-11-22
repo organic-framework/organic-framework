@@ -676,6 +676,15 @@ class MovePieces(unittest.TestCase):
         self.assertNotIn("Nothing else changed", own)
         bare = of_capacity.handover_note("p", "sid", "/a", "/b", "b@x", {}, "t", why="it drops a tool")
         self.assertIn("it drops a tool. Same session", bare)  # a reason gets its full stop (PR 269 review)
+        self.assertNotIn("background work stopped", bare)
+        # the background processes the exit stopped come first, before the scheduled tasks and the check question
+        # (2026-11-22: a keeper's production windows were listed below its crons, under "From your organization")
+        bg = of_capacity.handover_note("p", "sid", "/a", "/b", "b@x", {"session_crons": [{"cron": "*/5 * * * *"}]},
+                                       "t", extra="the org's own words", bg=["zsh -f vip-window-close.sh"])
+        first = bg.index("## First: your background work stopped")
+        self.assertLess(first, bg.index("cron/wake-up"))
+        self.assertLess(bg.index("- `zsh -f vip-window-close.sh`"), bg.index("Check that the move kept"))
+        self.assertLess(first, bg.index("## From your organization"))
         self.assertIn("expire unused", of_capacity.balance_why("fill: its week resets first"))
         self.assertIn("stopped accepting work", of_capacity.balance_why("rescue: 429; ~/.claude-b accepts work"))
         self.assertIn("about to reach", of_capacity.balance_why("relief: the account is about to stall"))
@@ -2491,6 +2500,82 @@ class ReliefTakesStoppedSessions(unittest.TestCase):
         rows[1]["windows"]["seven_day"]["utilization"] = 10  # not stalled: fill takes idle sessions only
         m = of_capacity.balance_plan(rows, sess, pos, {"w": 9, "sh": 8}, {"/ez": 12.0}, pol, Balance.NOW)
         self.assertEqual(m, [])
+
+    def test_background_work_holds_relief_and_fill_not_rescue(self):
+        """2026-11-22 (a user organization's structure keeper, message 01a201f6-6eca): a relief move took its keeper
+        off an account about to stall while two production windows were open, and their restore, close and watchdog
+        died with the old process. Only its holder's yes, or the end of that work, lets fill, relief or restore take
+        it; a rescue still does, since a session stopped on its limit cannot work at all."""
+        procs = {11: ["zsh -f window-guard.sh"], 12: [], 13: [], 14: ["sleep 60"]}.get
+        sess = {"/cl": [{"session": "win", "pid": 11, "status": "idle"},
+                        {"session": "sh", "pid": 12, "status": "shell"},
+                        {"session": "free", "pid": 13, "status": "idle"},
+                        {"session": "busy", "pid": 14, "status": "busy"},
+                        {"session": "yes", "pid": 11, "status": "idle"}],
+                "/ez": [], "/gg": []}
+        now = Balance.NOW
+        held = of_capacity.background_work(sess, {"yes": now + 60}, now, procs=procs)
+        self.assertEqual(held, {"win": ["zsh -f window-guard.sh"],
+                                "sh": ["(background shells: the session's own status)"]})  # busy: never planned
+        self.assertIn("win", of_capacity.background_work(sess, {"yes": now - 1, "win": now - 1}, now, procs=procs))
+        rows = Balance().rows()
+        rows[1]["windows"]["seven_day"]["utilization"] = 97  # /cl about to stall: relief
+        pos = [{"name": n, "holder": {"session": n}} for n in ("win", "sh", "free")]
+        sess = {"/cl": [{"session": n, "status": "idle"} for n in ("win", "sh", "free")], "/ez": [], "/gg": []}
+        pol, rates = dict(POLICY, max_moves=5), {"win": 9, "sh": 8, "free": 7}
+        m = of_capacity.decide(rows, sess, pos, rates, {"/ez": 12.0}, pol, now)
+        self.assertEqual(sorted((x["position"], x["reason"][:7]) for x in m),
+                         [("free", "relief:"), ("sh", "relief:"), ("win", "relief:")])
+        m = of_capacity.decide(rows, sess, pos, rates, {"/ez": 12.0}, pol, now, holding={"win": ["x"], "sh": ["y"]})
+        self.assertEqual([x["position"] for x in m], ["free"])
+        rows[1]["windows"]["seven_day"]["utilization"] = 10                  # fill leaves them too
+        m = of_capacity.decide(rows, sess, pos, rates, {"/ez": 12.0}, pol, now, holding={"win": ["x"], "sh": ["y"]})
+        self.assertNotIn("win", [x["position"] for x in m])
+        rows[1]["windows"]["seven_day"]["utilization"] = 97
+        m = of_capacity.decide(rows, sess, pos, rates, {"/ez": 12.0}, pol, now, stopped={"win": now - 600},
+                               holding={"win": ["x"]})
+        self.assertIn(("win", "rescue"), [(x["position"], x["reason"][:6]) for x in m])  # stopped: it moves anyway
+
+    def test_a_holder_told_once_why_its_move_waits(self):
+        sent, cache = [], {}
+        would = [{"position": "win", "session": "win", "from": "/cl", "to": "/ez",
+                  "reason": "relief: the account is about to stall"},
+                 {"position": "st", "session": "st", "from": "/cl", "to": "/ez", "reason": "rescue: stopped"}]
+        pos = [{"name": "win", "_org": "acme", "holder": {"session": "win"}},
+               {"name": "st", "holder": {"session": "st"}}]
+        holding = {"win": [f"cmd {i}" for i in range(5)], "st": ["x"]}
+        for _ in range(2):
+            told = of_capacity.tell_background_waits(would, holding, pos, "of_capacity", "of", cache, Balance.NOW,
+                                                     send=lambda to, text: sent.append((to, text)))
+        self.assertEqual(len(sent), 1)                                    # once in BG_TOLD_S; never for a rescue
+        self.assertEqual(sent[0][0], "acme:win")
+        self.assertIn("5 background process(es)", sent[0][1])
+        self.assertIn("cmd 0; cmd 1; cmd 2; and 2 more", sent[0][1])
+        self.assertIn("of capacity allow-move", sent[0][1])
+        self.assertEqual(told, [])
+        later = Balance.NOW + of_capacity.BG_TOLD_S + 1
+        of_capacity.tell_background_waits(would, holding, pos, "of_capacity", "of", cache, later,
+                                          send=lambda to, text: sent.append((to, text)))
+        self.assertEqual(len(sent), 2)
+
+    def test_a_holders_yes_is_read_back_for_its_hours(self):
+        import sqlite3
+        from unittest import mock
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE event (name TEXT, ts TEXT, payload TEXT)")
+        emitted = []
+        with mock.patch.object(of_capacity.of_events, "emit", lambda n, p, **k: emitted.append((n, p, k))), \
+                mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "s9"}):
+            until = of_capacity.allow_move(48, "the windows closed", now=Balance.NOW)
+        self.assertEqual(until, Balance.NOW + 24 * 3600)                  # at most a day
+        (name, payload, kw), = emitted
+        self.assertEqual((name, payload["session"], kw["session"]), ("capacity_move_allowed", "s9", "s9"))
+        conn.execute("INSERT INTO event VALUES ('of.capacity_move_allowed', ?, ?)",
+                     (of_capacity._iso(Balance.NOW), json.dumps(payload)))
+        self.assertEqual(of_capacity.moves_allowed(Balance.NOW + 60, conn=conn), {"s9": until})
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": ""}):
+            with self.assertRaises(of_capacity.MoveError):
+                of_capacity.allow_move()
 
     def test_fill_never_takes_a_held_position(self):
         rows = Balance().rows()
