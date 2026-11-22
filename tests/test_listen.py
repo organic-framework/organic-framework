@@ -1190,11 +1190,15 @@ class GithubBusyTest(unittest.TestCase):
         self.addCleanup(setattr, of_listen.of_events, "STATE_DIR", saved)
         self.assertTrue(p.busy(load=25, cores=10))
         self.assertFalse(p.busy(load=15, cores=10))
-        started = []
+        started, T0 = [], 1_800_000_000.0
         with mock.patch.object(p, "busy", lambda: True), mock.patch("subprocess.Popen", lambda *a, **k: started.append(a)):
-            self.assertFalse(p.tick(None, 1000.0))                       # busy at start: it waits
-            self.assertFalse(p.tick(None, 1000.0 + 3600))
-            self.assertEqual(started, [])
-            p.tick(None, 1000.0 + 7200)                                  # two hours: it runs anyway
-        self.assertEqual(len(started), 1)
+            p.tick(None, T0)                                         # no run yet: it runs, load or not
+            self.assertEqual(len(started), 1)
+            self.assertFalse(p.tick(None, T0 + 1800))                # busy within two hours: it waits
+            p2 = of_listen.GithubProcessor()                             # a listener restart keeps the bound
+            with mock.patch.object(p2, "busy", lambda: True):
+                self.assertFalse(p2.tick(None, T0 + 3600))
+                self.assertEqual(len(started), 1)
+                p2.tick(None, T0 + 7200)                             # two hours since the last: it runs
+        self.assertEqual(len(started), 2)
         self.assertEqual(started[0][0][:3], ["nice", "-n", "15"])       # at background priority

@@ -946,7 +946,6 @@ class GithubProcessor(Processor):
     # the load stands above BUSY_LOAD x cores a run waits, for at most MAX_WAIT_S, and runs at background priority.
     BUSY_LOAD = 2.0
     MAX_WAIT_S = 7200
-    last_run = 0.0
 
     def handle(self, conn, rows):
         return False
@@ -958,8 +957,14 @@ class GithubProcessor(Processor):
     def tick(self, conn, now):
         import fcntl
         import subprocess
-        self.last_run = self.last_run or now   # a start under load waits too
-        if self.busy() and now - self.last_run < self.MAX_WAIT_S:
+        # the last run's time is a file's, so a listener restart never resets the bound (of_review on PR 537: under
+        # load and restarts, no import ran in 24 hours); none yet: it runs
+        mark = os.path.join(of_events.STATE_DIR, "github-import.last")
+        try:
+            last = os.path.getmtime(mark)
+        except OSError:
+            last = 0.0
+        if self.busy() and now - last < self.MAX_WAIT_S:
             return False   # the next tick looks again
         lock_path = os.path.join(of_events.STATE_DIR, "github-import.lock")
         fh = open(os.open(lock_path, os.O_WRONLY | os.O_CREAT, 0o600))
@@ -977,7 +982,12 @@ class GithubProcessor(Processor):
                          stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
                          env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
         log.close()
-        self.last_run = now
+        try:
+            with open(os.open(mark, os.O_WRONLY | os.O_CREAT, 0o600)):
+                pass
+            os.utime(mark, (now, now))
+        except OSError:
+            pass
         return False
 
 
