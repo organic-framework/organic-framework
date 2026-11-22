@@ -475,7 +475,7 @@ def readings_behind(dirs=None, now=None, factor=2, home=None):
     for d in (dirs if dirs is not None else config_dirs(home)):
         snap = cache.get(d) or {}
         t = _ts(snap.get("observed_at") or "")
-        if t is None or now - t >= factor * PROBE_EVERY_MIN * 60:
+        if t is None or now - t >= factor * _probe_period(snap, now):  # a spent week's period too (of_review, PR 526)
             out.append(d)
     return out
 
@@ -484,31 +484,34 @@ PROBE_RETRY_MIN = 10       # a failed probe waits this long before the next try
 SPENT_PROBE_EVERY_MIN = 120  # an account whose week is spent until a known reset: probed this often, not every 30 min
 
 
+def _probe_period(snap, now):
+    """Seconds a reading is good for: PROBE_EVERY_MIN, or SPENT_PROBE_EVERY_MIN for a week spent until a later reset
+    (an owner's bought reset still shows within that). readings_behind reads the same period, or every spent account
+    would read as a stalled balancer and the pulse would balance inline (of_review on PR 526)."""
+    week = (snap.get("windows") or {}).get("seven_day") or {}
+    spent = (week.get("utilization") or 0) >= 100 and (_ts(week.get("resets_at") or "") or 0) > now
+    return (SPENT_PROBE_EVERY_MIN if spent else PROBE_EVERY_MIN) * 60
+
+
 def _stale(snap, now):
-    """A reading is good for PROBE_EVERY_MIN minutes, one of a week spent until a later reset for
-    SPENT_PROBE_EVERY_MIN (an owner's bought reset still shows within that); a failed probe is retried after
-    PROBE_RETRY_MIN, not at the next run. 2026-11-22: at load 190 the probes of seven accounts passed their 120 s, and
-    each pulse, every 5 minutes, started all seven again, each a claude process that timed out."""
+    """A reading is good for its _probe_period; a failed probe is retried after PROBE_RETRY_MIN, not at the next run.
+    2026-11-22: at load 190 the probes of seven accounts passed their 120 s, and each pulse, every 5 minutes, started
+    all seven again, each a claude process that timed out."""
     failed = _ts(snap.get("probe_failed_at") or "")
     if failed is not None and now - failed < PROBE_RETRY_MIN * 60:
         return False
     t = _ts(snap.get("observed_at") or "")
-    week = (snap.get("windows") or {}).get("seven_day") or {}
-    spent = (week.get("utilization") or 0) >= 100 and (_ts(week.get("resets_at") or "") or 0) > now
-    every = SPENT_PROBE_EVERY_MIN if spent else PROBE_EVERY_MIN
-    return (t is None or snap.get("logged_in") is None or now - t >= every * 60
+    return (t is None or snap.get("logged_in") is None or now - t >= _probe_period(snap, now)
             or (snap.get("source") == "passive" and not snap["windows"]))
 
 
 def _kept_on_failure(new, old, now):
-    """A probe that got no reading (a timeout, an error) keeps the last good one, with the error and when it failed:
-    an empty reading over a spent account's read as no limit at all (2026-11-22: seven timed-out probes blanked four
-    spent accounts' weeks)."""
+    """A probe that got no reading (a timeout, an error) stays a reading of nothing, so the account is no target
+    (headroom None), with the time it failed for the retry's wait. The last good reading is not kept: one with room
+    made an account that fails every probe a target for moves and spawns (of_review on PR 526)."""
     if new.get("logged_in") is not None or new.get("windows"):
         return new
-    if not (old or {}).get("windows"):
-        return dict(new, probe_failed_at=_iso(now))
-    return dict(old, error=new.get("error"), probe_failed_at=_iso(now))
+    return dict(new, probe_failed_at=_iso(now))
 
 
 # ----------------------------------------------------------------- status
@@ -584,7 +587,7 @@ def status(positions, dirs=None, now=None, fresh=False, probe=True, probe_fn=Non
             snap = _kept_on_failure(fresh_snaps[d], snap, now)
             cache[d] = snap
             changed = True
-            if snap.get("logged_in") and not snap.get("probe_failed_at"):   # a kept reading is no new point
+            if snap.get("logged_in"):
                 _record_week(cache, d, snap, now, now)
         row = dict(snap or {"config_dir": d, "account": account_of(d, home), "logged_in": None, "windows": {},
                             "observed_at": None, "probe": {}, "error": "not probed yet"})

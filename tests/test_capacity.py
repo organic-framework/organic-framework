@@ -386,9 +386,9 @@ class StatusAndTarget(unittest.TestCase):
                 fh.write("tiers:\n  ~/.claude-a: default_claude_ai\n")
             self.assertEqual(of_capacity.status([], [d], probe=False)[0]["tier"], "default_claude_ai")
 
-    def test_a_failed_probe_keeps_the_reading_and_a_spent_week_is_probed_seldom(self):
-        """2026-11-22, load 190: seven probes passed their 120 s; each wrote an empty reading over a spent account's
-        week, and each pulse, every 5 minutes, started all seven again."""
+    def test_a_failed_probe_waits_and_a_spent_week_is_probed_seldom(self):
+        """2026-11-22, load 190: seven probes passed their 120 s, and each pulse, every 5 minutes, started all seven
+        again. A failed probe stays a reading of nothing, never the last good one with room (of_review on PR 526)."""
         calls, answer = [], {}
 
         def probe_fn(d, now):
@@ -409,11 +409,12 @@ class StatusAndTarget(unittest.TestCase):
             of_capacity.status([], ["/d1"], now=t0 + 31 * 60, probe_fn=probe_fn, **kw)
             self.assertEqual(len(calls), 1)                  # spent until a reset 3 days on: not every 30 minutes
             answer["next"] = failed
+            self.assertEqual(of_capacity.readings_behind(["/d1"], now=t0 + 90 * 60), [])  # a spent week's period
             row, = of_capacity.status([], ["/d1"], now=t0 + 121 * 60, probe_fn=probe_fn, **kw)
             self.assertEqual(len(calls), 2)                  # but within 2 hours (an owner's bought reset shows)
-            self.assertEqual(row["windows"]["seven_day"]["utilization"], 100)   # the failure kept the reading
+            self.assertIsNone(of_capacity.headroom(row))     # a failure is no target, whatever it read before
+            self.assertIsNone(of_capacity.best_target([row]))
             self.assertEqual(row["error"], "probe timed out after 120s")
-            self.assertEqual(row["observed_at"], of_capacity._iso(t0))
             of_capacity.status([], ["/d1"], now=t0 + 126 * 60, probe_fn=probe_fn, **kw)
             self.assertEqual(len(calls), 2)                  # no retry at the next pulse
             of_capacity.status([], ["/d2"], now=t0, probe_fn=probe_fn, **kw)
