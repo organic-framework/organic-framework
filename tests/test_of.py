@@ -393,21 +393,21 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(calls, ["drain", "/t/0.jsonl", "drain", "/t/1.jsonl", "drain", "/t/2.jsonl", "drain"])
 
     def test_the_ingest_worker_ships_while_it_drains_a_queue_that_keeps_filling(self):
-        """Hand-over 8679ce1c (of_server): a worker shipped only once its queue was empty, so a queue that kept filling
-        on a loaded machine held every event back for over an hour."""
+        """Hand-over 8679ce1c (of_server), of_review on PR 525: a worker shipped only once its queue was empty, and an
+        inline ship would hold the drain while the server does not answer. Ships start detached, marked first."""
         import argparse
         import fcntl
         import of_events
-        import of_ship
+        import of_hook
         import of_store
         ships, clock = [], [1000.0]
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, "pending"))
             with open(os.path.join(d, "pending", "m0"), "w") as fh:
                 fh.write("/t/0.jsonl")
-            saved = (of_events.STATE_DIR, of_store.drain_spool, of_store.with_subagents, of._ingest_with_reads,
-                     of_ship.ship, of._ship_if_due)
-            real_due = of._ship_if_due
+            saved = (of_events.STATE_DIR, of_hook.STATE, of_store.drain_spool, of_store.with_subagents,
+                     of._ingest_with_reads, of_hook.ship_detached_if_due)
+            real = of_hook.ship_detached_if_due
             n = [0]
 
             def ingest(conn, p):   # each transcript takes 25 s and queues another, ten times
@@ -417,28 +417,55 @@ class RegistryTest(unittest.TestCase):
                     with open(os.path.join(d, "pending", f"m{n[0]}"), "w") as fh:
                         fh.write(f"/t/{n[0]}.jsonl")
                 return 1
-            of_events.STATE_DIR = d
+            of_events.STATE_DIR = of_hook.STATE = d
             of_store.drain_spool = lambda conn: 0
             of_store.with_subagents = lambda p: [p]
             of._ingest_with_reads = ingest
-            of_ship.ship = lambda log=None: ships.append(clock[0])
-            of._ship_if_due = lambda quiet, force=False, now=None: real_due(quiet, force, now=clock[0])
+            of_hook.ship_detached_if_due = lambda now=None, force=False, spawn=None: real(
+                now=clock[0], force=force, spawn=lambda *a: ships.append((clock[0], a)))
             try:
                 of._ingest_worker(None, argparse.Namespace(quiet=True))
+                times = [t for t, _ in ships]
                 self.assertGreaterEqual(len(ships), 4)                  # every 60 s of a 250 s drain, and the end
-                self.assertTrue(all(b - a >= 50 for a, b in zip(ships, ships[1:-1])))
+                self.assertEqual({a for _, a in ships}, {("ship",)})    # a detached `of ship`, never inline
+                self.assertTrue(all(b - a >= 60 for a, b in zip(times, times[1:-1])))
                 held = open(os.path.join(d, "ingest.lock"), "w")
                 fcntl.flock(held, fcntl.LOCK_EX)                         # another worker holds the lock
                 clock[0] += 61
                 before = len(ships)
-                of._ingest_worker(None, argparse.Namespace(quiet=True))
-                self.assertEqual(len(ships), before + 1)                 # it still ships, the last being due
-                of._ingest_worker(None, argparse.Namespace(quiet=True))
-                self.assertEqual(len(ships), before + 1)                 # not again within SHIP_EVERY_S
+                for _ in range(50):                                      # fifty turns end: one ship between them
+                    of_hook.ship_detached_if_due()
+                    of._ingest_worker(None, argparse.Namespace(quiet=True))
+                self.assertEqual(len(ships), before + 1)
                 held.close()
             finally:
-                (of_events.STATE_DIR, of_store.drain_spool, of_store.with_subagents, of._ingest_with_reads,
-                 of_ship.ship, of._ship_if_due) = saved
+                (of_events.STATE_DIR, of_hook.STATE, of_store.drain_spool, of_store.with_subagents,
+                 of._ingest_with_reads, of_hook.ship_detached_if_due) = saved
+
+    def test_a_hook_that_finds_the_worker_busy_starts_a_due_ship(self):
+        """of_review on PR 525, point 1: with the lock held the hook started nothing, so a stuck holder shipped never."""
+        import fcntl
+        import of_hook
+        started = []
+        with tempfile.TemporaryDirectory() as d:
+            saved = (of_hook.STATE, of_hook._spawn_of, os.environ.get("OF_NO_DETACH"))
+            of_hook.STATE = d
+            of_hook._spawn_of = lambda *a: started.append(a)
+            os.environ.pop("OF_NO_DETACH", None)
+            held = open(os.path.join(d, "ingest.lock"), "w")
+            fcntl.flock(held, fcntl.LOCK_EX)
+            try:
+                for i in range(50):
+                    of_hook._ingest_detached(f"/t/{i}.jsonl")
+                self.assertEqual(started, [("ship",)])                   # one ship, no worker while it is held
+                held.close()
+                os.utime(os.path.join(d, "ship.last"), (0, 0))           # free and due: a worker, no ship
+                of_hook._ingest_detached("/t/x.jsonl")
+                self.assertEqual(started[-1], ("ingest", "--pending", "--quiet"))
+            finally:
+                of_hook.STATE, of_hook._spawn_of = saved[0], saved[1]
+                if saved[2] is not None:
+                    os.environ["OF_NO_DETACH"] = saved[2]
 
     def test_yaml_traps(self):
         p = {"name": "x_y", "status": {"work": "active"}, "aliases": "old",
