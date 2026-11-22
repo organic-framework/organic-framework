@@ -153,6 +153,28 @@ class RelayTest(unittest.TestCase):
             of_relay.PRESENCE_EVERY = saved
         self.assertGreater(sent["b"], 0)                                     # "a" sorts first and is down
 
+    def test_no_write_through_a_link_in_the_state_folder(self):
+        """docs/guard.md, Gaps: on the agent host a sandboxed session may write OF's state folder, and the relay, which
+        runs outside the sandbox, must not write through a link the session put there."""
+        victim = os.path.join(self.tmp.name, "victim")
+        with open(victim, "w") as fh:
+            fh.write("kept\n")
+        path = os.path.join(self.tmp.name, "injections.jsonl")
+        os.symlink(victim, path)
+        with self.assertRaises(OSError):
+            of_relay._open_own(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+        tmp = os.path.join(self.tmp.name, "relay-queues.json.123")
+        os.symlink(victim, tmp)
+        os.close(of_relay._open_new(tmp))                            # the planted link is removed, never followed
+        self.assertFalse(os.path.islink(tmp))
+        with open(victim) as fh:
+            self.assertEqual(fh.read(), "kept\n")
+        os.symlink(victim, path + ".2")
+        of_relay.record_queues({"ofb:of_a": {"n": 1, "oldest": "2026-11-22T10:00:00Z"}}, now=1000.0)  # still works
+        self.assertEqual(of_relay.read_queues()["ofb:of_a"]["n"], 1)
+        with open(victim) as fh:
+            self.assertEqual(fh.read(), "kept\n")
+
     def test_a_hung_server_holds_back_no_presence_and_a_failed_one_keeps_its_counts(self):
         """of_review on organic-framework PR 530: a server that hangs held the others' presence past the TTL, and a
         failed server's queues were recorded as depth 0."""
