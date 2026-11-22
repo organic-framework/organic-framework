@@ -3137,33 +3137,35 @@ def _wait(cond, timeout, step=0.5):
     return cond()
 
 
-def _inject(sid, text, reason):
+def _inject(sid, text, reason, log=None):
     import hashlib
     digest = hashlib.sha256(text.strip().encode()).hexdigest()
     of_events.emit("injected_prompt", {"injector": "of_capacity", "target_session": sid, "text_sha256": digest,
                                        "reason": reason}, position=actor())
     # as the other state files are written: a regular file of this user's, no link (of_events.append_own; of_server,
-    # hand-over 58681935). One that cannot be written is this session's MoveError, never another error that would
-    # stop a restore's later sessions (of_review on PR 566)
+    # hand-over 58681935). The declaration is the event above; this file is the hook's cache of it, so one that cannot
+    # be written is said and the move goes on: the listener's check of prompt origins reads the event within 15 minutes
+    # (of_hook.correct_prompt_origins; of_server on PR 566)
+    path = os.path.join(STATE_DIR, "injections.jsonl")
     try:
-        of_events.append_own(_injections_path(), json.dumps(
+        of_events.append_own(path, json.dumps(
             {"ts": time.time(), "session": sid, "sha256": digest, "injector": "of_capacity"}) + "\n")
     except OSError as e:
-        raise MoveError(f"session {sid[:8]}: its first prompt's declaration could not be recorded ({e}), so it is not "
-                        f"started with it")
+        (log or _say)(f"  session {sid[:8]}: {path} was not written ({e}); its declaration is in the event store")
 
 
-def _injections_path():
-    return os.path.join(STATE_DIR, "injections.jsonl")
+_SAID = set()
 
 
-def check_injections():
-    """Before anything irreversible: the file the first prompt's declaration goes to can be opened as a state file is,
-    so a move never exits a session it then cannot start (of_review on PR 566)."""
-    try:
-        os.close(_own_fd(_injections_path()))
-    except OSError as e:
-        raise MoveError(f"the first prompt's declaration cannot be recorded ({e}); nothing was changed")
+def _say(text):
+    print(text, file=sys.stderr)
+
+
+def _say_once(key, text):
+    """A refused state file said once per process, never once per run (of_server on PR 566)."""
+    if key not in _SAID:
+        _SAID.add(key)
+        _say(text)
 
 
 EXIT_DIALOG = "Background work is running"
@@ -3341,7 +3343,7 @@ def start_session(sid, name, cwd, target, prompt, run, read, key, reason, log=pr
     from 09:27Z to 12:30Z on 2026-11-06. So when the session is not up in time and the trust dialog holds it,
     close the dialog with "No, exit" (grants nothing; the process exits and the note is never typed) and fail.
     With no dialog on screen the start may only be slow: declare once more, which covers ten more minutes."""
-    _inject(sid, prompt, reason)
+    _inject(sid, prompt, reason, log)
     t0 = time.time()
     time.sleep(1)
     run()
@@ -3363,7 +3365,7 @@ def start_session(sid, name, cwd, target, prompt, run, read, key, reason, log=pr
         raise MoveError(f"{name}: the start stopped at the folder trust dialog for {cwd}; closed it with \"No, exit\" "
                         f"(grants nothing), so the note was never typed. The owner decides the trust (of ask); then "
                         f"`of capacity resume {name} --session {sid} --to {short(target)} --pane <pane>`", untrusted=cwd)
-    _inject(sid, prompt, reason + " (start still pending)")
+    _inject(sid, prompt, reason + " (start still pending)", log)
     raise MoveError(f"{name}: no session came up on {short(target)} after {wait}s; read the pane. Its note is declared "
                     f"for ten more minutes; if it starts later than that, the hook records the note as the owner's")
 
@@ -3684,12 +3686,11 @@ def _move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, 
             held = "zellij" in proc_args(ppid)
         except Exception:
             held = False
-    check_injections()  # the start's declaration can be recorded, before the exit (of_review on PR 566)
     # 1. exit between turns, by the screen ("Background work is running": scheduled tasks, background shells)
     drafts = set_drafts_aside(src, sid, work)
     if drafts:
         log(f"  feedback drafts set aside in {work}/feedback-drafts: {len(drafts)} (their review would open on /exit)")
-    _inject(sid, "/exit", f"{what}: exit")
+    _inject(sid, "/exit", f"{what}: exit", log)
     if runtime == "herdr":
         type_exit = lambda: _herdr("agent", "prompt", pane, "/exit")  # noqa: E731
         read_old = lambda: _pane_lines(pane, 60)  # noqa: E731
@@ -5589,7 +5590,7 @@ def close(sid, position, reason, dry_run=False, log=print):
         draft = input_draft(screen)
         if draft is None or draft:
             raise MoveError(f"{position}: input box in {where}: {'not visible' if draft is None else repr(draft[:80])}")
-        _inject(sid, "/exit", f"closure: {reason}")
+        _inject(sid, "/exit", f"closure: {reason}", log)
         try:  # a closure ends the session, its scheduled tasks with it: "Exit and stop tasks", never background
             exit_session(int(s["pid"]), lambda: chars("/exit"), lines, keys, allow_shells=True, log=log)
         except MoveError as e:
@@ -7372,7 +7373,11 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
     lockf = os.path.join(STATE_DIR, "capacity", "balance.lock")
     of_events.own_dir(os.path.dirname(lockf))
     # opened as the other state files are (of_events.open_own; of_server on PR 545)
-    lock = os.fdopen(_own_fd(lockf), "a")
+    try:
+        lock = os.fdopen(_own_fd(lockf), "a")
+    except OSError as e:   # never a run without its lock: skipped, and said (of_server on PR 566)
+        log(f"balance: skipped: its lock {lockf} cannot be opened ({e})")
+        return []
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -7702,16 +7707,23 @@ def _log_file(path):
     (of_review on PR 566)."""
     try:
         return os.fdopen(_own_fd(path), "a")
-    except OSError:
+    except OSError as e:
+        _say_once(("log", path), f"capacity: {path} cannot be opened ({e}); the run goes on with its output discarded")
         return open(os.devnull, "a")
 
 
-def _tick_lock():
-    """The capacity tick's lock file, taken without waiting; None when another tick holds it."""
+def _tick_lock(log=None):
+    """The capacity tick's lock file, taken without waiting; None when another tick holds it, or when it cannot be
+    opened, which skips the tick and is said (never a tick without its lock; of_server on PR 566)."""
     import fcntl
     lockf = os.path.join(STATE_DIR, "capacity", "tick.lock")
     of_events.own_dir(os.path.dirname(lockf))
-    lock = os.fdopen(_own_fd(lockf), "a")
+    try:
+        lock = os.fdopen(_own_fd(lockf), "a")
+    except OSError as e:
+        text = f"capacity tick: skipped: its lock {lockf} cannot be opened ({e})"
+        log(text) if log else _say_once(("lock", lockf), text)
+        return None
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -7727,9 +7739,9 @@ def run_tick(conn, now, log=print, spawn=None):
     of_asks, 2026-11-13 (msg 01a1d67e-9e48): run inside the listener, this tick once held its loop for 442 s (and
     18 s, 46 s and 135 s around it) while the store was contended. No heartbeat was written meanwhile, so every
     reader took the views as stale and projected the whole log, and the founder's questions screen stuttered."""
-    lock = _tick_lock()
+    lock = _tick_lock(log)
     if lock is None:
-        log("capacity tick: another tick is running")
+        log("capacity tick: not run (another tick holds its lock, or the lock is refused)")
         return False
     try:
         t0 = time.time()
@@ -7783,7 +7795,10 @@ def _replan_path():
 def mark_replan(sessions):
     """The stop watch names the sessions it saw stop, for a balance run already under way (replan_due)."""
     of_events.own_dir(os.path.dirname(_replan_path()))
-    of_events.append_own(_replan_path(), "".join(f"{sid}\n" for sid in sessions if sid))
+    try:
+        of_events.append_own(_replan_path(), "".join(f"{sid}\n" for sid in sessions if sid))
+    except OSError as e:   # the run under way misses them; the balancer the stop watch starts reads them all
+        _say_once(("replan", _replan_path()), f"capacity: {_replan_path()} cannot be written ({e})")
 
 
 def clear_replan():
