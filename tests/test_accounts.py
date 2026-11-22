@@ -1,7 +1,9 @@
 """The machine's harness accounts (bin/of_accounts.py, docs/accounts.md): the list, of account, and of claude."""
 import os
 import re
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -163,7 +165,7 @@ class OfClaude(unittest.TestCase):
         self.saved = of_events.CONFIG_DIR
         of_events.CONFIG_DIR = os.path.join(self.tmp.name, "config")
         self.kw = dict(home=self.home, chooser=lambda cwd, home: os.path.join(self.home, ".claude-a"),
-                       resumer=lambda sid: None, holder=lambda sid, home: None)
+                       resumer=lambda sid: None)
 
     def tearDown(self):
         of_events.CONFIG_DIR = self.saved
@@ -179,25 +181,59 @@ class OfClaude(unittest.TestCase):
         with self.assertRaises(of_accounts.AccountError):
             of_accounts.launch(["--account", "nope"], env={}, **self.kw)
 
-    def test_a_resume_runs_the_sessions_own_line_and_otherwise_the_choice(self):
+    def test_a_resume_runs_the_sessions_own_line(self):
         kw = dict(self.kw, resumer=lambda sid: f"env CLAUDE_CONFIG_DIR=/h/.claude-a claude --resume {sid} --model m")
         argv, _ = of_accounts.launch(["--resume", "s1"], env={}, **kw)
         self.assertEqual(argv, ["/bin/sh", "-c", "exec env CLAUDE_CONFIG_DIR=/h/.claude-a claude --resume s1 --model m"])
-        argv, env = of_accounts.launch(["--resume", "s1"], env={}, **self.kw)  # no account holds it: the chooser
-        self.assertEqual(argv[1:], ["--resume", "s1"])
-        self.assertEqual(env["CLAUDE_CONFIG_DIR"], os.path.join(self.home, ".claude-a"))
 
-    def test_a_resume_without_its_line_still_goes_to_the_account_that_holds_it(self):
-        """of_herdr's lab (hand-over a9c118e8): bin/of failed under a python3 without PyYAML, the line came back None,
-        and the resume went to the account the chooser picked: 'No conversation found'."""
-        held = os.path.join(self.home, ".claude")
-        argv, env = of_accounts.launch(["--resume", "s1"], env={}, **dict(self.kw, holder=lambda sid, home: held))
+    def test_a_resume_without_its_line_never_starts_bare(self):
+        """Hand-over af34d473 (of_architect, 2026-11-22): with no line the launcher fell through to the claude binary
+        with only the account, so the session ran without its deny rules, tool profile and sandbox, and nothing said
+        so. One more try, then it stops and says why; a resumer that fails and one that times out."""
+        tries = []
+        with self.assertRaises(of_accounts.AccountError) as e:
+            of_accounts.launch(["--resume", "s1"], env={}, **dict(self.kw, resumer=lambda sid: tries.append(sid)))
+        self.assertEqual(tries, ["s1", "s1"])
+        self.assertIn("does not start", str(e.exception))
+        self.assertIn("of resume-command s1", str(e.exception))
+        late = [None, "env CLAUDE_CONFIG_DIR=/h/.claude-a claude --resume s1"]   # the second try answers
+        argv, _ = of_accounts.launch(["--resume", "s1"], env={}, **dict(self.kw, resumer=lambda sid: late.pop(0)))
+        self.assertEqual(argv[:2], ["/bin/sh", "-c"])
+        for run, want in ((lambda *a, **k: type("R", (), {"returncode": 1, "stdout": "", "stderr": "boom\nno PyYAML"})(),
+                           "exited 1: no PyYAML"),
+                          (mock.Mock(side_effect=subprocess.TimeoutExpired("of", 60)), "timed out after 60 s")):
+            why = []
+            self.assertIsNone(of_accounts.resume_line("s1", of_bin="/of", run=run, why=why))
+            self.assertEqual(why, [want])
+        argv, env = of_accounts.launch(["--account", "a", "--resume", "s1"], env={}, **self.kw)  # named: as asked
         self.assertEqual(argv[1:], ["--resume", "s1"])
-        self.assertNotIn("CLAUDE_CONFIG_DIR", env)  # ~/.claude holds it: the default account, variable unset
         calls = []
         run = lambda argv, **kw: calls.append(argv) or type("R", (), {"returncode": 0, "stdout": "env x claude", "stderr": ""})()  # noqa: E731
         self.assertEqual(of_accounts.resume_line("s1", of_bin="/of", run=run), "env x claude")
         self.assertEqual(calls[0][:2], [sys.executable, "/of"])  # this Python, never PATH's python3
+
+    @unittest.skipUnless(shutil.which("zsh"), "no zsh here")
+    def test_the_shell_hook_never_resumes_bare_in_a_herdr_pane(self):
+        """Hand-over af34d473: herdr's own resume types a bare `claude --resume <id>`; with no line it ran claude
+        unchanged, without the session's settings."""
+        root = os.path.join(self.tmp.name, "of")
+        os.makedirs(os.path.join(root, "bin"))
+        mark = os.path.join(self.tmp.name, "started")
+        for name, body in (("bin/of", "#!/bin/sh\nexit 1\n"), ("claude", f"#!/bin/sh\ntouch {mark}\n")):
+            path = os.path.join(root, name)
+            with open(path, "w") as fh:
+                fh.write(body)
+            os.chmod(path, 0o755)
+        hook = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "of-shell.zsh")
+        env = {"PATH": f"{root}:/usr/bin:/bin", "HOME": self.tmp.name, "OF_HOME": root, "HERDR_PANE_ID": "w1:p1"}
+        r = subprocess.run(["zsh", "-f", "-c", f"source {hook}; claude --resume s1"], env=env, capture_output=True,
+                           text=True, timeout=30)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("does not start", r.stderr)
+        self.assertFalse(os.path.exists(mark))
+        r = subprocess.run(["zsh", "-f", "-c", f"source {hook}; claude -p hi"], env=env, capture_output=True,
+                           text=True, timeout=30)
+        self.assertTrue(os.path.exists(mark))                                  # anything else: claude unchanged
 
     def test_account_is_ours_only_as_the_first_argument(self):
         argv, env = of_accounts.launch(["-p", "--account", "a"], env={}, **self.kw)  # Claude Code's own arguments

@@ -17,7 +17,7 @@ Basis: the founder, through `of_conductor` (msg 01a1cc5f), about 20:48Z, transla
 - **Done by hand on the founder's Mac:**
   - he created each folder and logged in there;
   - one shell alias per account opens Claude Code on it;
-  - his shell config sources `bin/of-shell.zsh`. In a herdr pane, that file turns herdr's bare `claude --resume <id>` after a herdr restart into the `of resume-command` line: the session's account, model, effort and permission mode. Without it, 38 sessions came back on one spent account on 2026-11-10.
+  - his shell config sources `bin/of-shell.zsh`. In a herdr pane, that file turns herdr's bare `claude --resume <id>` after a herdr restart into the `of resume-command` line: the session's account, model, effort and permission mode. Without it, 38 sessions came back on one spent account on 2026-11-10. With no line after two tries it starts nothing and says so (hand-over `af34d473`).
 - **Services.**
   - The probe and the balancer run inside the listener's capacity processor and inside the pulse. `of init` installs both as one service: launchd on macOS, systemd on Linux, with `OF_AUTOMATION=1`.
   - Settings live in `~/.config/of/capacity.yaml`.
@@ -36,7 +36,7 @@ Basis: the founder, through `of_conductor` (msg 01a1cc5f), about 20:48Z, transla
 3. **`of claude [--account NAME] [claude arguments]`** is the launcher that replaces the aliases.
    - It runs Claude Code with that account's folder.
    - Without `--account`, it takes the account with the most headroom among those that trust the current folder, the same choice `of spawn` makes.
-   - `of claude --resume <id>` runs the `of resume-command` line.
+   - `of claude --resume <id>` runs the `of resume-command` line, and with no line after a second try it does not start: it says why and what to run. A bare start would run the session without its deny rules, its tool profile and, on Linux, its sandbox, and herdr's restore of an agent pane comes this way (hand-over `af34d473`, 2026-11-22). `of claude --account NAME --resume <id>` still starts on the account named.
 4. **herdr's resume after a herdr restart without the zsh function** (with `of_herdr`, who chooses one):
    - (a) herdr restores an agent through a command OF configures, if its restore or `herdr agent start` accepts one;
    - (b) OF's herdr plugin resumes OF's sessions from its startup hook before herdr types the bare line;
