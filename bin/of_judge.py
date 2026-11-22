@@ -35,7 +35,7 @@ import time
 
 import of_events
 
-VERSION = "j-v6"  # j-v6: a turn that declared a wait on the position its card would go to is skipped before the model; j-v5: a message naming only proposed structural diffs is cleared, and a diff's open card is listed as named; j-v4: a proposal that waits on his yes is a question; other positions' named asks are listed; j-v3: an ask is known by its first 8 characters too; j-v2: a message naming only filed asks is cleared
+VERSION = "j-v7"  # j-v7: an ask is known by its card id too (OF-230); j-v6: a turn that declared a wait on the position its card would go to is skipped before the model; j-v5: a message naming only proposed structural diffs is cleared, and a diff's open card is listed as named; j-v4: a proposal that waits on his yes is a question; other positions' named asks are listed; j-v3: an ask is known by its first 8 characters too; j-v2: a message naming only filed asks is cleared
 MODEL = "haiku"
 TIMEOUT_S = 60
 SLOTS = 2                 # judges running at once on this machine (each is a short `claude -p`)
@@ -79,7 +79,8 @@ another agent started this turn, the message is a reply to it: a question or a r
 addressed to that agent, unless the message clearly turns to the human founder (names him or says it waits on the \
 founder);
 - rhetorical questions, questions it answers itself, questions it quotes from others;
-- a reminder of a question already filed with of ask: an 8-character ask id such as 1a2b3c4d is named, or the \
+- a reminder of a question already filed with of ask: an 8-character ask id such as 1a2b3c4d or a card id such as \
+OF-230 is named, or the \
 question is in one of the lists of asks already filed (the agent's own, or another position's that the message \
 names);
 - waiting on something other than the owner: CI, a deploy, a time window, another agent.
@@ -94,7 +95,7 @@ LANGUAGES = {"en": "English", "ru": "Russian"}  # the owner's language, named fo
 
 def system():
     """SYSTEM with the owner's language (bin/of_locale.py): the card's question is written in it. With the founder's
-    Russian the prompt is j-v4's word for word."""
+    Russian the prompt is j-v4's word for word, but for j-v7's card id beside the 8-character one."""
     import of_locale
     lang = of_locale.language()
     return SYSTEM.replace("{language}", LANGUAGES.get(lang, lang))
@@ -128,15 +129,17 @@ ORIGINS = {"human": "the founder, typing in this pane", "paste": "the founder, p
 
 
 def user_prompt(text, position=None, origin=None, peer=None, filed=(), named=()):
-    """filed: [(ask id, text)] the agent's own open asks; named: [(ask id, text, position)] other positions' open asks
-    for the founder that the message names by id (j-v4: "your «yes» on e0e53b7f" read as new when another filed
-    it)."""
+    """filed: [(ask id, text[, card id])] the agent's own open asks; named: [(ask id, text, position[, card id])] other
+    positions' open asks for the founder that the message names by id (j-v4: "your «yes» on e0e53b7f" read as new
+    when another filed it). A card id is shown beside the ids, since agents cite cards by it (j-v7)."""
     who = ORIGINS.get(origin or "", "unknown")
     if origin == "peer" and peer:
         who += f" ({peer})"
-    asks = "\n".join(f"- {i[-8:]} (also cited as {i[:8]}): {t[:200]}" for i, t in filed) or "none"
-    others = "\n".join(f"- {i[-8:]} (also cited as {i[:8]}), filed by {p or 'unknown'}: {t[:200]}"
-                       for i, t, p in named) or "none"
+
+    def ids(i, ref):
+        return f"{i[-8:]} (also cited as {i[:8]}" + (f", card {ref[0]}" if ref and ref[0] else "") + ")"
+    asks = "\n".join(f"- {ids(i, r)}: {t[:200]}" for i, t, *r in filed) or "none"
+    others = "\n".join(f"- {ids(i, r)}, filed by {p or 'unknown'}: {t[:200]}" for i, t, p, *r in named) or "none"
     return (f"Agent: {position or 'unknown'}\nThis turn was started by: {who}\n"
             f"Questions this agent already filed with of ask and still open:\n{asks}\n"
             f"Open asks of other positions that the message names:\n{others}\n\n"
@@ -346,7 +349,7 @@ def text_at(transcript, hint, before=TEXT_AT_BEFORE, after=TEXT_AT_AFTER):
 
 
 def filed(conn, position, since=None):
-    """(ask id, text) of the position's open declared asks; with since, only those filed at or after it."""
+    """(ask id, text, card id) of the position's open declared asks; with since, only those filed at or after it."""
     import of_asks
     import of_listen
     if of_listen.fresh(conn):
@@ -354,33 +357,67 @@ def filed(conn, position, since=None):
     else:
         asks = of_asks.project(of_asks.load(conn, since_iso=time.strftime("%Y-%m-%dT%H:%M:%S",
                                                                          time.gmtime(time.time() - 7 * 86400))))
-    return [(a["event_id"], a["text"]) for a in asks if a.get("position") == position and a["state"] == "open"
-            and a["kind"].startswith(("question (declared", "task")) and (not since or a["ts"] >= since)]
+    return [(a["event_id"], a["text"], a.get("ref")) for a in asks if a.get("position") == position
+            and a["state"] == "open" and a["kind"].startswith(("question (declared", "task"))
+            and (not since or a["ts"] >= since)]
 
 
 ASK_ID = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{8}(?![0-9A-Za-z])")
+# A card id as the popup, the sidebar and `of asks` show it (OF-230, AS-412b; of_events.REF_RE). Agents cite a card by
+# it since 2026-11-17 (AGENTS.md, prompt 01a1ea59-aeb7), and j-v6 knew only 8-character ids: of the 32 cards it filed
+# to 2026-11-22, 29 came from a closing message that named a card then open by its card id (OF-230, OF-109, OF-162),
+# and 29 were withdrawn or replaced, most as copies of the card named (of_metamethod's reading, message
+# 01a203ab-8a69; of_asks's check of each closing record, 2026-11-22).
+CARD_ID = re.compile(r"(?<![0-9A-Za-z-])[A-Z][A-Z0-9]{0,7}-\d+[a-z]?(?![0-9A-Za-z-])")
 KNOWN_DAYS = 30
 
 
-def only_filed_ids(conn, text, now=None):
+def _card(ref):
+    """A card id without a twin's letter (OF-230b: OF-230), the form an ask's own record keeps."""
+    return str(ref or "").rstrip("abcdefghijklmnopqrstuvwxyz")
+
+
+def cited(text, prefixes=None):
+    """The ids a message names asks by: 8-character ids and card ids. With `prefixes`, a card id counts only under
+    one of them (UTF-8 or SHA-256 is no card)."""
+    cards = set(CARD_ID.findall(text or ""))
+    if prefixes is not None:
+        cards = {c for c in cards if c.split("-")[0] in prefixes}
+    return set(ASK_ID.findall(text or "")) | cards
+
+
+def _cites(a):
+    """Every form an agent cites ask `a` by: its 8-character forms and its card id."""
+    return _short(a["event_id"]) | {r for r in (a.get("ref"), a.get("ref_plain")) if r}
+
+
+def only_filed_ids(conn, text, now=None, until=None, asks=None):
     """The ask ids a closing message names, when it asks nothing new; else None (2026-11-09: a closing line
     WAITING ON listed asks already on the founder's queue, and the model filed it twice as a new card for him). The
-    message has no question mark, names at least one 8-character id, every such id is an ask OF knows (any state, the
-    last KNOWN_DAYS days: a decision cited by its id counts), one of them at least is open for the founder, and
-    without the lines that name them it asks the owner nothing (j-v4: a keeper's "question about 1Password", never filed,
-    stood beside its card ids and was cleared three times)."""
-    if "?" in text:
-        return None
-    ids = set(ASK_ID.findall(text))
-    if not ids or says_more(text, ids):
+    message has no question mark, names at least one ask by an 8-character id or a card id, every such id is an ask OF
+    knows (any state, the last KNOWN_DAYS days: a decision cited by its id counts), one of them at least is open for
+    the founder, and without the lines that name them it asks the owner nothing (j-v4: a keeper's "question about
+    1Password", never filed, stood beside its card ids and was cleared three times). `until` and `asks` replay it as
+    it stood then (lab-asks-v0): the asks known by that time, and the queue's projection at it."""
+    if "?" in text or not cited(text):
         return None
     now = now or time.time()
     since = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now - KNOWN_DAYS * 86400))
-    known = {x for (e,) in conn.execute("SELECT event_id FROM event WHERE name = 'of.agent_question' AND ts >= ?",
-                                        (since,)) for x in _short(e)}
-    if not ids <= known:
+    known, refs = set(), set()
+    for name, e, ref in conn.execute(
+            "SELECT name, event_id, json_extract(payload, '$.ref') FROM event WHERE name IN ('of.agent_question', "
+            "'of.ask_ref') AND ts >= ?" + (" AND ts <= ?" if until else ""), (since,) + ((until,) if until else ())):
+        if name == "of.agent_question":
+            known |= _short(e)
+        if ref:
+            refs.add(_card(ref))
+    ids = cited(text, {r.split("-")[0] for r in refs})
+    if not ids or says_more(text, ids):
         return None
-    return sorted(ids) if ids & founders_open(conn) else None
+    if not all(i in known or _card(i) in refs for i in ids):
+        return None
+    opened = {x for a in (open_founder_asks(conn) if asks is None else _founders(asks)) for x in _cites(a)}
+    return sorted(ids) if ids & opened else None
 
 
 _UNFILED_ITEM = re.compile(r"(?i)\b(?:вопрос\w*|question\w*|решени\w*|decision\w*|выбор\w*|choice|одобрени\w*|approval)\b")
@@ -421,20 +458,24 @@ def open_founder_asks(conn):
     else:
         asks = of_asks.project(of_asks.load(conn, since_iso=time.strftime("%Y-%m-%dT%H:%M:%S",
                                                                          time.gmtime(time.time() - 7 * 86400))))
+    return _founders(asks)
+
+
+def _founders(asks):
     return [a for a in asks if a["state"] == "open" and (a.get("to") or "founder") in ("founder", "owner")]
 
 
 def founders_open(conn):
-    """The last 8 characters of every ask or task open for the founder."""
-    return {x for a in open_founder_asks(conn) for x in _short(a["event_id"])}
+    """The forms every ask or task open for the founder is cited by: its 8-character forms and its card id."""
+    return {x for a in open_founder_asks(conn) for x in _cites(a)}
 
 
 def named_asks(asks, text, position=None):
-    """[(ask id, text, position)] of the open founder asks in `asks` that the message names by an 8-character id, or
-    by the structural diff its card approves (`diff_id`, j-v5), filed by another position."""
-    ids, diffs = set(ASK_ID.findall(text or "")), diff_ids(text)
-    return [(a["event_id"], a.get("text") or "", a.get("position")) for a in asks
-            if a.get("position") != position and (ids & _short(a["event_id"]) or a.get("diff_id") in diffs)]
+    """[(ask id, text, position, card id)] of the open founder asks in `asks` that the message names by an 8-character
+    id or a card id (j-v7), or by the structural diff its card approves (`diff_id`, j-v5), filed by another position."""
+    ids, diffs = cited(text), diff_ids(text)
+    return [(a["event_id"], a.get("text") or "", a.get("position"), a.get("ref")) for a in asks
+            if a.get("position") != position and (ids & _cites(a) or a.get("diff_id") in diffs)]
 
 
 def _bare(name):
@@ -713,7 +754,7 @@ def judge_one(conn, c, runner=subprocess.run, deliver=None, log=print, now=None)
                        "card, and asks nothing else"}
     else:
         named = named_asks(open_founder_asks(conn), c.get("text") or "", c.get("position")) \
-            if ASK_ID.search(c.get("text") or "") or DIFF_ID.search(c.get("text") or "") else []
+            if cited(c.get("text") or "") or DIFF_ID.search(c.get("text") or "") else []
         v = judge_text(user_prompt(c.get("text") or "", c.get("position"), c.get("origin"), c.get("peer"),
                                    filed(conn, c["position"]) if c.get("position") else (), named),
                        config_dir=c.get("config_dir"), runner=runner)
