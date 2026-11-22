@@ -27,6 +27,7 @@ on 2026-11-12, docs/registry.md), and nothing warns, files a card or stops work 
 
 import calendar
 import datetime as dt
+import hashlib
 import json
 import os
 import sqlite3
@@ -567,7 +568,7 @@ def compute(docs, conn, month=None, now=None, here=None):
     start, end = month_bounds(month, now)
     conn.executescript(MONTH_DDL)
     spans, decl = _store_inputs(docs, conn)
-    away = away_spans(carry_restores(conn), here or of_events.machine_id())
+    away = away_spans(carry_restores(conn, now), here or of_events.machine_id())
     seen = set(spans)
     seg_sums = []
     for sid, a, b, org, pos, work in segments(spans, decl, start, end):
@@ -589,12 +590,26 @@ def compute(docs, conn, month=None, now=None, here=None):
     return out
 
 
-def carry_restores(conn):
+def kept_from(now=None):
+    """The first epoch the month view keeps: the start of the previous month."""
+    return month_bounds(now=month_bounds(now=now or time.time())[0] - 1)[0]
+
+
+def carry_restores(conn, now=None):
     """{session: [(epoch, host id)]}: each machine a carry restore put a session on, and when (of.holder_changed with
-    the evidence `of capacity carry restore`; a coordination event, so every machine has the others')."""
+    the evidence `of capacity carry restore`; a coordination event, so every machine has the others'). Read from the
+    holder changes view_spend_event keeps by its cursor, each one's machine by its rowid; a store that view has not
+    read yet reads the log from the first day the month view keeps (tests/test_log_reads.py; of_review on PR 567).
+    A restore before that day changes nothing that view holds."""
     out = {}
-    for ts, host, pl in conn.execute("SELECT ts, host_id, payload FROM event WHERE name = 'of.holder_changed' "
-                                     "AND payload LIKE '%carry restore%'"):
+    if _events_ready(conn):
+        rows = conn.execute("SELECT v.ts, e.host_id, v.payload FROM view_spend_event v JOIN event e "
+                            "ON e.rowid = v.event_rowid WHERE v.name = 'of.holder_changed' "
+                            "AND v.payload LIKE '%carry restore%'").fetchall()
+    else:
+        rows = conn.execute("SELECT ts, host_id, payload FROM event WHERE name = 'of.holder_changed' AND ts >= ? "
+                            "AND payload LIKE '%carry restore%'", (_iso(kept_from(now)),)).fetchall()
+    for ts, host, pl in rows:
         try:
             j = json.loads(pl or "{}")
         except ValueError:
@@ -655,7 +670,7 @@ def _cells(docs, conn, since, until, step, here):
     (away_spans), the sessions no position held under position None, the runs on other harnesses with account None."""
     import of_capacity
     spans, decl = _store_inputs(docs, conn)
-    away = away_spans(carry_restores(conn), here)
+    away = away_spans(carry_restores(conn, until), here)
     cells = {}
 
     def put(k, acct, o, pos, work, goal, s):
@@ -737,7 +752,11 @@ def emit_hours(docs, conn, now, here=None, emit=None):
     hour = now - now % 3600
     final = _meta(conn, "spend_hours_final")
     lo = min(float(final) if final else hour - HOURS_BACK_S, hour - HOURS_LATE * 3600)
-    lo = max(lo, month_bounds(now=month_bounds(now=now)[0] - 1)[0])   # nothing before the view keeps
+    marks = _hours_marks(conn)
+    late = _late_since(conn, final, marks)
+    if late is not None:   # what reached the store since the last report, in an hour reported before (of_review, PR 567)
+        lo = min(lo, max(late, hour - HOURS_BACK_S))   # as far back as a first report goes
+    lo = max(lo, kept_from(now))   # nothing before the view keeps
     lo -= lo % 3600
     by = {}
     for (k, acct, o, pos, work, goal), s in _cells(docs, conn, lo, hour + 3600, 3600, here).items():
@@ -747,6 +766,9 @@ def emit_hours(docs, conn, now, here=None, emit=None):
                  s["outside_runs"]])
     conn.execute("CREATE TABLE IF NOT EXISTS view_spend_hours_sent (hour REAL, org TEXT, digest TEXT, "
                  "PRIMARY KEY (hour, org))")
+    for h, o in conn.execute("SELECT hour, org FROM view_spend_hours_sent WHERE hour >= ? AND hour <= ? AND digest != ?",
+                             (lo, hour, _NO_ROWS)).fetchall():
+        by.setdefault((h, o), [])   # an hour reported with rows that has none now: reported again, empty
     sent = 0
     for (h, o), rows in sorted(by.items()):
         rows.sort(key=lambda r: [str(x) for x in r])
@@ -760,8 +782,54 @@ def emit_hours(docs, conn, now, here=None, emit=None):
         sent += 1
     conn.execute("DELETE FROM view_spend_hours_sent WHERE hour < ?", (hour - HOURS_BACK_S - 86400,))
     _meta(conn, "spend_hours_final", hour - HOURS_LATE * 3600)
+    _meta(conn, "spend_hours_marks", json.dumps(marks))
     _meta(conn, "spend_hours_at", now)
     return sent
+
+
+_NO_ROWS = hashlib.sha256(b"[]").hexdigest()   # the digest of an hour with no rows
+
+
+def _hours_marks(conn):
+    """Where the stores stood at this report: the month view's last rowid (a response read late, or read again, takes a
+    new one) and the events cursor."""
+    r = conn.execute("SELECT max(rowid) FROM view_spend_month").fetchone()
+    return {"responses": (r[0] if r else None) or 0, "events": int(_meta(conn, "spend_events_cursor") or 0)}
+
+
+def _late_since(conn, final, marks):
+    """The earliest epoch whose hour the store changed since the last report: a response read since (a transcript read
+    late, a carried history), an event since that names a session and a position, or any response of a session a holder
+    change since names (its attribution, or a carry restore's machine, may change at any time). Before the first
+    report, None (the report goes back HOURS_BACK_S); a report made before these marks were kept, -inf."""
+    if not final:
+        return None
+    try:
+        was = json.loads(_meta(conn, "spend_hours_marks") or "null")
+    except ValueError:
+        was = None
+    if not isinstance(was, dict):
+        return float("-inf")
+    out = []
+    r = conn.execute("SELECT min(epoch) FROM view_spend_month WHERE rowid > ?", (int(was.get("responses") or 0),)
+                     ).fetchone()
+    out.append(r[0] if r else None)
+    a, b = int(was.get("events") or 0), marks["events"]
+    if b > a:
+        r = conn.execute("SELECT min(ts) FROM event WHERE rowid > ? AND rowid <= ? AND session_id IS NOT NULL "
+                         "AND position IS NOT NULL AND position != ''", (a, b)).fetchone()
+        out.append(_epoch(r[0]) if r else None)
+        for (pl,) in conn.execute("SELECT payload FROM view_spend_event WHERE event_rowid > ? AND event_rowid <= ? "
+                                  "AND name = 'of.holder_changed'", (a, b)).fetchall():
+            try:
+                j = json.loads(pl or "{}")
+            except ValueError:
+                continue
+            for sid in {j.get("previous_session"), j.get("new_session")} - {None, ""}:
+                r = conn.execute("SELECT min(epoch) FROM view_spend_month WHERE session_id = ?", (sid,)).fetchone()
+                out.append(r[0] if r else None)
+    out = [x for x in out if x is not None]
+    return min(out) if out else None
 
 
 STEPS = {"day": 86400, "hour": 3600}
