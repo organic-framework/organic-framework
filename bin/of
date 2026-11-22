@@ -1216,15 +1216,18 @@ def _loop_works(orgs_file=None, log=print):
     for org, path, _ in org_registries(orgs_file or ORGS_FILE):
         try:
             with open(path) as fh:
-                doc = yaml.safe_load(fh) or {}
+                doc = yaml.safe_load(fh)   # an empty file is what a write leaves between truncating and writing
             if not isinstance(doc, dict):
-                raise ValueError(f"the registry is a {type(doc).__name__}, not a mapping")
+                raise ValueError(f"the registry is {type(doc).__name__}, not a mapping")
+            works = doc.get("works", {})
+            if not isinstance(works, dict):
+                raise ValueError(f"works is {type(works).__name__}, not a mapping")
         except (OSError, ValueError, yaml.YAMLError) as e:
             skip(org, None, "registry", e)
             continue
-        works = doc.get("works")
-        for wid, w in works.items() if isinstance(works, dict) else ():
+        for wid, w in works.items():
             if not isinstance(w, dict):
+                skip(org, str(wid), "work", ValueError(f"the entry is {type(w).__name__}, not a mapping"))
                 continue
             try:
                 loop = _loop_of(w, org, orgs_file)

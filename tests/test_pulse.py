@@ -1,5 +1,7 @@
 """of ask / of status / of pulse: nobody waits unseen."""
 
+import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -260,8 +262,10 @@ class LoopStallTest(unittest.TestCase):
             self.assertIn("ofb/w1", mem["loop_stalls"])                          # its loop.yaml: kept
             self.assertEqual(run(t0 + 600 + 5 * 3600 + 600, unread(("ofb", None))), 0)
             self.assertIn("ofb/w1", mem["loop_stalls"])                          # its registry: kept
-            with mock.patch("of_loops.project", side_effect=TypeError("bad")):
+            out = io.StringIO()
+            with mock.patch("of_loops.project", side_effect=TypeError("bad")), contextlib.redirect_stdout(out):
                 self.assertEqual(run(t0 + 600 + 5 * 3600 + 900, [good]), 0)
+            self.assertIn("loop stalls: ofb/w1: TypeError: bad; its episode is kept", out.getvalue())  # quiet too
             self.assertIn("ofb/w1", mem["loop_stalls"])                          # its card failed: kept
             self.assertEqual(run(t0 + 600 + 5 * 3600 + 1200, [good, odd]), 0)  # repaired: not told again
             self.assertEqual(typed, ["p-of_own", "p-of_doer"])

@@ -1,6 +1,8 @@
 """Work booked for later with no basis (bin/of_tempo.py; hand-over 277de578 from of_architect): the cheap filter, the
 items judged once, the judge's record, and the pulse's note into the position's pane."""
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -202,8 +204,11 @@ class JudgeTest(unittest.TestCase):
         self.ev("booking_judged", {"position": "k8s_keeper", "items": [
             {"source": "message", "to": "platform_owner", "quote": "tomorrow", "verdict": "no_basis",
              "ts": "2026-11-17T13:18:00Z"}]}, "k8s_keeper", 1)
-        n = of_pulse.booking_notes(POSITIONS, [], bind, mem, T0 + 300, self.conn, works=boom, log=lambda m: None,
-                                   prompt=lambda pane, text, s: typed.append(text) or True)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):   # printed even when the pulse is quiet
+            n = of_pulse.booking_notes(POSITIONS, [], bind, mem, T0 + 300, self.conn, works=boom, log=lambda m: None,
+                                       prompt=lambda pane, text, s: typed.append(text) or True)
+        self.assertIn("booking notes: works not read (ValueError: bad loop.yaml)", out.getvalue())
         self.assertEqual((n, len(calls)), (1, 1))
         self.assertNotIn("of loop wait", typed[0])
         self.assertIn("of status idle --note", typed[0])

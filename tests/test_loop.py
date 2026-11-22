@@ -962,9 +962,11 @@ class OwnersMeasureTest(unittest.TestCase):
         loader = importlib.machinery.SourceFileLoader("of_cli", os.path.join(HERE, "..", "bin", "of"))
         of = importlib.util.module_from_spec(importlib.util.spec_from_loader("of_cli", loader))
         loader.exec_module(of)
-        bad_regs = [["not", "a", "mapping"], {"works": ["a"]}, {"works": {"w2": "x"}}]
+        bad_regs = [["not", "a", "mapping"], {"works": ["a"]}, {"works": {"w2": "x"}}, None, {"works": None},
+                    {"works": {"w2": None}}]   # None: an empty file, as a write leaves it between truncate and write
         bad_loops = ["loop: [unclosed\n", "- a\n- b\n", "\xff\xfe"]
-        for n, (reg, ly) in enumerate([(r, None) for r in bad_regs] + [(None, y) for y in bad_loops]):
+        healthy = object()
+        for n, (reg, ly) in enumerate([(r, None) for r in bad_regs] + [(healthy, y) for y in bad_loops]):
             with tempfile.TemporaryDirectory() as root:
                 repo = os.path.join(root, "repo")
                 os.makedirs(os.path.join(repo, "w2"))
@@ -972,19 +974,23 @@ class OwnersMeasureTest(unittest.TestCase):
                 if ly:
                     with open(os.path.join(repo, "w2", "loop.yaml"), "wb") as fh:
                         fh.write(ly.encode("latin-1"))
-                other = reg if reg is not None else {"works": {"w2": {"owner": "o", "doc": "repo:w2/README.md"},
+                other = reg if reg is not healthy else {"works": {"w2": {"owner": "o", "doc": "repo:w2/README.md"},
                                                               "w3": {"owner": "o", "loop": {"target": {}}}}}
                 for org, doc in (("good", {"works": {"w1": {"owner": "g", "loop": {"target": {}}}}}), ("other", other)):
                     os.makedirs(os.path.join(root, org, "registry"))
                     with open(os.path.join(root, org, "registry", "positions.yaml"), "w") as fh:
-                        fh.write(_json.dumps(doc))
+                        fh.write("" if doc is None else _json.dumps(doc))
                 orgs = os.path.join(root, "orgs.yaml")
                 with open(orgs, "w") as fh:
                     fh.write(_json.dumps({"orgs": [{"name": "good", "path": "good"},
                                                    {"name": "other", "path": "other", "paths": [repo]}]}))
-                got = [(o, w) for o, w, _, _ in of._loop_works(orgs, log=lambda m: None)]
+                lines = []
+                works = of._loop_works(orgs, log=lines.append)
+                got = [(o, w) for o, w, _, _ in works]
                 self.assertIn(("good", "w1"), got, n)
                 self.assertNotIn(("other", "w2"), got, n)
+                self.assertTrue(set(works.unread) & {("other", None), ("other", "w2")}, n)  # unread, not "no stall"
+                self.assertEqual(len(lines), 1, n)
                 if ly:
                     self.assertIn(("other", "w3"), got, n)                   # the organization's other works stay
 
