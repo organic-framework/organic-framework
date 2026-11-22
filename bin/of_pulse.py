@@ -1259,11 +1259,36 @@ def booking_note(items, loops=()):
             "limit with its ask id), say it with its source where you booked it.\n[once per booking]")
 
 
+def _loop_owners(works, log=print):
+    """{(org, position): [work ids]}: the works with a loop each position owns or does. WORKS as booking_notes takes it.
+    A failed read, or an owner or doers of the wrong shape, give nothing for that work, never an error."""
+    try:
+        works = works() if callable(works) else works
+    except Exception as e:  # noqa: BLE001 - the note goes out without the offer
+        log(f"booking notes: works not read ({type(e).__name__}: {e}); notes go without `of loop wait`")
+        works = ()
+    out = {}
+    for row in works or ():
+        try:
+            org, wid, work, loop = row
+        except (TypeError, ValueError):
+            continue
+        if not loop or not isinstance(work, dict):
+            continue
+        doers = work.get("doers")
+        names = [work.get("owner")] + (list(doers) if isinstance(doers, list) else [])
+        for who in dict.fromkeys(n for n in names if isinstance(n, str) and n):
+            out.setdefault((org, who), []).append(str(wid))
+    return out
+
+
 def booking_notes(positions, agents, bind, mem, now, conn, prompt=None, log=print, elsewhere=None, works=None):
     """Type each `of.booking_judged` with no_basis items into its position's pane once, one note per judgement (one
     turn's items): hand-over 277de578. Only positions this machine holds, and only into an idle pane; a busy one is
-    tried at the next pulse for TEMPO_KEEP_S. A person's position gets nothing typed. works: as loop_stalls takes it; a
-    position offered `of loop wait` owns or does one with a loop. Returns the number told."""
+    tried at the next pulse for TEMPO_KEEP_S. A person's position gets nothing typed. works: as loop_stalls takes it, or
+    a callable returning it, called only when a note is typed; a position offered `of loop wait` owns or does one with a
+    loop. The offer is an addition: works that cannot be read leave the note without it (of_review on PR 504).
+    Returns the number told."""
     import of_tempo
     if not of_tempo.NOTES_LIVE:
         return 0
@@ -1287,12 +1312,7 @@ def booking_notes(positions, agents, bind, mem, now, conn, prompt=None, log=prin
     live = {p["name"]: a for p, a in bind(positions, agents)[0]}
     people = {p["name"] for p in positions if (p.get("holder") or {}).get("runtime") == "human"}
     away = {n for _, n in (elsewhere or {})}
-    loops = {}
-    for org, wid, work, loop in works or ():
-        if loop:
-            for who in dict.fromkeys([work.get("owner")] + list(work.get("doers") or [])):
-                if who:
-                    loops.setdefault((org, str(who)), []).append(wid)
+    loops = None
     told, keep = 0, []
     for x in st["pending"]:
         a = live.get(x["position"]) or {}
@@ -1302,6 +1322,8 @@ def booking_notes(positions, agents, bind, mem, now, conn, prompt=None, log=prin
         if not prompt or x["position"] in away or not a.get("pane_id") or a.get("agent_status") not in ("idle", "done"):
             keep.append(x)
             continue
+        if loops is None:
+            loops = _loop_owners(works, log)
         note = booking_note(x["items"], loops.get((x["org"], x["position"])) or ())
         res = prompt(a["pane_id"], note, "of_pulse")
         if (res[0] if isinstance(res, tuple) else (res is None or res is True)) is not True:

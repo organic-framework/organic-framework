@@ -183,6 +183,31 @@ class JudgeTest(unittest.TestCase):
         self.assertIn("(your works with a loop: w-speed)", got["w:k8s_keeper"])        # a doer: not drills, no loop
         self.assertIn("(your works with a loop: w-speed)", got["w:obs_keeper"])        # the owner: not another org's
 
+    def test_works_that_cannot_be_read_leave_the_note_without_the_offer(self):
+        """of_review on PR 504: the offer is an addition and never stops the note."""
+        bad = [("acme", "w1", {"owner": "k8s_keeper", "doers": 3}, {"target": {}}),
+               ("acme", "w2", {"owner": {"x": 1}, "doers": [{"name": "k8s_keeper"}, "k8s_keeper"]}, {"target": {}}),
+               ("acme", "w3", "not a mapping", {"target": {}}), ("short",)]
+        self.assertEqual(of_pulse._loop_owners(bad), {("acme", "k8s_keeper"): ["w1", "w2"]})
+        calls = []
+
+        def boom():
+            calls.append(1)
+            raise ValueError("bad loop.yaml")
+        mem, typed = {}, []
+        bind = lambda positions, agents: ([(p, {"pane_id": "w:1", "agent_status": "idle"})  # noqa: E731
+                                           for p in positions if p["name"] == "k8s_keeper"], [])
+        of_pulse.booking_notes(POSITIONS, [], bind, mem, T0, self.conn, prompt=lambda *a: True, works=boom)
+        self.assertEqual(calls, [])                                             # nothing to type: not read
+        self.ev("booking_judged", {"position": "k8s_keeper", "items": [
+            {"source": "message", "to": "platform_owner", "quote": "tomorrow", "verdict": "no_basis",
+             "ts": "2026-11-17T13:18:00Z"}]}, "k8s_keeper", 1)
+        n = of_pulse.booking_notes(POSITIONS, [], bind, mem, T0 + 300, self.conn, works=boom, log=lambda m: None,
+                                   prompt=lambda pane, text, s: typed.append(text) or True)
+        self.assertEqual((n, len(calls)), (1, 1))
+        self.assertNotIn("of loop wait", typed[0])
+        self.assertIn("of status idle --note", typed[0])
+
     def test_a_busy_pane_waits_a_person_gets_nothing_and_a_failed_call_is_judged_again(self):
         mem = {}
         busy = {"pane_id": "w:2", "agent_status": "working"}
