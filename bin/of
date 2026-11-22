@@ -90,7 +90,8 @@ def committed_registry(path, timeout=5):
     try:
         import of_protected   # no program the repository's own configuration names (of_server, msg 01a202e4-62f9)
         git = lambda *a: subprocess.run(of_protected._git_cmd(root) + list(a), capture_output=True,  # noqa: E731
-                                        text=True, timeout=timeout, env=of_protected._env())
+                                        text=True, timeout=timeout, env=dict(of_protected._env(),
+                                                                             GIT_ALLOW_PROTOCOL=""))
         top = git("rev-parse", "--show-toplevel")
         if top.returncode != 0:
             return None

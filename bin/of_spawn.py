@@ -207,10 +207,11 @@ def of_checkouts():
     of-listen) and bin/of-hook run outside any sandbox, and the one this file is in, when they differ. A session that
     writes one, its .git included, changes code that then runs unsandboxed (of_agent-server's finding on the agent host,
     message 01a202cd-f226; of_server's Gaps entry in docs/guard.md, message 01a202d3-e7c8). `~/.local/bin/of` is a
-    symbolic link, or a wrapper script that execs a checkout's bin/of (deploy/host/plane.py); a folder counts only when
-    it holds bin/of and .git, so a wrapper never makes ~/.local the checkout and denies OF's state folder
-    (of_secrets-review on PR 509)."""
+    symbolic link, or a wrapper script that execs a checkout's bin/of (deploy/host/plane.py); a folder it leads to counts
+    only when it holds bin/of and .git, so a wrapper never makes ~/.local the checkout and denies OF's state folder
+    (of_secrets-review on PR 509). Spawn's own tree counts whatever it holds: an export has no .git (of_review)."""
     link = os.path.expanduser("~/.local/bin/of")
+    own = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))   # the code running now: always, whatever it holds
     found = []
     if os.path.islink(link):
         found.append(os.path.dirname(os.path.dirname(os.path.realpath(link))))
@@ -221,8 +222,7 @@ def of_checkouts():
         except OSError:
             text = ""
         found += [os.path.realpath(m) for m in re.findall(r"(/[^\s'\"]*)/bin/of(?=[\s'\"]|$)", text, re.M)]
-    found.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-    return [d for d in dict.fromkeys(found) if _is_checkout(d)] or [found[-1]]
+    return list(dict.fromkeys([d for d in found if _is_checkout(d)] + [own]))
 
 
 def sandbox_settings(deny=None, platform=None, scratch=None):
@@ -312,10 +312,12 @@ def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=
         # the Read tool runs outside the sandbox, so it reads what denyRead keeps from Bash: each such path is a Read
         # deny rule too (of_server, message 01a202e4-62f9). An account's projects folder also holds the session's own
         # saved tool results, which Claude Code opens with Read, and a deny cannot carve them out (of_review on PR
-        # 507): there the rule takes the transcripts only, and the other sessions' saved results stay open to Read
+        # 507): there the rule takes the transcripts only, and the other sessions' saved results stay open to Read.
+        # A folder takes one rule, its tree; a file, or a path not there yet, takes both
         projects = {os.path.join(d, "projects") for d in _accounts_dirs()}
         rules += [r for p in box["filesystem"]["denyRead"]
-                  for r in ((f"Read(/{p}/**/*.jsonl)",) if p in projects else (f"Read(/{p})", f"Read(/{p}/**)"))
+                  for r in ((f"Read(/{p}/**/*.jsonl)",) if p in projects else
+                            (f"Read(/{p}/**)",) if os.path.isdir(p) else (f"Read(/{p})", f"Read(/{p}/**)"))
                   if r not in rules]
         # the session's own scratch folders stay writable to the file tools: the memory directory is exempt, a
         # scratchpad is not (tried by of_server on Claude Code 2.1.330)

@@ -539,8 +539,10 @@ def _git(root, *args, timeout=30, extra=()):
     settings. A session's file tools can write any checkout's .git/config (of_server, message 01a202e4-62f9; of_review
     on PR 507: a promisor remote asked for a missing object runs a program --no-show-signature does not stop)."""
     import of_protected
+    # GIT_ALLOW_PROTOCOL empty: no transport at all, whatever a repository's own per-protocol setting says, on a git
+    # that does not read GIT_NO_LAZY_FETCH (before 2.39.5 and 2.43.5; of_review on PR 509)
     return subprocess.run(of_protected._git_cmd(root, extra) + list(args), capture_output=True, text=True,
-                          timeout=timeout, env=of_protected._env())
+                          timeout=timeout, env=dict(of_protected._env(), GIT_ALLOW_PROTOCOL=""))
 
 
 def _plain(name):
@@ -590,10 +592,11 @@ def local_commits(root, since, git="git", branch="main"):
     fmt = GIT_SEP.join(["%H", "%an", "%ct", "%s", "%B"]) + REC_SEP
     # --no-show-signature: a repository's own .git/config with log.showSignature and gpg.program would have the
     # listener run that program (of_server, message 01a202d3-e7c8, tried on a scratch repository)
-    r = _git(root, "log", "--no-show-signature", "--reverse", f"--since={since}", f"--format={fmt}", "--name-only",
-             "--end-of-options", rev.stdout.strip(), timeout=120, extra=("-c", "core.quotepath=false"))
+    # --no-renames: rename detection reads blobs, which a blobless clone fetches lazily, and lazy fetch is off
+    r = _git(root, "log", "--no-show-signature", "--no-renames", "--reverse", f"--since={since}", f"--format={fmt}",
+             "--name-only", "--end-of-options", rev.stdout.strip(), timeout=120, extra=("-c", "core.quotepath=false"))
     if r.returncode != 0:
-        raise RuntimeError(f"git log {root}: {r.stderr.strip()[:200]}")
+        raise RuntimeError(f"git log {root}: {r.stderr.strip()[-200:]}")   # the cause is at the end, after git's hints
     out = []
     for chunk in r.stdout.split(REC_SEP):
         chunk = chunk.lstrip("\n")
@@ -649,7 +652,11 @@ def import_local(conn, org, systems, roots, since=None, works=None, log=print, l
         if not ref:
             log(f"  {repo}: not read: {how}")  # said plainly, never an empty read that looks like no work
             continue
-        commits = lister(root, since, branch=ref)
+        try:   # one checkout that does not read (a treeless clone, no system git) stops none of the others
+            commits = lister(root, since, branch=ref)
+        except Exception as e:  # noqa: BLE001 - said plainly, never an empty read that looks like no work
+            log(f"  {repo}: not read: {type(e).__name__}: {str(e)[-200:]}")
+            continue
         for c in commits:
             eid = str(uuid.uuid5(NS, f"{repo}@{c['sha']}:git"))
             if conn.execute("SELECT 1 FROM event WHERE event_id = ?", (eid,)).fetchone():
