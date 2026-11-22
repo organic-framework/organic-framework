@@ -124,17 +124,33 @@ def _env():
     organic-framework PR 306), no lazy fetch, no prompt."""
     return {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_NO_REPLACE_OBJECTS": "1", "GIT_NO_LAZY_FETCH": "1", "GIT_TERMINAL_PROMPT": "0",
-            "GIT_OPTIONAL_LOCKS": "0", "GIT_GRAFT_FILE": "/dev/null"}
+            "GIT_OPTIONAL_LOCKS": "0", "GIT_GRAFT_FILE": "/dev/null",
+            # a transport no git has: protocol.allow is only the default, and a repository's own
+            # protocol.<name>.allow wins over it, while this list wins over both (git(1); of_architect, msg
+            # 01a202ea-781a)
+            "GIT_ALLOW_PROTOCOL": "none"}
+
+
+# every hook event of githooks(5) at git 2.56: a hook a repository's configuration names (hook.<name>.command and
+# .event) runs whatever core.hooksPath says, and hook.<event>.enabled=false turns every hook of that event off
+# (git-config(1); of_architect, msg 01a202ea-781a)
+HOOK_EVENTS = ("applypatch-msg", "commit-msg", "fsmonitor-watchman", "p4-changelist", "p4-post-changelist",
+               "p4-pre-submit", "p4-prepare-changelist", "post-applypatch", "post-checkout", "post-commit",
+               "post-index-change", "post-merge", "post-receive", "post-rewrite", "post-update", "pre-applypatch",
+               "pre-auto-gc", "pre-commit", "pre-merge-commit", "pre-push", "pre-rebase", "pre-receive",
+               "prepare-commit-msg", "proc-receive", "push-to-checkout", "reference-transaction", "sendemail-validate",
+               "update")
 
 
 def _git_cmd(tree, extra=()):
     """The system's git in TREE with every setting that keeps the repository's programs from running (_git, _blob)."""
     if not os.path.isfile(SYSTEM_GIT):
         raise Refused("no system git (/usr/bin/git) on this machine")
-    return [SYSTEM_GIT, "-C", tree, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+    hooks = [x for ev in HOOK_EVENTS for x in ("-c", f"hook.{ev}.enabled=false")]
+    return [SYSTEM_GIT, "-C", tree, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", *hooks,
             "-c", "diff.external=", "-c", "core.pager=cat", "-c", "protocol.allow=never", "-c", "gc.auto=0",
             "-c", "maintenance.auto=false", "-c", "diff.ignoreSubmodules=none", "-c", "submodule.recurse=false",
-            "-c", "core.commitGraph=false",
+            "-c", "core.commitGraph=false", "-c", "core.alternateRefsCommand=",
             *extra]
 
 
@@ -360,6 +376,17 @@ def _no_filters(tree):
         out += ["-c", f"filter.{n}.smudge=", "-c", f"filter.{n}.clean=", "-c", f"filter.{n}.process=",
                 "-c", f"filter.{n}.required=false"]
     return out
+
+
+def _no_config_hooks(tree):
+    """Refused when the configuration names a hook (hook.<name>.command). git runs such a hook whatever
+    core.hooksPath says, and hook.<event>.enabled=false (in _git_cmd) turns it off only from git 2.56: a git that runs
+    them without that switch (2.54 does) would run it during the checkout (of_architect, msg 01a202ea-781a)."""
+    r = _git(tree, "config", "--null", "--name-only", "--get-regexp", r"^hook\.", check=False)
+    named = sorted({k for k in r.stdout.split("\0") if k.startswith("hook.") and k.endswith(".command")})
+    if named:
+        raise Refused(f"the repository's configuration names a hook ({named[0]}), which git may run during the "
+                      "checkout: the owner's")
 
 
 def _owned(tree):
@@ -743,6 +770,7 @@ def _ff(tree, ff_spec, target, api):
         raise Refused(f"the tree is at {to[:12]} already")
     if not _descends(tree, head, to):
         raise Refused(f"{to[:12]} does not fast-forward the tree's {head[:12]}")
+    _no_config_hooks(tree)
     off = _no_filters(tree)  # status runs a clean driver on a file whose stat changed (of_secrets-review on PR 306)
     # never into a submodule's work tree, whose own config names its own drivers (of_architect's third pass on PR 306)
     if _git(tree, "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=dirty", extra=off).stdout.strip():

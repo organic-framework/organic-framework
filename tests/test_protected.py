@@ -175,6 +175,31 @@ class ProtectedFfTest(unittest.TestCase):
         self.assertEqual(self.head(), b)
         self.assertFalse(os.path.exists(marker))
 
+    def test_no_hook_the_configuration_names_runs(self):
+        """git 2.56 runs a hook a repository's configuration names (hook.<name>.command and .event) whatever
+        core.hooksPath says (of_architect, msg 01a202ea-781a, from git-config(1)); hook.<event>.enabled=false on the
+        command line turns it off."""
+        marker = os.path.join(self.d, "hooked")
+        spy = os.path.join(self.d, "hook.sh")
+        with open(spy, "w") as fh:
+            fh.write(f"#!/bin/sh\necho hook >> {marker}\nexit 0\n")
+        os.chmod(spy, 0o755)
+        self.g("config", "hook.spy.command", spy)
+        for ev in ("post-checkout", "reference-transaction", "post-index-change", "post-merge"):
+            self.g("config", "--add", "hook.spy.event", ev)
+        self.write("scripts/other.sh", "#!/bin/sh\necho c\n")
+        b = self.commit("other")
+        ran = os.path.exists(marker)                                                # plain git ran it, from 2.54
+        if ran:
+            os.remove(marker)
+        with self.assertRaises(P.Refused) as cm:                                    # 2.54 has no switch to stop it
+            self.ff(b)
+        self.assertIn("names a hook", str(cm.exception))
+        self.assertEqual(self.head(), self.a)
+        self.assertFalse(os.path.exists(marker))
+        self.assertIn("hook.post-checkout.enabled=false", P._git_cmd(self.wt))     # 2.56's switch, a second layer
+        self.assertEqual(P._env()["GIT_ALLOW_PROTOCOL"], "none")
+
     def test_a_value_does_not_name_a_filter_and_a_forged_blob_is_refused(self):
         """of_architect on organic-framework PR 306: a value holding ` x.clean ` made the parsing name another driver,
         so x's smudge ran; and a loose object overwritten in place put other content under the reviewed id."""
