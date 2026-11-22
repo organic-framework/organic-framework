@@ -1229,10 +1229,21 @@ class PositionReplyTest(unittest.TestCase):
 
     def test_the_asked_position_answers_others_do_not(self):
         rows = [self.q(1, "Drain node 3 now?"),
-                ev(2, "of.agent_message_in", "k8s_keeper", 2, "S", **{"from": "acme:acme_org"}, via="relay"),
-                ev(3, "of.agent_message_in", "k8s_keeper", 3, "S", **{"from": "acme:platform_owner"}, via="relay")]
+                ev(2, "of.agent_message_in", "k8s_keeper", 2, "S", **{"from": "acme:acme_org"}, via="relay",
+                   reply_to="e01"),
+                ev(3, "of.agent_message_in", "k8s_keeper", 3, "S", **{"from": "acme:platform_owner"}, via="relay"),
+                ev(4, "of.agent_message_in", "k8s_keeper", 4, "S", **{"from": "acme:platform_owner"}, via="relay",
+                   reply_to="e01")]
         a = of_asks.project(rows)[0]
-        self.assertEqual((a["state"], a["closed_by"]), ("answered", "e03"))
+        # the asked position's message that names the ask answers it; one that names none, or another sender's,
+        # does not (a user organization's structure keeper, message 01a2051e-9a34: an unrelated message from the
+        # unit owner, delivered after the ask, closed it)
+        self.assertEqual((a["state"], a["closed_by"]), ("answered", "e04"))
+
+    def test_a_message_naming_no_ask_closes_none(self):
+        rows = [self.q(1, "Drain node 3 now?"),
+                ev(2, "of.agent_message_in", "k8s_keeper", 2, "S", **{"from": "acme:platform_owner"}, via="relay")]
+        self.assertEqual(of_asks.project(rows)[0]["state"], "open")
 
     def test_reply_to_names_one_of_several(self):
         rows = [self.q(1, "Drain node 3 now?"), self.q(2, "Rotate the etcd certs?"),
