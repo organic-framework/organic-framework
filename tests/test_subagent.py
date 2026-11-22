@@ -269,6 +269,78 @@ class SubagentTest(unittest.TestCase):
         self.assertEqual(g.check(d, exe=None, run=runner(), out=io.StringIO()) if not __import__("shutil").which(
             "gitleaks") else 1, 1)
 
+    def test_the_scan_remembers_clean_content_and_keeps_progress(self):
+        """A user organization's structure keeper (message 01a20537-12ad): a repository too large to scan within the
+        timeout refused every review. Clean content is remembered (by version, rules, path and content), only the
+        rest is scanned, and a run that runs out of time keeps what it scanned and still fails closed."""
+        import io
+        import tempfile
+        import of_gitleaks_check as g
+        with tempfile.TemporaryDirectory() as d:
+            d = os.path.realpath(d)
+            snap, cache = os.path.join(d, "snap"), os.path.join(d, "cache", "clean")
+            os.makedirs(os.path.join(snap, "src"))
+            for i in range(5):
+                with open(os.path.join(snap, "src", f"f{i}.py"), "w") as fh:
+                    fh.write(f"x = {i}\n")
+            scanned = []
+
+            def run(argv, **kw):
+                if argv[1] == "version":
+                    return subprocess.CompletedProcess(argv, 0, stdout="8.30.1\n")
+                root = argv[2]
+                files = sorted(os.path.relpath(os.path.join(a, f), root) for a, _, fs in os.walk(root) for f in fs)
+                scanned.append(files)
+                found = [{"File": os.path.join(root, f), "StartLine": 1, "RuleID": "r"} for f in files
+                         if open(os.path.join(root, f)).read().startswith("KEY")]
+                with open(argv[argv.index("--report-path") + 1], "w") as fh:
+                    json.dump(found, fh)
+                return subprocess.CompletedProcess(argv, 0)
+            go = lambda: g.check(snap, exe="/bin/true", run=run, out=io.StringIO(), cache=cache)  # noqa: E731
+            self.assertEqual(go(), 0)
+            self.assertEqual(sum(len(x) for x in scanned), 5)
+            scanned.clear()
+            self.assertEqual(go(), 0)
+            self.assertEqual(scanned, [])                                    # nothing new: no scan at all
+            with open(os.path.join(snap, "src", "f1.py"), "w") as fh:
+                fh.write("KEY = 1\n")
+            out = io.StringIO()
+            self.assertEqual(g.check(snap, exe="/bin/true", run=run, out=out, cache=cache), 1)
+            self.assertEqual(scanned, [[os.path.join("src", "f1.py")]])      # only the changed file
+            self.assertIn("src/f1.py:1:r", out.getvalue())
+            scanned.clear()
+            self.assertEqual(go(), 1)                                        # a finding is never remembered clean
+            # out of time: the scanned batch is kept, the run fails closed, the next one goes on
+            for i in range(5, 9):
+                with open(os.path.join(snap, f"g{i}.py"), "w") as fh:
+                    fh.write("y = 1\n" * (i * 1000))
+            os.remove(os.path.join(snap, "src", "f1.py"))
+            calls = []
+
+            def slow(argv, **kw):
+                if argv[1] != "version":
+                    calls.append(1)
+                    if len(calls) > 1:
+                        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+                return run(argv, **kw)
+            with mock.patch.object(g, "BATCH_FILES", 1):
+                out = io.StringIO()
+                self.assertEqual(g.check(snap, exe="/bin/true", run=slow, out=out, cache=cache), 1)
+                self.assertIn("3 of 4 files not scanned yet", out.getvalue())
+                scanned.clear()
+                self.assertEqual(go(), 0)
+                self.assertEqual(sum(len(x) for x in scanned), 3)            # the kept one is not scanned again
+            # a link at the cache's name: nothing is read from or written through it
+            target = os.path.join(d, "elsewhere")
+            with open(target, "w") as fh:
+                fh.write("")
+            os.remove(cache)
+            os.symlink(target, cache)
+            scanned.clear()
+            self.assertEqual(go(), 0)
+            self.assertEqual(sum(len(x) for x in scanned), 8)                # remembers nothing: scans all
+            self.assertEqual(open(target).read(), "")
+
     def test_what_a_patch_may_not_change(self):
         """RFC 0008 §3.3 (of_review on PR 336): agent settings and instructions, git control, CI, a new or converted
         link, a newly executable file; one test per class, each naming the path."""
@@ -405,7 +477,7 @@ class SubagentTest(unittest.TestCase):
             self.assertNotEqual(os.path.realpath(copy), os.path.realpath(fake))
             seen = []
             with mock.patch.dict(os.environ, {"OF_GITLEAKS": fake}), mock.patch.object(g, "PINNED_PATH", fake), \
-                    mock.patch.object(g, "_check", lambda folder, exe, run, out: seen.append(exe) or 0):
+                    mock.patch.object(g, "_check", lambda folder, exe, run, out, cache=None: seen.append(exe) or 0):
                 self.assertEqual(g.check(self.tmp.name, out=io.StringIO()), 0)
             self.assertTrue(seen and seen[0].endswith("/gitleaks") and not seen[0].startswith(self.tmp.name))
         d = os.path.join(self.tmp.name, "scan")
