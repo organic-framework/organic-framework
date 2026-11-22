@@ -331,6 +331,34 @@ class HostContours(unittest.TestCase):
                 with self.assertRaisesRegex(C.Refusal, "did not answer"):
                     C.authorized_key_sources("owner", str(home), 1000, invoke)
 
+    def test_camelcase_authorized_keys_command_refuses(self):
+        config = "AuthorizedKeysFile .ssh/authorized_keys\nAuthorizedKeysCommand /usr/bin/lookup %u\n"
+        invoke = Mock(return_value=Mock(stdout=config))
+        with patch.object(C.os, "geteuid", return_value=0):
+            with self.assertRaisesRegex(C.Refusal, "disable AuthorizedKeysCommand"):
+                C.check_key_sources("owner", "/home/alex", 1000, invoke)
+
+    def test_camelcase_trusted_user_ca_refuses(self):
+        config = "AuthorizedKeysFile .ssh/authorized_keys\nTrustedUserCAKeys /etc/ssh/user_ca.pub\n"
+        invoke = Mock(return_value=Mock(stdout=config))
+        with patch.object(C.os, "geteuid", return_value=0):
+            with self.assertRaisesRegex(C.Refusal, "/etc/ssh/user_ca.pub"):
+                C.authorized_key_sources("owner", "/home/alex", 1000, invoke)
+
+    def test_camelcase_safe_key_sources_return_configured_files(self):
+        config = ("AuthorizedKeysFile .ssh/AdminKeys /etc/ssh/keys/%u\n"
+                  "AuthorizedKeysCommand none\nTrustedUserCAKeys none\n")
+        invoke = Mock(return_value=Mock(stdout=config))
+        with patch.object(C.os, "geteuid", return_value=0):
+            self.assertEqual(C.authorized_key_sources("owner", "/home/alex", 1000, invoke),
+                             ([Path("/home/alex/.ssh/AdminKeys"), Path("/etc/ssh/keys/owner")], "none"))
+
+    def test_sshd_output_without_authorized_keys_file_refuses(self):
+        invoke = Mock(return_value=Mock(stdout="AuthorizedKeysCommand none\nTrustedUserCAKeys none\n"))
+        with patch.object(C.os, "geteuid", return_value=0):
+            with self.assertRaisesRegex(C.Refusal, "output could not be read"):
+                C.authorized_key_sources("owner", "/home/alex", 1000, invoke)
+
     def test_a_trusted_user_ca_refuses(self):
         invoke = Mock(return_value=Mock(stdout="authorizedkeysfile .ssh/authorized_keys\ntrustedusercakeys /etc/ssh/user_ca.pub\n"))
         with patch.object(C.os, "geteuid", return_value=0):
