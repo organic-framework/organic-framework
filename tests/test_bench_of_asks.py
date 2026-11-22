@@ -1,9 +1,11 @@
 """of-asks at work as a Bench package: Bench's first slice, parts 4 and 5 (organic-framework-build
 reports/framework/metamethod/11-first-slice.md). Part 4: the setting escalate_after changes when an unanswered routed
-card rises. Part 5: a hook before the module "file" keeps a card unfiled, and the record names it. The package itself
-is the repository organic-framework/of-asks and Bench is organic-framework/bench (of_bench); the few package files the
-tests need are written into a temporary folder, and Bench is imported from BENCH_HOME (default ~/.local/share/bench);
-without Bench they are skipped."""
+card rises. Part 5: a hook before the module "file" keeps a card unfiled, and the record names it; from a Claude Code
+session the decision comes from the listener's hooks door. The package itself is the repository
+organic-framework/of-asks and Bench is organic-framework/bench (of_bench); the few package files the tests need are
+written into a temporary folder. Bench's checkout comes from OF_TEST_BENCH, named in the test home's owner.yaml as
+tests/test_of_method.py does; without one the module is skipped. These tests evaluate Lua in their own process, so
+they turn Bench's OS sandbox off (bench.OUTER), as of_bench's tests do."""
 import argparse
 import importlib.machinery
 import importlib.util
@@ -16,19 +18,33 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, ".."))
 sys.path.insert(0, os.path.join(ROOT, "bin"))
-BENCH_HOME = os.path.expanduser(os.environ.get("BENCH_HOME") or "~/.local/share/bench")
-for _d in (BENCH_HOME, os.path.join(BENCH_HOME, "bin")):
-    if os.path.isdir(_d) and _d not in sys.path:
-        sys.path.append(_d)
 
 import of_asks_package  # noqa: E402
 import of_pulse  # noqa: E402
 
-try:
-    import bench  # noqa: E402
-    import of_method  # noqa: E402
-except ImportError:
-    bench = of_method = None
+BENCH = os.environ.get("OF_TEST_BENCH")
+bench = of_method = None
+
+
+def setUpModule():
+    global bench, of_method
+    if not (BENCH and os.path.isfile(os.path.join(BENCH, "bin", "bench.py"))):
+        raise unittest.SkipTest("no Bench checkout (set OF_TEST_BENCH to one)")
+    import importlib
+    import of_init
+    of_init.write_owner_setting("bench", os.path.realpath(BENCH))
+    import of_method as m
+    of_method = importlib.reload(m)
+    import bench as b
+    bench = b
+    bench.FRAMEWORK = of_method.on_install
+    bench.OUTER = "off"
+
+
+def tearDownModule():
+    import of_init
+    of_init.write_owner_setting("bench", None)
+
 
 PKG_FILES = {
     "Benchfile.spec": 'package { name = "of-asks", version = "1.0.0", main = "main.lua" }\n',
@@ -39,8 +55,6 @@ PKG_FILES = {
 
 
 def have_bench():
-    if bench is None:   # skipped, in CI too, until OF finds Bench there (of_platform's to settle; of_release)
-        return False
     found = any(os.path.isfile(os.path.join(d, n)) for n in ("lua5.4", "luajit", "lua5.1")
                 for d in bench.RUNTIME_DIRS)
     if not found and os.environ.get("CI"):
@@ -135,6 +149,9 @@ class BeforeFileTest(unittest.TestCase):
     record names the hook, and filing runs on the module as extended for every other card."""
 
     def setUp(self):
+        # these run the hooks in this process, as a terminal does; a session's own path is its own test below
+        self._session = {k: os.environ.pop(k) for k in ("CLAUDE_CODE_SESSION_ID", "OF_DOOR_CALLER") if k in os.environ}
+        self.addCleanup(os.environ.update, self._session)
         if not have_bench():
             self.skipTest("no Lua runtime on this machine")
         loader = importlib.machinery.SourceFileLoader("of_cli_bench", os.path.join(ROOT, "bin", "of"))
@@ -142,7 +159,8 @@ class BeforeFileTest(unittest.TestCase):
         loader.exec_module(self.of)
         self.org = project({"extensions/of-asks/finance-review.lua": HOOK})
         self.of._load_quiet = lambda: []
-        self.of._me = lambda positions, sender: {"name": "k8s_keeper", "system": "k8s", "_root": self.org}
+        self.of._me = lambda positions, sender: {"name": "k8s_keeper", "system": "k8s", "_root": self.org,
+                                                 "_org": "acme"}
         self.of._asker_session = lambda me, sender: None
         import of_events
         self.emitted = []
@@ -198,6 +216,47 @@ class BeforeFileTest(unittest.TestCase):
             self.assertIn("import of of_method", said[0])
         finally:
             sys.modules["of_method"] = saved
+
+    def test_from_a_session_the_listener_decides(self):
+        # of_server's ruling, message 01a20566-e23c: never the asking session's own Lua; the listener's hooks door
+        asked = []
+
+        def door(org, package, module, card):
+            asked.append((org, package, module, card))
+            return {"decision": "stop", "by": 'extensions/of-asks/finance-review.lua: before "file"',
+                    "reason": "money cards go to finance first"}
+        env = {"CLAUDE_CODE_SESSION_ID": "s1"}
+        saved = dict(os.environ)
+        os.environ.update(env)
+        os.environ.pop("OF_DOOR_CALLER", None)
+        try:
+            g = of_asks_package.before_file(self.org, {"question": "Pay?", "tags": ["money"], "extra": 1}, org="acme",
+                                            ask=door)
+            self.assertEqual(g["decision"], "stop")
+            self.assertEqual(asked, [("acme", "of-asks", "file", {"question": "Pay?", "tags": ["money"]})])
+            os.environ["OF_DOOR_CALLER"] = "codex"   # a Codex session's of ask runs in the listener: in-process
+            asked.clear()
+            self.assertEqual(of_asks_package.before_file(self.org, {"tags": []}, org="acme", ask=door)["decision"],
+                             "pass")
+            self.assertEqual(asked, [])
+            del os.environ["OF_DOOR_CALLER"]
+            # a door that cannot be reached stops the card, never passes it
+            import of_hookdoor
+            g = of_asks_package.before_file(
+                self.org, {"tags": []}, org="acme",
+                ask=lambda *a: of_hookdoor.ask(*a, path=os.path.join(self.org, "no", "hooks.sock"), timeout=2))
+            self.assertEqual(g["decision"], "stop")
+            self.assertIn("cannot be reached", g["reason"])
+            # with no of-asks in the lock, a session asks nothing
+            bare = tempfile.mkdtemp()
+            try:
+                self.assertEqual(of_asks_package.before_file(bare, {"tags": ["money"]}, ask=door),
+                                 {"decision": "pass", "by": None})
+            finally:
+                shutil.rmtree(bare, ignore_errors=True)
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
 
     def test_a_lock_that_names_it_but_cannot_be_read_stops_the_card(self):
         with open(os.path.join(self.org, bench.LOCK), "a") as f:

@@ -5189,7 +5189,7 @@ def _before_file(me, text, opts, tags, to, args, task):
             "tags_guessed": [] if args.tags else names,
             "to": to, "from": me.get("name"), "blocking": bool(args.blocking), "due": args.due or None,
             "task": bool(task)}
-    gate = of_asks_package.before_file(me.get("_root"), card)
+    gate = of_asks_package.before_file(me.get("_root"), card, org=me.get("_org"))
     if gate.get("decision") == "pass":
         return None
     import of_events
