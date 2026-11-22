@@ -29,6 +29,9 @@ EVENTS = frozenset({
     # development loops: each machine's pulse tells the owner, the doers and the conductor it holds of a stalled loop
     # (docs/diagnose.md 2.29), so it needs the loop's events wherever they were recorded (of_platform, 2026-11-16)
     "of.loop_hypothesis", "of.loop_run", "of.loop_decision", "of.loop_cost", "of.loop_run_located", "of.loop_wait",
+    # each machine's spend per hour, account and position, so `of capacity spend --by` on any machine shows them all
+    # (of_capacity, 2026-11-22: the founder found the agent host's spend missing from the laptop's day and hour views)
+    "of.spend_hours",
 })
 PREFIXES = ("of.handover_", "of.diff_")
 
