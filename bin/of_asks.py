@@ -556,9 +556,10 @@ def may_settle(ask, by):
 def closed_by_agent(ask):
     """An answered question to the owner that a named agent closed, not his own answer. Only a closure that names its
     position counts: the owner's own paths record `owner`, `founder`, nothing or `of`, and the rows folded before this
-    field have none, so none of those reads as an agent's (of_review on PR 514)."""
+    field have none, so none of those reads as an agent's; an agent whose position did not resolve (`agent`) is an
+    agent's closure all the same (of_review on PR 514)."""
     who = ask.get("closed_by_who")
-    return ask.get("state") == "answered" and isinstance(who, str) and who not in ("owner", "founder", "of", "agent") \
+    return ask.get("state") == "answered" and isinstance(who, str) and who not in ("owner", "founder", "of") \
         and ask.get("to") in OWNER_ADDRESSES
 
 

@@ -830,6 +830,7 @@ class GuardBashTest(unittest.TestCase):
                   "python3 -c " + q + "import of_relay_client as r; r.herdr_deliver('p', 'yes', None, 'owner')" + q,
                   "python3 -c " + q + "import of_asks_chat; of_asks_chat.answer(c, a, p, 'x', 'y', {})" + q,
                   "python3 -c " + q + "import of_events; of_events.emit('of.human_prompt', {})" + q,
+                  "python3 -c " + q + "import of_events; of_events.emit('ask_handed', {'to': 'x', 'by': 'owner'})" + q,
                   "python3 -c " + q + "import of_events; of_events.emit('diff_approved', {})" + q]
         allowed = ["python3 -c " + q + "import of_asks_answer; print(of_asks_answer.options({}))" + q,
                    "python3 -c " + q + "import of_events; of_events.emit('agent_question', {})" + q,

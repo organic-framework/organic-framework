@@ -3036,7 +3036,7 @@ _TOOL_TOKEN_CODE = re.compile(r"\bof_tools\b[\s\S]*?\b(?:shared_token\s*\(|heade
 # G24 in code: what only a person does, written by code (a tripwire; docs/guard.md G24): the asks popup's and the
 # conductor chat's writers, the relay's typing as a person's channel, and an emit or record of the events that say a
 # person answered, typed, or approved (of_server's trust review of organic-framework PR 168)
-_PERSON_ACT_NAMES = r"['\"](?:of\.)?(?:agent_question_answered|human_prompt|prompt_origin|diff_approved)['\"]"
+_PERSON_ACT_NAMES = r"['\"](?:of\.)?(?:agent_question_answered|human_prompt|prompt_origin|diff_approved|ask_handed)['\"]"
 _PERSON_ACT_CODE = re.compile(
     r"\bof_asks_answer\b[\s\S]*?\b(?:record|record_answer|owner_mark|not_a_question|answer_blocked|deliver)\s*\("
     r"|\bof_asks_tui\b[\s\S]*?\bleave\s*\("   # the popup records its own answers and marks (of_review on PR 398)
