@@ -191,16 +191,38 @@ def _server_keys(path=None):
     return [os.path.expanduser(str(x)) for x in out if x]
 
 
+# the files and folders Claude Code runs or reads as configuration outside the sandbox, in any folder: settings (and the
+# hooks in them), hook scripts, skills, agents, commands, workflows and MCP servers
+PROTECTED_EDITS = ("**/.claude/settings.json", "**/.claude/settings.local.json", "**/.claude/hooks/**",
+                   "**/.claude/skills/**", "**/.claude/agents/**", "**/.claude/commands/**", "**/.claude/workflows/**",
+                   "**/.mcp.json")
+
+
+def _is_checkout(d):
+    return os.path.isfile(os.path.join(d, "bin", "of")) and os.path.exists(os.path.join(d, ".git"))
+
+
 def of_checkouts():
-    """The checkouts OF itself runs from: the one `~/.local/bin/of` resolves into, where the units (of-server, of-relay,
+    """The checkouts OF itself runs from: the one `~/.local/bin/of` leads to, where the units (of-server, of-relay,
     of-listen) and bin/of-hook run outside any sandbox, and the one this file is in, when they differ. A session that
     writes one, its .git included, changes code that then runs unsandboxed (of_agent-server's finding on the agent host,
-    message 01a202cd-f226; of_server's Gaps entry in docs/guard.md, message 01a202d3-e7c8)."""
+    message 01a202cd-f226; of_server's Gaps entry in docs/guard.md, message 01a202d3-e7c8). `~/.local/bin/of` is a
+    symbolic link, or a wrapper script that execs a checkout's bin/of (deploy/host/plane.py); a folder counts only when
+    it holds bin/of and .git, so a wrapper never makes ~/.local the checkout and denies OF's state folder
+    (of_secrets-review on PR 509)."""
     link = os.path.expanduser("~/.local/bin/of")
-    out = [os.path.dirname(os.path.dirname(os.path.realpath(__file__)))]
-    if os.path.exists(link):
-        out.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(link))))
-    return list(dict.fromkeys(out))
+    found = []
+    if os.path.islink(link):
+        found.append(os.path.dirname(os.path.dirname(os.path.realpath(link))))
+    elif os.path.isfile(link):
+        try:
+            with open(link, errors="replace") as fh:
+                text = fh.read(4096)
+        except OSError:
+            text = ""
+        found += [os.path.realpath(m) for m in re.findall(r"(/[^\s'\"]*)/bin/of(?=[\s'\"]|$)", text, re.M)]
+    found.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+    return [d for d in dict.fromkeys(found) if _is_checkout(d)] or [found[-1]]
 
 
 def sandbox_settings(deny=None, platform=None, scratch=None):
@@ -283,6 +305,10 @@ def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=
         perms["blockWritesOutsideWorkingDirectories"] = True
         rules = perms.setdefault("deny", [])
         rules += [f"Edit(/{c}/**)" for c in of_checkouts()]
+        # and never, in any folder, what Claude Code itself runs or reads as configuration outside the sandbox: one
+        # Write of a hook into the session's own .claude/settings.local.json would let its next tool call write the
+        # checkout (of_secrets-review on PR 509; docs/guard.md, Gaps). The sandbox keeps these from Bash already.
+        rules += [f"Edit({x})" for x in PROTECTED_EDITS if f"Edit({x})" not in rules]
         # the Read tool runs outside the sandbox, so it reads what denyRead keeps from Bash: each such path is a Read
         # deny rule too (of_server, message 01a202e4-62f9). An account's projects folder also holds the session's own
         # saved tool results, which Claude Code opens with Read, and a deny cannot carve them out (of_review on PR

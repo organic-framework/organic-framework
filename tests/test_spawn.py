@@ -347,6 +347,8 @@ class SandboxBlock(unittest.TestCase):
         rules = s["permissions"]["deny"]
         self.assertEqual(rules[:len(deny) + len(cos)], deny + [f"Edit(/{c}/**)" for c in cos])
         self.assertIs(s["permissions"]["blockWritesOutsideWorkingDirectories"], True)
+        for x in ("**/.claude/settings.local.json", "**/.claude/hooks/**", "**/.mcp.json"):   # PR 509 review
+            self.assertIn(f"Edit({x})", rules)
         # the Read tool runs outside the sandbox, so it reads what denyRead keeps from Bash (of_server, 01a202e4-62f9)
         for p in box["filesystem"]["denyRead"]:
             if p == "/home/alex/.claude/projects":   # its own saved tool results stay open: transcripts only (PR 507)
@@ -376,7 +378,14 @@ class SandboxBlock(unittest.TestCase):
             os.makedirs(os.path.join(home, ".local", "bin"))
             open(os.path.join(home, "co", "bin", "of"), "w").close()
             os.symlink(os.path.join(home, "co", "bin", "of"), os.path.join(home, ".local", "bin", "of"))
+            self.assertEqual(of_spawn.of_checkouts(), [here])                # co holds no .git: not a checkout
+            os.makedirs(os.path.join(home, "co", ".git"))
             self.assertEqual(of_spawn.of_checkouts(), [os.path.realpath(os.path.join(home, "co")), here])  # both
+            os.remove(os.path.join(home, ".local", "bin", "of"))           # plane.py's wrapper, a file of its own
+            with open(os.path.join(home, ".local", "bin", "of"), "w") as fh:
+                fh.write(f'#!/bin/sh\n# written by deploy/host/plane.py\nexec /usr/bin/python3 {home}/co/bin/of "$@"\n')
+            self.assertEqual(of_spawn.of_checkouts(), [os.path.realpath(os.path.join(home, "co")), here])
+            self.assertNotIn(os.path.realpath(os.path.join(home, ".local")), of_spawn.of_checkouts())
 
     def test_other_sessions_scratch_is_denied_and_its_own_allowed(self):
         """Tried on the agent host (2026-11-20): the temp root must stay writable (the sandbox's sockets, $TMPDIR),
