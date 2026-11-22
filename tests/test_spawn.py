@@ -335,10 +335,11 @@ class WorkCloneTest(unittest.TestCase):
                 fh.write(f"orgs:\n  - name: ofb\n    path: {svc}\n    work_clone: {clone}\n  - name: other\n    path: x\n")
             with mock.patch.dict(os.environ, {"OF_ORGS": orgs}), \
                     mock.patch.object(of_spawn, "_accounts_dirs", return_value=[]):
-                absent = json.loads(of_spawn.session_settings(None, [], platform="linux"))
+                absent = json.loads(of_spawn.session_settings(None, [], platform="linux", org="ofb"))
                 os.makedirs(os.path.join(clone, ".git"))
-                s = json.loads(of_spawn.session_settings(None, [], platform="linux"))
-                mac = json.loads(of_spawn.session_settings(None, [], platform="darwin") or "{}")
+                s = json.loads(of_spawn.session_settings(None, [], platform="linux", org="ofb"))
+                other = json.loads(of_spawn.session_settings(None, [], platform="linux", org="other"))
+                mac = json.loads(of_spawn.session_settings(None, [], platform="darwin", org="ofb") or "{}")
         f = absent["sandbox"]["filesystem"]
         self.assertNotIn(clone, f["allowWrite"])                                      # (1) absent: nothing more
         self.assertIn(svc, f["denyWrite"])                                            # (2) denied all the same
@@ -348,10 +349,23 @@ class WorkCloneTest(unittest.TestCase):
         self.assertIn(svc, f["denyWrite"])                                            # (2)
         self.assertIn(f"Edit(/{svc}/**)", rules)
         for x in (".git/config", ".git/hooks", ".git/info", ".git/modules", ".git/worktrees", ".git/config.worktree",
-                  ".git/commondir", ".claude", ".mcp.json"):                          # (3), there or not yet
+                  ".claude", ".mcp.json"):                                            # (3), there or not yet
             self.assertIn(os.path.join(clone, x), f["denyWrite"], x)
             self.assertIn(f"Edit(/{clone}/{x})", rules, x)
+        self.assertNotIn(os.path.join(clone, ".git/commondir"), f["denyWrite"])       # git dies on an empty one
+        of_ = other["sandbox"]["filesystem"]                                           # another organization's session
+        self.assertNotIn(clone, of_["allowWrite"])
+        self.assertNotIn(clone, other["permissions"].get("additionalDirectories", []))
+        self.assertIn(svc, of_["denyWrite"])                                          # every copy stays denied
         self.assertNotIn("sandbox", mac)                                              # Linux only
+
+    def test_a_clone_that_holds_or_lies_in_a_guarded_folder_is_refused(self):
+        """of_review on PR 542, point 4: any organization's path or checkout, OF's own checkout, the home."""
+        entries = [{"name": "a", "path": "/srv/a", "paths": ["/srv/code"]}, {"name": "b", "path": "/srv/b"}]
+        for clone in ("/srv/b", "/srv/b/sub", "/srv", "/srv/code/x", os.path.realpath(os.path.expanduser("~")),
+                      of_spawn.of_checkouts()[0]):
+            self.assertTrue(of_spawn.clone_refused(clone, entries), clone)
+        self.assertIsNone(of_spawn.clone_refused("/work/a-clone", entries))
 
     def test_nothing_outside_the_sandbox_adopts_the_clone(self):
         """(4): the key is read only by the sandbox block; the organization's paths, its registry and its work
@@ -395,7 +409,7 @@ class WorkCloneTest(unittest.TestCase):
             with mock.patch.object(of_asks_answer, "not_the_owner", lambda: False):
                 self.assertEqual(of.main(["org", "set", "ofb", "work_clone", f"{d}/build"]), 2)   # the services' copy
                 self.assertEqual(of.main(["org", "set", "ofb", "work_clone", f"{d}/clone"]), 0)
-                self.assertEqual(of_spawn.work_clones(orgs), [(f"{d}/clone", f"{d}/build")])
+                self.assertEqual(of_spawn.work_clones(orgs), [("ofb", f"{d}/clone", f"{d}/build")])
                 self.assertEqual(of.main(["org", "set", "ofb", "work_clone", "none"]), 0)
                 self.assertEqual(of_spawn.work_clones(orgs), [])
 

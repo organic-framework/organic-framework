@@ -168,8 +168,10 @@ def _accounts_dirs():
 # clone: hooks, config (a hook path, a filter, an fsmonitor), info (attributes, excludes), submodules, worktrees (their
 # config.worktree and commondir), and the folder's own Claude Code settings (of_server's conditions for a work clone,
 # message 01a2044e-a1e4; hand-over ab9ed07b)
-CLONE_CONTROL = (".git/config", ".git/config.worktree", ".git/commondir", ".git/hooks", ".git/info", ".git/modules",
-                 ".git/worktrees", ".claude", ".mcp.json")
+# .git/commondir is left out: absent in an ordinary clone, a denied absent path is covered by an empty file on Linux,
+# and git dies on an empty commondir (of_review on PR 542, probe 5)
+CLONE_CONTROL = (".git/config", ".git/config.worktree", ".git/hooks", ".git/info", ".git/modules", ".git/worktrees",
+                 ".claude", ".mcp.json")
 
 
 def _orgs_file():
@@ -177,13 +179,31 @@ def _orgs_file():
                                                      os.path.expanduser("~/.config/of"), "orgs.yaml")
 
 
+def clone_refused(clone, entries, base=None):
+    """Why CLONE may not be a work clone, or None: it is, holds or lies in any organization's path or checkout (orgs.yaml
+    `path`, `paths`), the checkout OF runs from, or the home itself; a sandbox's allowWrite would open those (of_review
+    on PR 542, point 4). ENTRIES: orgs.yaml's organization entries; BASE: the folder relative paths start from."""
+    home = os.path.realpath(os.path.expanduser("~"))
+    if clone == home:
+        return "the home folder itself"
+    guarded = list(of_checkouts())
+    for o in entries:
+        for q in [o.get("path")] + list(o.get("paths") or []):
+            if q:
+                guarded.append(os.path.realpath(os.path.join(base or "", os.path.expanduser(str(q)))))
+    for g in guarded:
+        if clone == g or clone.startswith(g + os.sep) or g.startswith(clone + os.sep):
+            return f"it is, holds or lies in {g}"
+    return None
+
+
 def work_clones(orgs_file=None):
-    """[(the work clone, the organization's services' copy)] for each organization whose entry in this machine's
-    orgs.yaml names a `work_clone` (card OF-265, the founder's yes; hand-over ab9ed07b): a clone of its repository a
-    session may write from its sandbox, while the copy its services and the registry run from (`path`) stays denied.
-    orgs.yaml is the owner's file, which no agent writes (docs/guard.md G33); the registry follows agents' pushes, so it
-    never names one. Nothing outside the sandbox reads this key: no work folder, document path or importer adopts the
-    clone."""
+    """[(organization, its work clone, its services' copy)] for each organization whose entry in this machine's
+    orgs.yaml names a `work_clone` (card OF-265, the founder's yes; hand-over ab9ed07b): a clone of its repository its
+    own sessions may write from their sandbox, while the copy its services and the registry run from (`path`) stays
+    denied. orgs.yaml is the owner's file, which no agent writes (docs/guard.md G33); the registry follows agents'
+    pushes, so it never names one. A clone that clone_refused refuses is left out. Outside the sandbox only `of diff`,
+    in a session, reads it (of_server, message 01a20471-8284)."""
     import yaml
     f = orgs_file or _orgs_file()
     try:
@@ -192,14 +212,15 @@ def work_clones(orgs_file=None):
     except (OSError, ValueError, yaml.YAMLError):
         return []
     base = os.path.dirname(os.path.abspath(f))
+    entries = [o for o in ((doc.get("orgs") if isinstance(doc, dict) else None) or []) if isinstance(o, dict)]
     out = []
-    for o in (doc.get("orgs") if isinstance(doc, dict) else None) or []:
-        if not isinstance(o, dict) or not o.get("work_clone") or not o.get("path"):
+    for o in entries:
+        if not o.get("work_clone") or not o.get("path"):
             continue
         clone = os.path.realpath(os.path.join(base, os.path.expanduser(str(o["work_clone"]))))
         svc = os.path.realpath(os.path.join(base, os.path.expanduser(str(o["path"]))))
-        if clone != svc and not clone.startswith(svc + os.sep) and not svc.startswith(clone + os.sep):
-            out.append((clone, svc))
+        if not clone_refused(clone, entries, base):
+            out.append((o.get("name") or os.path.basename(svc), clone, svc))
     return out
 
 
@@ -264,7 +285,7 @@ def of_checkouts():
     return list(dict.fromkeys([d for d in found if _is_checkout(d)] + [own]))
 
 
-def sandbox_settings(deny=None, platform=None, scratch=None):
+def sandbox_settings(deny=None, platform=None, scratch=None, org=None):
     """The session's `sandbox` block on Linux, else None. DENY: its Read/Edit deny rules (`Read(//abs/path/**)`).
     SCRATCH: (its working folder, its session id), so its own scratch folder stays readable while the other sessions'
     are denied."""
@@ -317,9 +338,9 @@ def sandbox_settings(deny=None, platform=None, scratch=None):
     # its .git's objects and refs are code too (of_checkouts; a host position works in its own clone, never in it)
     # a work clone the owner named: writable, its control files never, and the services' copy denied (hand-over
     # ab9ed07b); a clone not there gets nothing, its services' copy is denied all the same
-    clones = work_clones()
-    writable = [c for c, _ in clones if os.path.isdir(c)]
-    guarded = [svc for _, svc in clones] + [os.path.join(c, x) for c in writable for x in CLONE_CONTROL]
+    clones = work_clones()   # ORG's clone only; every organization's services' copy denied (of_review on PR 542)
+    writable = [c for o, c, _ in clones if o == org and org and os.path.isdir(c)]
+    guarded = [svc for _, _, svc in clones] + [os.path.join(c, x) for c in writable for x in CLONE_CONTROL]
     return {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
             "autoAllowBashIfSandboxed": True,
             "filesystem": {"denyRead": denied,
@@ -331,7 +352,7 @@ def sandbox_settings(deny=None, platform=None, scratch=None):
                         "allowedDomains": list(SANDBOX_DOMAINS)}}
 
 
-def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=None):
+def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=None, org=None):
     """The one --settings JSON: AGENT_SETTINGS, the memory directory (bin/of_memory.py, RFC 0006), the credential
     deny rules, on Linux the sandbox block (sandbox_settings), and extra keys such as the tool profile's
     allowedMcpServers and enabledPlugins (of_tools.launch_parts, docs/tools.md §4)."""
@@ -339,7 +360,7 @@ def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=
     s.update(json.loads(memory) if memory else {})
     if deny:
         s.setdefault("permissions", {}).setdefault("deny", []).extend(deny)
-    box = sandbox_settings(deny, platform, scratch)
+    box = sandbox_settings(deny, platform, scratch, org)
     if box:
         s["sandbox"] = box
         # the sandbox binds Bash only; the file tools, MCP servers and command hooks run outside it
@@ -369,10 +390,10 @@ def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=
             perms["additionalDirectories"] = list(box["filesystem"]["allowRead"])
         # the work clone for the file tools too, and its control files and the services' copy denied to them
         clones = work_clones()
-        writable = [c for c, _ in clones if os.path.isdir(c)]
+        writable = [c for o, c, _ in clones if o == org and org and os.path.isdir(c)]
         if writable:
             perms["additionalDirectories"] = list(dict.fromkeys(perms.get("additionalDirectories", []) + writable))
-        for _, svc in clones:
+        for _, _, svc in clones:
             if f"Edit(/{svc}/**)" not in rules:
                 rules.append(f"Edit(/{svc}/**)")
         for c in writable:
@@ -445,7 +466,7 @@ def record_settings(pl, state_dir=None, emit=None, by="of spawn"):
 
 
 def launch_command(cwd, config_dir, sid, name, default_dir, model=None, bypass=True, memory=None, deny=None,
-                   state_dir=None, tools=None, effort=None):
+                   state_dir=None, tools=None, effort=None, org=None):
     """memory: the --settings JSON naming the position's memory directory (bin/of_memory.py, RFC 0006); deny: the
     credential deny rules (deny_rules); tools: (argv, settings keys) of the position's tool profile
     (of_tools.launch_parts). The settings go into one settings file (settings_file)."""
@@ -453,7 +474,7 @@ def launch_command(cwd, config_dir, sid, name, default_dir, model=None, bypass=T
         else [f"CLAUDE_CONFIG_DIR={shlex.quote(config_dir)}"]
     parts = ["cd", shlex.quote(cwd), "&&", *env, "OF_SPAWNED=1", "claude", "--session-id", sid, "-n", name]
     tool_argv, tool_settings = tools or ([], {})
-    settings = session_settings(memory, deny, tool_settings, scratch=(cwd, sid))
+    settings = session_settings(memory, deny, tool_settings, scratch=(cwd, sid), org=org)
     if settings:
         parts += ["--settings", shlex.quote(settings_file(settings, sid, state_dir))]
     parts += [shlex.quote(a) for a in tool_argv]
@@ -501,7 +522,8 @@ def plan(p, positions, agents, bind, systems, org_paths, org_root, want_workspac
             "bypass_ok": (not bypass) or bool(accepted(config_dir)) if accepted else True,
             "deny": list(deny or []),
             "command": launch_command(cwd, config_dir, sid, p["name"], default_dir, model, bypass, memory, deny,
-                                      tools=tools(p["name"], sid, config_dir) if tools else None, effort=effort)}
+                                      tools=tools(p["name"], sid, config_dir) if tools else None, effort=effort,
+                                      org=p.get("_org"))}
 
 
 def git_root(path, exists=os.path.exists, isdir=os.path.isdir):

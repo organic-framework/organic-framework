@@ -28,7 +28,10 @@ The framework defines the schema. Every organization that uses Organic Framework
       server_access: ~/.config/acme/of-server/access.json  # optional: the machine's Cloudflare Access service token
       branches: {storefront: develop}  # optional: a repository's default branch, when OF cannot tell it
       agents: {model: opus, effort: xhigh}  # optional: what OF starts the organization's sessions on
+      work_clone: ~/work/acme-org   # optional, Linux: a clone its sessions may write (`of org set acme work_clone …`)
   ```
+
+- `work_clone` (2026-11-22, `of_platform`; card OF-265, hand-over `ab9ed07b`): a clone of the organization's repository that its own sessions may write from their sandbox on Linux, while the copy its services and the registry run from (`path`) stays denied to them; its git control files, `.claude` and `.mcp.json` are denied, and `of diff check|propose|apply` read and write the registry there, only inside a session's sandbox (who may approve a diff is still read from `path`). The owner's alone (`of org set <org> work_clone <folder>|none`, G31, G33), refused for a folder that is, holds or lies in any organization's path or checkout, OF's own checkout or the home. The registry never names it: it follows agents' pushes.
 
 - `branches` (2026-11-11, `of_platform`; the founder: `of import git` read only `main`): `of import git` reads each checkout's default branch. It takes the branch named here for the repository (by its folder name or path), else the remote's default (`origin/HEAD`), else the one of `main`, `master`, `trunk` and `develop` that exists. When none resolves, or several exist with no `origin/HEAD`, it says so for that repository and reads nothing from it. `origin/HEAD` is set when a repository is cloned and does not follow a later change of the remote's default; `git remote set-head origin -a` refreshes it, or name the branch here.
 

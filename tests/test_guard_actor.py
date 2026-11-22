@@ -99,6 +99,9 @@ class ActorLineTest(unittest.TestCase):
                     # an organization's path is the owner's (of_review on PR 427)
                     f"export -n {V} {P}; script -q /dev/null of org set ofb path /tmp/r",
                     f"env -u {V} -u {P} script -q /dev/null python3 bin/of org set ofb path /tmp/r",
+                    # and its work clone, writable from every sandbox of the organization (of_review on PR 542)
+                    f"export -n {V} {P}; script -q /dev/null of org set ofb work_clone /tmp/r",
+                    f"env -u {V} -u {P} script -q /dev/null python3 bin/of org set ofb work_clone /tmp/r",
                     f"export -n {V} {P}; script -q /dev/null of asks --all answered OF-1",
                     f"export -n {V} {P}; printf \"%s\" \"$(script -q /dev/null of asks withdraw OF-1)\"",
                     f"export -n {V} {P}; of send x \"$(script -q /dev/null of asks withdraw OF-1)\"",

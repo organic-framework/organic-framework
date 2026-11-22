@@ -2735,7 +2735,8 @@ def cmd_org(args):
             raise OfError(f"no organization {args.org!r} in {path}")
         for o in shown:
             print(f"{of_init.org_entry_name(o)}: hold {'on' if o.get('hold') else 'off'}, path "
-                  f"{o.get('path') or '(none: joined through a server only)'}")
+                  f"{o.get('path') or '(none: joined through a server only)'}"
+                  + (f", work clone {o['work_clone']}" if o.get("work_clone") else ""))
         return 0
     usage = ("of org set <org> hold on|off | of org set <org> path <its repository's folder> | "
              "of org set <org> work_clone <a clone of it>|none")
@@ -2757,11 +2758,10 @@ def cmd_org(args):
             folder = os.path.realpath(os.path.expanduser(args.value))
             if not os.path.exists(os.path.join(folder, ".git")):
                 raise OfError(f"{args.value}: not a git clone (no .git there)")
-            entry = next((o for o in (doc.get("orgs") or []) if of_init.org_entry_name(o) == args.org), {})
-            svc = os.path.realpath(os.path.expanduser(str(entry.get("path") or ""))) if entry.get("path") else None
-            if svc and (folder == svc or folder.startswith(svc + "/") or svc.startswith(folder + "/")):
-                raise OfError(f"{args.value} is, holds or lies in the organization's path ({svc}): give a clone of "
-                              "its own")
+            import of_spawn
+            why = of_spawn.clone_refused(folder, entries, os.path.dirname(os.path.abspath(path)))
+            if why:   # any organization's path or checkout, OF's own checkout, the home (of_review on PR 542)
+                raise OfError(f"{args.value}: not a work clone: {why}; give a clone of its own")
             home = os.path.realpath(os.path.expanduser("~"))
             value = shown_value = "~" + folder[len(home):] if folder.startswith(home + "/") else folder
     else:
@@ -3009,7 +3009,7 @@ def cmd_resume_command(args):
     d, _ = of_resume.newest_copy(args.session)
     tools = _tool_parts(p["name"], args.session, d, log=lambda m: None) if p and d else None  # its tool profile
     line = of_resume.command(args.session, memory_dir=mem, deny=deny, tools=tools,
-                             defaults=org_agents(p.get("_org")) if p else None)
+                             defaults=org_agents(p.get("_org")) if p else None, org=p.get("_org") if p else None)
     if not line:
         return 1
     try:  # the settings file it just wrote, by its digest, as of spawn records it (of_server, msg 01a2033f-5402)
@@ -5311,8 +5311,9 @@ def _diff_registry(org):
     try:
         import of_spawn
         svc = os.path.realpath(os.path.dirname(os.path.dirname(path)))
-        hit = next((os.path.join(c, "registry", "positions.yaml") for c, copy in of_spawn.work_clones(ORGS_FILE)
-                    if copy == svc and os.path.isfile(os.path.join(c, "registry", "positions.yaml"))), None)
+        hit = next((os.path.join(c, "registry", "positions.yaml") for o, c, copy in of_spawn.work_clones(ORGS_FILE)
+                    if o == org and copy == svc and os.path.isfile(os.path.join(c, "registry", "positions.yaml"))),
+                   None)
     except Exception:  # noqa: BLE001 - no clone to read: the organization's own path
         hit = None
     if hit and not (os.environ.get("CLAUDE_CODE_SESSION_ID") and sys.platform.startswith("linux")):
@@ -5490,7 +5491,10 @@ def _diff_approvers(d, positions):
     if person:
         return {str(person)}
     try:
-        with open(_diff_registry(d["org"])) as fh:
+        # from the organization's own path, never its work clone: a session writes the clone, and who may approve is
+        # no session's to say (of_review on PR 542)
+        regs = {o: p for o, p, _ in org_registries()}
+        with open(regs[d["org"]]) as fh:
             tenant = (yaml.safe_load(fh) or {}).get("tenant")
     except (OSError, yaml.YAMLError, OfError):
         tenant = None

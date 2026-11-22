@@ -51,7 +51,8 @@ def planned(sid, root=None):
     return {}
 
 
-def command(sid, dirs=None, memory_dir=None, plan_root=None, deny=None, state_dir=None, tools=None, defaults=None):
+def command(sid, dirs=None, memory_dir=None, plan_root=None, deny=None, state_dir=None, tools=None, defaults=None,
+            org=None):
     """The shell line that resumes `sid` as it ran, or None when no account holds it (the caller runs the bare one).
     deny: the position's credential deny rules (of_spawn.deny_rules), so a session herdr resumes keeps what of spawn
     gave it (of_capacity, 2026-11-11); with the memory directory they go in one settings file (of_spawn). tools:
@@ -65,7 +66,7 @@ def command(sid, dirs=None, memory_dir=None, plan_root=None, deny=None, state_di
     argv = env + ["claude", "--resume", sid]
     tool_argv, tool_settings = tools or ([], {})
     settings = of_spawn.session_settings(json.dumps({"autoMemoryDirectory": memory_dir}) if memory_dir else None, deny,
-                                         tool_settings, scratch=(None, sid))
+                                         tool_settings, scratch=(None, sid), org=org)
     if settings:
         argv += ["--settings", of_spawn.settings_file(settings, sid, state_dir)]
     argv += list(tool_argv)
