@@ -103,9 +103,16 @@ def session_orgs(conn=None, days=7):
         if conn is None:
             return {}
         since = _t.strftime("%Y-%m-%dT%H:%M:%S", _t.gmtime(_t.time() - days * 86400))
+        # each session where it started last: a restart in another folder moves it there. 2026-11-22: a position that
+        # changed organization was restarted in the old one's folder and then out of it; its earlier start kept that
+        # folder "shared" for the whole window, so the other organization's rules file stayed removed (a user
+        # organization's structure keeper, message 01a204f6-9bb4)
+        last = {}
+        for sid, ts, org, cwd in conn.execute("SELECT session_id, ts, org, cwd FROM event WHERE name = 'of.session_start' "
+                                              "AND ts >= ? AND cwd IS NOT NULL AND org IS NOT NULL ORDER BY ts", (since,)):
+            last[sid or (org, cwd)] = (org, cwd)
         out = {}
-        for org, cwd in conn.execute("SELECT DISTINCT org, cwd FROM event WHERE name = 'of.session_start' AND ts >= ? "
-                                     "AND cwd IS NOT NULL AND org IS NOT NULL", (since,)):
+        for org, cwd in last.values():
             out.setdefault(os.path.realpath(os.path.expanduser(cwd)), set()).add(org)
         return out
     except Exception:  # noqa: BLE001 - no store: the registry's folders alone

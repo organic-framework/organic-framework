@@ -109,6 +109,26 @@ class RulesFileTest(unittest.TestCase):
         finally:
             of_spawn.work_dir = saved
 
+    def test_a_session_counts_only_where_it_last_started(self):
+        """2026-11-22 (a user organization's structure keeper, message 01a204ff-0f63): a position that changed organization was restarted in the old
+        one's folder at 19:56Z and out of it at 20:39Z; its earlier start kept the folder shared for the whole window,
+        so that organization's rules file stayed removed though no session of the other ran there."""
+        import sqlite3
+        import time as _t
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE event (name TEXT, ts TEXT, session_id TEXT, org TEXT, cwd TEXT)")
+        now = _t.time()
+        iso = lambda s: _t.strftime("%Y-%m-%dT%H:%M:%S.000Z", _t.gmtime(now - s))  # noqa: E731
+        conn.executemany("INSERT INTO event VALUES ('of.session_start', ?, ?, ?, ?)", [
+            (iso(7200), "S1", "beta", "/w/alpha"),       # restarted in the other organization's folder ...
+            (iso(3600), "S1", "beta", "/w/beta"),        # ... and out of it
+            (iso(3600), "S2", "alpha", "/w/alpha"),
+            (iso(60), None, "alpha", "/w/alpha/sub")])  # a start with no session id still counts
+        got = of_context.session_orgs(conn)
+        self.assertEqual(got[os.path.realpath("/w/alpha")], {"alpha"})
+        self.assertEqual(got[os.path.realpath("/w/beta")], {"beta"})
+        self.assertEqual(of_context.shared_folders({"alpha": ["/w/alpha"]}, got), {})
+
     def test_a_folder_below_another_of_the_same_organization_gets_none(self):
         """Claude Code loads a parent folder's rules too (tested on 2.1.326): a repository under the organization's
         folder would load the rules twice."""
