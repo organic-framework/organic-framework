@@ -2729,8 +2729,16 @@ def clickhouse_init(cfg=None, run=None, client=None, sleep=time.sleep, schema_pa
         except Exception:
             raise SystemExit(f"of server clickhouse-init: statement {i} of {len(statements)} failed "
                              f"({stmt.split(None, 3)[:3]}); nothing secret is shown") from None
+    # BACKUP ... TO Disk(...) needs the DISK source grant from ClickHouse 26.9, and 26.8 has it backported
+    # (ClickHouse PR 117406): without it the nightly backup fails with ACCESS_DENIED (the agent host, 2026-11-22). A
+    # server that does not know the DISK source needs no grant, so its refusal of the statement is no failure.
+    try:
+        admin.post(f"GRANT READ, WRITE ON DISK TO {user}", query_in_body=True, timeout=120)
+        disk = "; the DISK source granted for backups"
+    except Exception:
+        disk = "; this ClickHouse knows no DISK source grant, which its backups do not need"
     out.append(f"applied {len(statements)} statements: databases {', '.join([*org_dbs, vault, unassigned])}, "
-               f"users {len(schema.users(org_dbs, vault, unassigned)) + 1} (passwords in {pwdir}, 0600)")
+               f"users {len(schema.users(org_dbs, vault, unassigned)) + 1} (passwords in {pwdir}, 0600){disk}")
     return out
 
 
