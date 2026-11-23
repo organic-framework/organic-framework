@@ -5005,6 +5005,35 @@ class DryRunPastTheLimitWait(unittest.TestCase):
         self.assertEqual(of_capacity.failed_hold_s(err("x")), of_capacity.FAILED_RETRY_S)
         self.assertEqual(of_capacity.failed_hold_s(err("x", untrusted="/w")), 6 * 3600)
 
+    def test_a_pane_too_small_for_the_dialogs_is_zoomed_for_the_move_and_given_back(self):
+        """2026-11-23: of_tools, two rows high in a tab of nine panes on the agent host, stood on its limit while its
+        rescue failed run after run with "no input box visible"."""
+        calls = []
+
+        def herdr(rows, zoomed=False, focused="w1:p9"):
+            def f(*a, **k):
+                calls.append(a)
+                if a[:2] == ("pane", "get"):
+                    return {"pane": {"scroll": {"viewport_rows": rows}}}
+                if a[:2] == ("pane", "layout"):
+                    return {"layout": {"zoomed": zoomed, "focused_pane_id": focused}}
+                return {}
+            return f
+        with mock.patch.object(of_capacity.time, "sleep", lambda *_: None):
+            with mock.patch.object(of_capacity, "_herdr", herdr(40)):
+                of_capacity._give_room("w1:p1", log=lambda *_: None)()
+            self.assertEqual([c for c in calls if c[1] == "zoom"], [])                 # room enough: left alone
+            del calls[:]
+            with mock.patch.object(of_capacity, "_herdr", herdr(2)):
+                undo = of_capacity._give_room("w1:p1", log=lambda *_: None)
+                self.assertEqual([c for c in calls if c[1] == "zoom"], [("pane", "zoom", "w1:p1", "--on")])
+                undo()
+            self.assertEqual([c for c in calls if c[1] == "zoom"][-1], ("pane", "zoom", "w1:p1", "--off"))
+            del calls[:]
+            with mock.patch.object(of_capacity, "_herdr", herdr(0, zoomed=True)):   # its tab had another pane zoomed
+                of_capacity._give_room("w1:p1", log=lambda *_: None)()
+            self.assertEqual([c for c in calls if c[1] == "zoom"][-1], ("pane", "zoom", "w1:p9", "--on"))
+
     def test_an_untrusted_rest_ends_once_an_account_trusts_the_folder(self):
         """2026-11-23: a move refused for an untrusted worktree at 23:33Z left its session resting six hours; the trust
         read was fixed at 00:16Z, and the session, stopped on its limit from 02:20Z, still rested on a spent account."""
