@@ -174,8 +174,9 @@ def org_registries(orgs_file=ORGS_FILE):
             # orgs.yaml is set by agents too (of org set, G33): a label that is the desk or another organization's name
             # or workspace label would mix two organizations' panes in one workspace, so the name stands instead
             # (of_server on organic-framework PR 570)
-            others = {DESK} | (names - {name}) | {str(x.get("workspace")) for x in entries
-                                                    if x is not o and x.get("workspace")}
+            # and a unit's workspace `<short>·<unit>` (of_review on PR 570): `·` is refused, and a `short:` is taken
+            others = {DESK} | (names - {name}) | {str(x.get(k)) for x in entries if x is not o
+                                                    for k in ("workspace", "short") if x.get(k)}
             why = label_problem(ws, others)
             if why:
                 WS_REFUSED[name] = f"orgs.yaml: {name}: workspace {str(ws)!r} {why}; herdr shows {name!r}"
@@ -198,7 +199,7 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
     docs = {}
     regs = org_registries(orgs_file)
     problems.extend(WS_REFUSED[o] for o, _, _ in regs if o in WS_REFUSED)
-    taken = {DESK} | {o for o, _, _ in regs} | {w for _, _, w in regs}  # names, and the labels orgs.yaml gives
+    labels = {}  # organization -> the registry `label:` it shows, once accepted
     for org, path, workspace in regs:
         rel = f"{org}:registry/positions.yaml"
         if not os.path.exists(path):
@@ -229,13 +230,14 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
             docs[org] = copy.deepcopy(doc)
         else:
             docs[org] = {k: v for k, v in doc.items() if k != "positions"}
-        why = label_problem(doc.get("label"), taken - {org, workspace}) if doc.get("label") else None
+        # another organization's name, orgs.yaml label, short (its units' prefix) or accepted registry label
+        others = {DESK} | {x for o2, _, w2 in regs if o2 != org for x in (o2, w2, ORG_SHORT.get(o2), labels.get(o2)) if x}
+        why = label_problem(doc.get("label"), others) if doc.get("label") else None
         if why:
             problems.append(f"{rel}: label {doc['label']!r} {why}; herdr shows {workspace!r}")
         elif org not in ORG_WS_SET and doc.get("label"):
             # the registry's own display label in herdr (docs/registry.md, `label:`): one value on every machine
-            workspace = str(doc["label"])
-            taken.add(workspace)
+            workspace = labels[org] = str(doc["label"])
             if ORG_SHORT.get(org) == org:  # no `short:` of its own either: units read `<label>·<unit>`
                 ORG_SHORT[org] = workspace
         for p in doc.get("positions") or []:
@@ -1917,14 +1919,20 @@ def label_problem(label, taken):
     label = str(label)
     if not LABEL_RE.fullmatch(label):
         return "is not one word of at most 32 letters, digits, . _ · -"
+    if "·" in label:
+        # a unit's workspace is `<short>·<unit>` (want_workspace): an organization's label holding `·` could be another
+        # organization's unit workspace (of_review on PR 570), and its own units would read `a·b·unit`
+        return "holds ·, which only a unit's workspace <short>·<unit> holds"
     if label in taken:
-        return "is the desk's workspace" if label == DESK else "is another organization's name or workspace label"
+        return ("is the desk's workspace" if label == DESK
+                else "is another organization's name, workspace label or short name")
     return None
 
 
 def _labels_taken(entries, org, base):
     """The labels an organization's workspace may not take: the desk, and every other organization's name, orgs.yaml
-    `workspace:` and registry `label:` (of_server on organic-framework PR 570: of org set is an agents' command)."""
+    `workspace:` and `short:` (its units' prefix) and registry `label:` (of_server and of_review on organic-framework
+    PR 570: of org set is an agents' command)."""
     import of_init
     taken = {DESK}
     for o in entries:
@@ -1933,8 +1941,7 @@ def _labels_taken(entries, org, base):
             continue
         if name:
             taken.add(name)
-        if o.get("workspace"):
-            taken.add(str(o["workspace"]))
+        taken.update(str(o[k]) for k in ("workspace", "short") if o.get(k))
         if o.get("path"):
             reg = os.path.join(base, os.path.expanduser(str(o["path"])), "registry", "positions.yaml")
             try:

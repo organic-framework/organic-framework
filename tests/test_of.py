@@ -660,6 +660,40 @@ class ApplyTest(unittest.TestCase):
                 if clash:
                     self.assertEqual(of.ORG_SHORT["build"], "build")
 
+    def test_no_label_takes_another_organizations_unit_workspace(self):
+        """of_review on PR 570: a unit's positions sit in `<short>·<unit>`, so a label holding `·`, or another
+        organization's `short:`, is refused by of org set, and the loader falls back to the name for orgs.yaml's
+        workspace and the registry's label alike."""
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            def registry(org, **extra):
+                with open(os.path.join(d, org, "registry", "positions.yaml"), "w") as fh:
+                    yaml.safe_dump({"organization": org, **extra,
+                                    "positions": [{"name": f"{org}_x", "system": f"{org}-s", "role": "x"}]}, fh)
+            for org in ("alpha", "beta"):
+                os.makedirs(os.path.join(d, org, "registry"))
+            registry("alpha", units={"ops": {"systems": ["alpha-s"]}})
+            registry("beta")
+            orgs = os.path.join(d, "orgs.yaml")
+            text = f"orgs:\n  - name: alpha\n    path: {d}/alpha\n    short: al\n  - name: beta\n    path: {d}/beta\n"
+            with open(orgs, "w") as fh:
+                fh.write(text)
+            positions, problems = of.load_positions(orgs)
+            self.assertEqual({p["name"]: p["_home_ws"] for p in positions}, {"alpha_x": "al·ops", "beta_x": "beta"})
+            with mock.patch.object(of, "ORGS_FILE", orgs):
+                for bad in ("al·ops", "al", "x·y"):
+                    self.assertEqual(of.main(["org", "set", "beta", "workspace", bad]), 2, bad)
+                    with open(orgs) as fh:
+                        self.assertEqual(fh.read(), text, bad)
+            for ws, label in (("al·ops", None), ("al", None), (None, "al·ops"), (None, "al")):
+                with open(orgs, "w") as fh:
+                    fh.write(text + (f"    workspace: {ws}\n" if ws else ""))
+                registry("beta", **({"label": label} if label else {}))
+                positions, problems = of.load_positions(orgs)
+                homes = {p["name"]: p["_home_ws"] for p in positions}
+                self.assertEqual(homes, {"alpha_x": "al·ops", "beta_x": "beta"}, (ws, label))
+                self.assertTrue(any(repr(ws or label) in x for x in problems), (ws, label, problems))
+
     def test_idempotent(self):
         positions = [pos("of_a", "of", "a", "s1", summary="d", _workspace="of")]
         agents = [agent("w1:p1", "s1", name="of_a", tokens={"system": "of", "role": "a", "summary": "d"})]
