@@ -22,6 +22,15 @@ def req(**kw):
     return r
 
 
+
+def short_tmp():
+    """A temporary folder whose socket paths fit a Unix socket's name (104 bytes on macOS): under /tmp where TMPDIR
+    is long, as macOS's per-user one can be (of_server on PR 607)."""
+    base = None
+    if len(os.path.realpath(tempfile.gettempdir())) > 40 and os.path.isdir("/tmp"):
+        base = "/tmp"
+    return tempfile.TemporaryDirectory(dir=base)
+
 class ValidateTest(unittest.TestCase):
     def test_data_only_on_the_allowlist(self):
         self.assertEqual(h.validate(req())["card"], CARD)
@@ -95,7 +104,7 @@ class SocketTest(unittest.TestCase):
     def test_one_evaluation_at_a_time_per_organization_none_refused(self):
         """of_server: a queue, not a cap; the client's timeout is the only bound."""
         import time
-        with tempfile.TemporaryDirectory() as d:
+        with short_tmp() as d:
             path = os.path.join(os.path.realpath(d), "door", "hooks.sock")
             stop, ready, busy, overlap = threading.Event(), threading.Event(), [0], [0]
             lock = threading.Lock()
@@ -129,7 +138,7 @@ class SocketTest(unittest.TestCase):
 
 
     def test_a_request_through_the_socket(self):
-        with tempfile.TemporaryDirectory() as d:
+        with short_tmp() as d:
             path = os.path.join(os.path.realpath(d), "door", "hooks.sock")
             stop, ready = threading.Event(), threading.Event()
             seen = []
