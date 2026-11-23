@@ -921,13 +921,18 @@ class Writer(threading.Thread):
 
     def run(self):
         self.heartbeat()
-        while not self.stop.is_set() and not self.orphaned():
-            try:
-                self.drain()
-            except Exception as e:  # keep the writer alive
-                self.last_error = f"{type(e).__name__}: {e}"
-            self.heartbeat()
-            self.stop.wait(self.cfg["flush_every"])
+        try:
+            while not self.stop.is_set() and not self.orphaned():
+                try:
+                    self.drain()
+                except Exception as e:  # keep the writer alive
+                    self.last_error = f"{type(e).__name__}: {e}"
+                self.heartbeat()
+                self.stop.wait(self.cfg["flush_every"])
+        finally:
+            # a thread's connection outlives the thread (Store.close_thread): a stopped writer left server.db, its
+            # WAL and shm open, three descriptors for each app a test made (of_review, after organic-framework PR 616)
+            self.store.close_thread()
 
     def heartbeat(self):
         """For a server whose writer runs in another process (ExternalWriter reads it)."""
@@ -2369,11 +2374,14 @@ class App:
 
     def _housekeeping(self, every=600):
         """Expire relay messages nobody received in time."""
-        while not self.writer.stop.wait(every):
-            try:
-                self.relay.expire()
-            except Exception as e:  # keep the server alive; the writer's health shows real failures
-                self.writer.last_error = self.writer.last_error or f"relay expiry: {type(e).__name__}: {e}"
+        try:
+            while not self.writer.stop.wait(every):
+                try:
+                    self.relay.expire()
+                except Exception as e:  # keep the server alive; the writer's health shows real failures
+                    self.writer.last_error = self.writer.last_error or f"relay expiry: {type(e).__name__}: {e}"
+        finally:
+            self.store.close_thread()   # as the writer's: the connection would outlive the thread
 
 
 MOVING_RETRY_S = 60  # what a 503 for a moving organization asks the client to wait

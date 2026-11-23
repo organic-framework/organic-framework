@@ -13,6 +13,7 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
 import of_server_passkey as S  # noqa: E402
+from tests.test_server import release_server  # noqa: E402
 
 RP, ORIGIN = "of.acme.test", "https://of.acme.test"
 
@@ -360,6 +361,7 @@ class HttpTest(FlowTest):
         self.httpd.shutdown()
         self.httpd.server_close()
         self.app.writer.stop.set()
+        release_server(self.app)
         of_events.STATE_DIR = self.saved
         self.tmp.cleanup()
 
