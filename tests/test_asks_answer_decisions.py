@@ -45,9 +45,11 @@ class Base(unittest.TestCase):
         of_events.STATE_DIR = self.saved
         self.tmp.cleanup()
 
-    def add(self, kind, payload, ts, session="S1", position="of_a", org="ofb"):
+    def add(self, kind, payload, ts, session="S1", position="of_a", org="ofb", host=None):
         rec = of_events.record(kind, payload, position=position, session=session, org=org)
         rec["timestamp"] = ts
+        if host:
+            rec["host.id"] = host
         of_store.add_event(self.conn, rec)
         return rec["of.event.id"]
 
@@ -67,7 +69,8 @@ class Base(unittest.TestCase):
             self.addCleanup(p.stop)
 
     def cut_over(self):
-        self.add("decision_cutover", {"org": "ofb"}, "2026-11-01T09:00:00Z", session=None, position=None)
+        self.add("decision_cutover", {"org": "ofb"}, "2026-11-01T09:00:00Z", session=None, position=None,
+                 host=of_decisions.SERVER_HOST)  # the server's switch: a client's own copy turns nothing on
 
     def fold_decisions(self):
         """Build of_platform's decisions view as the listener does (of_fold.FoldProcessor); a read folds the tail."""

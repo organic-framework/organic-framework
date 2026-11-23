@@ -943,14 +943,16 @@ def _answers_to_type(conn, since):
     server could not be reached once its organization's decisions are on (it may yet be refused: of_decisions)."""
     import of_decisions
     out = []
-    for eid, ts, pl in conn.execute(
-            "SELECT event_id, ts, payload FROM event WHERE name IN ('of.agent_question_answered', "
+    for eid, ts, pl, name, host, org in conn.execute(
+            "SELECT event_id, ts, payload, name, host_id, org FROM event WHERE name IN ('of.agent_question_answered', "
             "'of.decision_accepted') AND ts >= ? ORDER BY ts, rowid", (since,)).fetchall():
         try:
             p = json.loads(pl or "{}")
         except ValueError:
             continue
-        if p.get("stream"):  # an accepted decision
+        if name == "of.decision_accepted":  # only its writer's: the server's, or this machine's for a serverless org
+            if not of_decisions.trusted(p.get("org") or org, host):
+                continue
             aid, v = of_decisions.parse_stream(p.get("stream"))
             if not aid or p.get("kind", "answer") != "answer":
                 continue
