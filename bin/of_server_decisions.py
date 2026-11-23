@@ -13,13 +13,19 @@ server's sequence for the organization. Step 1 has one kind, `answer`: the strea
 - A refused proposal is kept, and its 409 carries the accepted record.
 - The accepted record, of.decision_accepted, is written by the server and enters the coordination feed in the same
   transaction, so every machine of the organization gets it, the proposer included.
-- A restoration (a receipt resent after this server lost its disk) is accepted with its own seq and stream version,
-  and wins over a later decision on its stream that is no restoration. No new proposal waits for it.
+- Every accepted record carries a receipt: an HMAC, under a key derived from the tenant's master key (which lives
+  outside the state folder a lost disk takes), over the organization, the proposal, the stream, the seq, the stream
+  version, the time and the proposal's content. A restoration (a proposal resent after this server lost its disk)
+  counts only with a receipt this server issued for exactly that proposal (of_secrets-review on PR 614: an unproven
+  restore let any machine supersede an accepted answer and set seq at will). It keeps its seq unless another
+  decision of the organization holds that number, then takes the next one; it wins over a later decision on its
+  stream that is no restoration. No new proposal waits for it.
 - Decisions are off for an organization until `of_server.py decisions --org <org> on` writes its cutover.
 - The answer's text is masked before it is stored, as a relay message is at post.
 """
 
 import hashlib
+import hmac
 import json
 import re
 import sys
@@ -37,6 +43,7 @@ CREATE TABLE IF NOT EXISTS decisions (org TEXT NOT NULL, seq INTEGER NOT NULL, p
   accepted_at TEXT NOT NULL, record TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS decisions_stream ON decisions (org, stream, state);
 CREATE INDEX IF NOT EXISTS decisions_seq ON decisions (org, seq);
+CREATE UNIQUE INDEX IF NOT EXISTS decisions_org_seq ON decisions (org, seq);
 CREATE TABLE IF NOT EXISTS proposals (proposal TEXT PRIMARY KEY, org TEXT NOT NULL, stream TEXT NOT NULL,
   body_sha TEXT NOT NULL, state TEXT NOT NULL, status INTEGER NOT NULL, answer TEXT NOT NULL, machine TEXT NOT NULL,
   at TEXT NOT NULL);
@@ -47,6 +54,9 @@ UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 STREAM = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})@v([1-9][0-9]{0,5})\Z")
 ORG = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}\Z")
 MAX_BODY = 64 * 1024
+MAX_DEPTH = 8              # how deep a payload's values may nest
+MAX_SEQ = 2 ** 53          # a seq a receipt may name
+RECEIPT_LABEL = b"of/decision-receipt/v1"
 MAX_TEXT = 16 * 1024
 KEYS = {"v", "id", "org", "kind", "stream", "payload", "proposer", "signature", "restore"}
 # the payload: the answer and its fields as the client records them today, plus any further key of its own (the
@@ -119,6 +129,8 @@ def validate(body):
     for k in ("via", "by"):
         if p.get(k) is not None and not (isinstance(p[k], str) and WORD.fullmatch(p[k])):
             raise bad(f"payload.{k}: a short lowercase name")
+    if _depth(p) > MAX_DEPTH:
+        raise bad(f"payload: nested at most {MAX_DEPTH} deep")
     if p.get("verdict") not in (None, "not_a_question"):
         raise bad("payload.verdict: not_a_question or none")
     who = body.get("proposer")
@@ -128,15 +140,57 @@ def validate(body):
     if body.get("signature") is not None:
         raise bad("signature: none until a person's key exists (step 1 accepts unsigned steps and marks them)")
     r = body.get("restore")
-    if r is not None and not (isinstance(r, dict) and set(r) <= {"seq", "stream_version", "accepted_at"}
-                              and all(isinstance(r.get(k), int) and not isinstance(r.get(k), bool) and r[k] >= 1
-                                      for k in ("seq", "stream_version"))):
-        raise bad("restore: the receipt, {seq, stream_version, accepted_at}")
+    if r is not None and not (isinstance(r, dict) and set(r) == {"seq", "stream_version", "accepted_at", "receipt"}
+                              and all(isinstance(r[k], int) and not isinstance(r[k], bool) and 1 <= r[k] <= MAX_SEQ
+                                      for k in ("seq", "stream_version"))
+                              and isinstance(r["accepted_at"], str) and 0 < len(r["accepted_at"]) <= 40
+                              and isinstance(r["receipt"], str) and re.fullmatch(r"[0-9a-f]{64}", r["receipt"])):
+        raise bad("restore: the accepted record's {seq, stream_version, accepted_at, receipt}")
     return body
 
 
+def _depth(v):
+    """How deep V nests, without recursion."""
+    deepest, todo = 0, [(v, 0)]
+    while todo:
+        x, d = todo.pop()
+        deepest = max(deepest, d)
+        if d > MAX_DEPTH:
+            return d
+        if isinstance(x, dict):
+            todo.extend((y, d + 1) for y in x.values())
+        elif isinstance(x, list):
+            todo.extend((y, d + 1) for y in x)
+    return deepest
+
+
+def _receipt_key(app):
+    """The receipts' key: purpose of/decision-receipt/v1 of the masking key, itself derived from the tenant's master
+    key, so a server restored from its backup or rebuilt on a new disk with the same tenant key checks old receipts."""
+    k = getattr(app, "_decision_receipt_key", None)
+    if k is None:
+        k = app._decision_receipt_key = hmac.new(app.masker.key, RECEIPT_LABEL, hashlib.sha256).digest()
+    return k
+
+
+def _content(body):
+    """The proposal's own content as it was sent (the receipt binds it: a receipt seen on the feed restores only the
+    proposal it was issued for, never another answer under its id)."""
+    return hashlib.sha256(json.dumps({"kind": body["kind"], "payload": body["payload"],
+                                      "proposer": body.get("proposer") or {}}, sort_keys=True,
+                                     ensure_ascii=False).encode()).hexdigest()
+
+
+def receipt(key, org, proposal, stream, seq, version, accepted_at, content):
+    msg = "\n".join(("of-decision-receipt/v1", org, proposal, stream, str(seq), str(version), accepted_at, content))
+    return hmac.new(key, msg.encode(), hashlib.sha256).hexdigest()
+
+
 def _sha(body):
-    return hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    """The proposal's digest for its id's receipt: a resend with `restore` of one this server still holds is the same
+    proposal and gets its first answer."""
+    return hashlib.sha256(json.dumps({k: v for k, v in body.items() if k != "restore"}, sort_keys=True,
+                                     ensure_ascii=False).encode()).hexdigest()
 
 
 def decision_id(proposal):
@@ -177,10 +231,8 @@ def turn_on(app, org, now=None):
         _durable(c)
     with app.store.tx() as c:
         had = c.execute("SELECT on_at, first_seq, cutover_id FROM decision_orgs WHERE org = ?", (org,)).fetchone()
-        if had:
-            rec = json.loads(c.execute("SELECT record FROM coord WHERE org = ? AND event_id = ?", (org, had[2]))
-                             .fetchone()[0])
-            return rec, False
+        if had:   # the same record, rebuilt from the row: the feed keeps it 30 days only
+            return _record(had[2], CUTOVER, org, had[0], {"org": org, "on_at": had[0], "first_seq": had[1]}), False
         ts = of_events.now_iso()
         eid = str(uuid.uuid5(of_events.STABLE_NS, f"decision-cutover:{org}"))
         rec = _record(eid, CUTOVER, org, ts, {"org": org, "on_at": ts, "first_seq": 1})
@@ -217,6 +269,16 @@ def _off(store, org, c=None):
                                                   "before")
 
 
+def _refusal(c, org, stream):
+    """The 409 a refused proposal gets: the stream's accepted decision as it stands now. A refused proposal keeps no
+    copy of it (of_secrets-review on PR 614: many small proposals against one stream grew the table by the winner's
+    size each)."""
+    row = c.execute("SELECT record FROM decisions WHERE org = ? AND stream = ? AND state = 'accepted'",
+                    (org, stream)).fetchone()
+    return {"type": "refused", "state": "refused", "status": 409, "title": f"{stream} was already decided",
+            "accepted": json.loads(row[0]) if row else None}
+
+
 def propose(app, m, body, joined, served):
     """POST /v1/decisions: (status, body). M is the authenticated machine, JOINED its organizations, SERVED whether
     this server serves the proposal's organization."""
@@ -239,54 +301,73 @@ def propose(app, m, body, joined, served):
     validate(body)
     pid, stream = body["id"], body["stream"]
     sha = _sha(body)
-    # every text of the payload masked before it is stored, the answer's and any proof's or note's, as a relay
-    # message's is at post
-    payload = json.loads(app.masker.json_text(json.dumps(body["payload"], ensure_ascii=False)))
-    found = app.masker.take()
+    key = _receipt_key(app)
+    content = _content(body)
+    restore = body.get("restore")
+    if restore and not hmac.compare_digest(receipt(key, org, pid, stream, restore["seq"], restore["stream_version"],
+                                                   restore["accepted_at"], content), restore["receipt"]):
+        raise DecisionError(400, "bad_receipt", "restore: no receipt this server issued for this proposal")
+    # every text of the payload and of the proposer masked before it is stored, the answer's and any proof's or
+    # note's, as a relay message's is at post (of_secrets-review on PR 614: the proposer went in as sent)
+    masked = json.loads(app.masker.json_text(json.dumps({"payload": body["payload"],
+                                                          "proposer": body.get("proposer") or {}},
+                                                         ensure_ascii=False)))
+    payload, proposer = masked["payload"], masked["proposer"]
+    found = app.masker.take()   # this thread's findings only (of_mask.Masker)
     now = time.time()
     with app.store.conn() as c:
         _durable(c)
     accepted_rec, sightings = None, []
     with app.store.tx() as c:
         _off(app.store, org, c)
-        had = c.execute("SELECT body_sha, status, answer FROM proposals WHERE proposal = ?", (pid,)).fetchone()
+        had = c.execute("SELECT body_sha, status, answer, state, stream FROM proposals WHERE proposal = ?",
+                        (pid,)).fetchone()
         if had:
             if had[0] != sha:
                 raise DecisionError(409, "conflict", "proposal id reused with other content")
+            if had[3] == "refused":   # kept without the winner's copy; the stream's accepted one now
+                return 409, _refusal(c, org, had[4])
+            if c.execute("SELECT 1 FROM decisions WHERE proposal = ? AND state = 'superseded'", (pid,)).fetchone():
+                return 409, _refusal(c, org, had[4])   # a restoration took its stream since
             return had[1], json.loads(had[2])
-        cur = c.execute("SELECT proposal, record, restored FROM decisions WHERE org = ? AND stream = ? AND "
+        cur = c.execute("SELECT proposal, restored FROM decisions WHERE org = ? AND stream = ? AND "
                         "state = 'accepted'", (org, stream)).fetchone()
-        restore = body.get("restore")
         supersedes = None
-        if cur and not (restore and not cur[2]):
+        if cur and not (restore and not cur[1]):
             # the stream is decided (a restoration loses only to an earlier restoration): refused, with the accepted
-            answer = {"type": "refused", "state": "refused", "status": 409, "accepted": json.loads(cur[1]),
-                      "title": f"{stream} was already decided"}
-            c.execute("INSERT INTO proposals VALUES (?,?,?,?,?,?,?,?,?)", (pid, org, stream, sha, "refused", 409,
-                                                                         json.dumps(answer), m["machine_id"],
-                                                                         of_events.now_iso()))
-            return 409, answer
+            c.execute("INSERT INTO proposals VALUES (?,?,?,?,?,?,?,?,?)",
+                      (pid, org, stream, sha, "refused", 409, "{}", m["machine_id"], of_events.now_iso()))
+            return 409, _refusal(c, org, stream)
         if cur:   # a restoration wins over a later decision on its stream that is no restoration
             supersedes = cur[0]
             c.execute("UPDATE decisions SET state = 'superseded' WHERE proposal = ?", (cur[0],))
+        nxt = c.execute("SELECT next_seq FROM decision_orgs WHERE org = ?", (org,)).fetchone()[0]
+        held_seq = None
         if restore:
-            seq, version = restore["seq"], restore["stream_version"]
-            c.execute("UPDATE decision_orgs SET next_seq = max(next_seq, ?) WHERE org = ?", (seq + 1, org))
+            version, accepted_at = restore["stream_version"], restore["accepted_at"]
+            if c.execute("SELECT 1 FROM decisions WHERE org = ? AND seq = ?", (org, restore["seq"])).fetchone():
+                seq, held_seq = nxt, restore["seq"]   # its number was given again after the loss: the next one,
+                nxt += 1                              # so the organization keeps one order
+            else:
+                seq, nxt = restore["seq"], max(nxt, restore["seq"] + 1)
         else:
-            seq = c.execute("SELECT next_seq FROM decision_orgs WHERE org = ?", (org,)).fetchone()[0]
-            c.execute("UPDATE decision_orgs SET next_seq = ? WHERE org = ?", (seq + 1, org))
-            version = 1
+            seq, nxt, version, accepted_at = nxt, nxt + 1, 1, None
+        c.execute("UPDATE decision_orgs SET next_seq = ? WHERE org = ?", (nxt, org))
         ts = of_events.now_iso()
+        accepted_at = accepted_at or ts
         eid = decision_id(pid)
-        accepted_rec = _record(eid, ACCEPTED, org, ts, dict(
-            payload, proposal=pid, org=org, kind="answer", stream=stream, stream_version=version, seq=seq,
-            step="open→answered", machine=m["machine_id"], proposer=body.get("proposer") or {},
-            signed=False if payload.get("by") in ("owner", "founder") else None, accepted_at=ts,
-            restored=bool(restore), supersedes=supersedes))
+        fields = dict(payload, proposal=pid, org=org, kind="answer", stream=stream, stream_version=version, seq=seq,
+                      step="open\u2192answered", machine=m["machine_id"], proposer=proposer,
+                      signed=False if payload.get("by") in ("owner", "founder") else None, accepted_at=accepted_at,
+                      restored=bool(restore), supersedes=supersedes,
+                      receipt=receipt(key, org, pid, stream, seq, version, accepted_at, content))
+        if restore:
+            fields.update(restored_at=ts, receipt_seq=held_seq)
+        accepted_rec = _record(eid, ACCEPTED, org, ts, fields)
         c.execute("INSERT INTO decisions (org, seq, proposal, event_id, kind, stream, stream_version, state, restored,"
                   " supersedes, machine, accepted_at, record) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                   (org, seq, pid, eid, "answer", stream, version, "accepted", 1 if restore else 0, supersedes,
-                   m["machine_id"], ts, json.dumps(accepted_rec, ensure_ascii=False)))
+                   m["machine_id"], accepted_at, json.dumps(accepted_rec, ensure_ascii=False)))
         answer = {"state": "accepted", "decision": accepted_rec}
         c.execute("INSERT INTO proposals VALUES (?,?,?,?,?,?,?,?,?)", (pid, org, stream, sha, "accepted", 200,
                                                                      json.dumps(answer), m["machine_id"], ts))

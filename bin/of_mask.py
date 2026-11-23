@@ -20,6 +20,7 @@ import json
 import math
 import os
 import re
+import threading
 import tomllib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -367,12 +368,25 @@ def canonical(kind, value):
 
 class Masker:
     """Mask strings and JSON documents. `findings` accumulates {(kind, hmac): count} for the
-    current record until `take()`; values are never kept."""
+    current record until `take()`; values are never kept. Each thread has its own findings: of-server's
+    request threads and its writer share one masker, and one's `take()` must not file another's under its
+    organization (of_secrets-review on organic-framework PR 614)."""
 
     def __init__(self, key, detector=None):
         self.key = key
         self.detector = detector or Detector()
-        self.findings = {}
+        self._local = threading.local()
+
+    @property
+    def findings(self):
+        f = getattr(self._local, "findings", None)
+        if f is None:
+            f = self._local.findings = {}
+        return f
+
+    @findings.setter
+    def findings(self, value):
+        self._local.findings = value
 
     def tag(self, kind, value):
         h = hmac.new(self.key, canonical(kind, value).encode("utf-8", "surrogatepass"), hashlib.sha256).hexdigest()[:8]

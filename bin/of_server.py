@@ -1769,10 +1769,12 @@ def make_handler(app):
                     return self._relay(lambda: app.relay.post(m, json.loads(raw or b"{}")), status=202)
                 if u.path == "/v1/decisions":  # a decision proposed, accepted once (docs/server.md, Decisions)
                     import of_server_decisions as D
+                    if len(raw or b"") > D.MAX_BODY:   # before it is parsed (of_secrets-review on PR 614)
+                        return self._problem(413, "too_large", f"a proposal is at most {D.MAX_BODY} bytes")
                     try:
                         prop = json.loads(raw or b"{}")
-                    except ValueError:
-                        return self._problem(400, "bad_request", "body is not JSON")
+                    except (ValueError, RecursionError):
+                        return self._problem(400, "bad_request", "body is not JSON, or nests too deep")
                     org = prop.get("org") if isinstance(prop, dict) else None
                     if isinstance(org, str) and self._moving([org]):
                         return None
