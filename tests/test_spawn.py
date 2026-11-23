@@ -451,6 +451,75 @@ class BenchOwnerSetTest(unittest.TestCase):
             finally:
                 of_init.write_owner_setting("bench", saved)
 
+class PositionFolderTest(unittest.TestCase):
+    """Hand-over 4c70deab (the position folders design; of_architect's ruling, message
+    01a20513-20d2): with a work_root in orgs.yaml a position starts in <work_root>/<position>, its clones below it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        d = self.d = os.path.realpath(self.tmp.name)
+        self.svc = os.path.join(d, "svc")
+        os.makedirs(os.path.join(self.svc, "registry"))
+        self.root = os.path.join(d, "work")
+        self.pf = os.path.join(self.root, "ofb_platform")
+        self.clone = os.path.join(self.pf, "framework")
+        os.makedirs(os.path.join(self.clone, ".git"))
+        with open(os.path.join(self.clone, ".git", "commondir"), "w") as fh:
+            fh.write(".\n")
+        with open(os.path.join(self.clone, "AGENTS.md"), "w") as fh:
+            fh.write("# rules\n")
+        self.orgs = os.path.join(d, "orgs.yaml")
+        with open(self.orgs, "w") as fh:
+            fh.write(f"orgs:\n  - name: ofb\n    path: {self.svc}\n    work_root: {self.root}\n")
+        patch = mock.patch.dict(os.environ, {"OF_ORGS": self.orgs})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.p = {"name": "ofb_platform", "_org": "ofb", "system": "s", "status": "active"}
+
+    def test_the_folder_is_the_work_roots_and_the_positions_name(self):
+        self.assertEqual(of_spawn.work_dir(self.p, {"s": {"repos": ["x"]}}, [self.svc]), self.pf)
+        with self.assertRaisesRegex(of_spawn.SpawnError, "not made yet"):
+            of_spawn.work_dir(dict(self.p, name="ofb_other"), {}, [self.svc])
+        self.assertIsNone(of_spawn.position_folder(dict(self.p, _org="acme")))          # no work_root: today's rule
+        self.assertTrue(of_spawn.clone_guard()(os.path.join(self.pf, "framework", "doc.md")))   # never a reader's
+
+    def test_the_top_and_the_clones_control_are_closed_in_the_sandbox(self):
+        with mock.patch.object(of_spawn, "_accounts_dirs", return_value=[]):
+            box = json.loads(of_spawn.session_settings(None, [], platform="linux", org="ofb",
+                                                       scratch=(self.pf, "S1")))["sandbox"]
+        deny = box["filesystem"]["denyWrite"]
+        for x in (".git", "HEAD", "config", "objects", "refs", "CLAUDE.md", ".claude", "AGENTS.md"):
+            self.assertIn(os.path.join(self.pf, x), deny)
+        for x in (".git/config", ".git/hooks", ".git/commondir", ".claude", ".mcp.json"):
+            self.assertIn(os.path.join(self.clone, x), deny)
+        self.assertNotIn(self.pf, deny)                                                 # the folder itself is the work's
+
+    def test_a_clone_without_commondir_refuses_the_spawn(self):
+        os.remove(os.path.join(self.clone, ".git", "commondir"))
+        with self.assertRaisesRegex(of_spawn.SpawnError, "commondir"):
+            of_spawn.plan(self.p, [self.p], [], lambda ps, ag: ([], []), {}, [self.svc], "", lambda q: "w",
+                          config_dir="/nonexistent")
+
+    def test_claude_md_imports_each_clones_agents_md_without_following_a_link(self):
+        outside = os.path.join(self.d, "outside")
+        with open(outside, "w") as fh:
+            fh.write("unchanged\n")
+        os.symlink(outside, os.path.join(self.pf, "CLAUDE.md"))
+        made = of_spawn.prepare_folder(self.pf, "ofb")
+        self.assertEqual(made, os.path.join(self.pf, "CLAUDE.md"))
+        self.assertFalse(os.path.islink(made))
+        with open(made) as fh:
+            self.assertIn("@framework/AGENTS.md", fh.read())
+        with open(outside) as fh:
+            self.assertEqual(fh.read(), "unchanged\n")
+        self.assertIsNone(of_spawn.prepare_folder(self.svc, "ofb"))                     # not a position's folder
+
+    def test_the_rules_go_to_the_work_root(self):
+        import of_context
+        got = of_context.rules_folders([self.p], {"ofb": [self.svc]})
+        self.assertEqual(got, {"ofb": [self.root]})
+
 
 class WorkCloneTest(unittest.TestCase):
     """Card OF-265 v2, hand-over ab9ed07b (of_server's four conditions, message 01a2044e-a1e4): a session on Linux may
@@ -636,6 +705,35 @@ class WorkCloneTest(unittest.TestCase):
                 self.assertTrue(of_spawn.clone_ready(f"{d}/clone"))                    # commondir written, holding "."
                 self.assertEqual(of.main(["org", "set", "ofb", "work_clone", "none"]), 0)
                 self.assertEqual(of_spawn.work_clones(orgs), [])
+
+    def test_the_owner_sets_the_work_root_and_an_agent_does_not(self):
+        """Hand-over 4c70deab: work_root is the owner's, as work_clone (of_architect, message 01a20513-20d2)."""
+        import importlib.machinery
+        import importlib.util
+        import tempfile
+        from unittest import mock
+        import of_asks_answer
+        loader = importlib.machinery.SourceFileLoader("of_cli_root", os.path.join(HERE, "..", "bin", "of"))
+        of = importlib.util.module_from_spec(importlib.util.spec_from_loader("of_cli_root", loader))
+        loader.exec_module(of)
+        with tempfile.TemporaryDirectory() as d:
+            d = os.path.realpath(d)
+            os.makedirs(os.path.join(d, "build", "registry"))
+            os.makedirs(os.path.join(d, "work"))
+            os.makedirs(os.path.join(d, "repo", ".git"))
+            orgs = os.path.join(d, "orgs.yaml")
+            with open(orgs, "w") as fh:
+                fh.write(f"orgs:\n  - name: ofb\n    path: {d}/build\n")
+            of.ORGS_FILE = orgs
+            with mock.patch.object(of_asks_answer, "not_the_owner", lambda: True):
+                self.assertEqual(of.main(["org", "set", "ofb", "work_root", f"{d}/work"]), 2)
+            with mock.patch.object(of_asks_answer, "not_the_owner", lambda: False):
+                self.assertEqual(of.main(["org", "set", "ofb", "work_root", f"{d}/build"]), 2)   # the services' copy
+                self.assertEqual(of.main(["org", "set", "ofb", "work_root", f"{d}/repo"]), 2)    # a repository
+                self.assertEqual(of.main(["org", "set", "ofb", "work_root", f"{d}/work"]), 0)
+                self.assertEqual(of_spawn.work_roots(orgs), {"ofb": f"{d}/work"})
+                self.assertEqual(of.main(["org", "set", "ofb", "work_root", "none"]), 0)
+                self.assertEqual(of_spawn.work_roots(orgs), {})
 
 
 class SettingsDigestTest(unittest.TestCase):

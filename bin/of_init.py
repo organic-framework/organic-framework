@@ -1325,7 +1325,9 @@ def set_config_key(path, key, value):
 ORG_KEYS = {"hold": "on|off: `of apply` and the desk leave the organization's panes alone",
             "path": "<folder>: the organization's repository, which holds registry/positions.yaml",
             "work_clone": "<folder>|none: a clone of that repository sessions may write from their sandbox on Linux, "
-                          "while its services' copy (path) stays denied (card OF-265; of_spawn.work_clones)"}
+                          "while its services' copy (path) stays denied (card OF-265; of_spawn.work_clones)",
+            "work_root": "<folder>|none: each position starts in <folder>/<position>, a folder of its own with its "
+                         "clones below it (of_spawn.position_folder; hand-over 4c70deab)"}
 
 
 def org_entry_name(o):
