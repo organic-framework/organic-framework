@@ -244,14 +244,17 @@ def project(rows, state=None):
         sid, name = r["session_id"], r["name"]
         if name == "of.decision_cutover":
             # from its server's time on, only accepted decisions answer this organization's cards; earlier answers
-            # keep today's rule, so old cards keep their answers (04-design.md §2, the cutover)
+            # keep today's rule, so old cards keep their answers (04-design.md §2, the cutover). Only the server's
             o = (r["payload"] or {}).get("org") or r.get("org")
-            if o and o not in cutover:
+            if o and o not in cutover and r.get("host_id") == "of-server":
                 cutover[o] = r["ts"]
             continue
         if name == "of.decision_accepted":
             p_ = r["payload"] or {}
             o = p_.get("org") or r.get("org")
+            import of_decisions
+            if not of_decisions.trusted(o, r.get("host_id")):
+                continue   # a record a client wrote under its own host id is nobody's decision (of_review on PR 613)
             if isinstance(p_.get("seq"), int) and o:
                 seqs[o] = max(seqs.get(o) or 0, p_["seq"])
             a = decision_answer(r)

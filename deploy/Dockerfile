@@ -56,6 +56,8 @@ COPY bin/of_server_secrets.py bin/of_credentials.py bin/of_protected.py ./
 # Studio (of_studio's modules), served under /studio/ when present.
 COPY bin/of_studio.py bin/of_studio.css bin/of_model.py bin/of_measures.py bin/of_asks.py bin/of_diagnose.py \
      bin/of_diagnose_rules.py ./
+# the asks projection reads accepted decisions through of_decisions, whose view registers in of_fold
+COPY bin/of_decisions.py bin/of_fold.py ./
 COPY docs/diagnose-v0.yaml ./docs/diagnose-v0.yaml
 COPY bin/rules/ ./rules/
 

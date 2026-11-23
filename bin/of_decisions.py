@@ -77,6 +77,18 @@ def proposal_id(act_id, ask_id):
     return str(uuid.uuid5(of_events.STABLE_NS, f"proposal:{act_id}:{ask_id}"))
 
 
+SERVER_HOST = "of-server"
+
+
+def trusted(org, host):
+    """Is HOST the writer of ORG's accepted decisions and its cutover? of-server always (its accept, its switch);
+    of-local only for an organization with no server in orgs.yaml, whose machine accepts for it. A record a client
+    process wrote under its own host id is nobody's decision (of_review on PR 613)."""
+    if host == SERVER_HOST:
+        return True
+    return host == LOCAL_HOST and not of_events._org_server_url(org)
+
+
 def accepted_id(proposal):
     return of_events.stable_id("decision", proposal)
 
@@ -131,8 +143,8 @@ def _has(conn, event_id):
 
 
 def _cut_over(conn, org):
-    return conn.execute("SELECT 1 FROM event WHERE name = 'of.decision_cutover' AND (org = ? OR "
-                        "json_extract(payload, '$.org') = ?) LIMIT 1", (org, org)).fetchone() is not None
+    return conn.execute("SELECT 1 FROM event WHERE name = 'of.decision_cutover' AND host_id = ? AND (org = ? OR "
+                        "json_extract(payload, '$.org') = ?) LIMIT 1", (SERVER_HOST, org, org)).fetchone() is not None
 
 
 def pending(conn, now=None):
@@ -200,10 +212,11 @@ def accept_local(conn, p):
             return _refused(p, won, "the stream already has an accepted decision")
         if won:
             return "accepted"
-        (top,) = conn.execute("SELECT COALESCE(MAX(CAST(json_extract(payload, '$.seq') AS INTEGER)), 0) FROM event "
-                              "WHERE name = 'of.decision_accepted' AND json_extract(payload, '$.org') = ?",
-                              (p["org"],)).fetchone()
-        of_events.append(_accepted_record(p, int(top) + 1, 1, LOCAL_HOST))
+        top = conn.execute("SELECT CAST(json_extract(payload, '$.seq') AS INTEGER) FROM event WHERE name = "
+                           "'of.decision_accepted' AND host_id = ? AND json_extract(payload, '$.org') = ? ORDER BY "
+                           "CAST(json_extract(payload, '$.seq') AS INTEGER) DESC LIMIT 1", (LOCAL_HOST, p["org"])
+                           ).fetchone()
+        of_events.append(_accepted_record(p, int((top or [0])[0] or 0) + 1, 1, LOCAL_HOST))
         return "accepted"
     finally:
         os.close(fd)
@@ -319,47 +332,62 @@ def counts(result):
 
 # ------------------------------------------------------------------ reading
 
-def accepted(conn, ask_id, version=None, org=None):
-    """The accepted decision's payload for an answer to ASK_ID at VERSION (every version when None), from the log,
-    lowest seq first; None when none. For whatever acts on an answer."""
-    if not ask_id:
-        return None
-    streams = [answer_stream(ask_id, version)] if version else None
-    q = ("SELECT payload FROM event WHERE name = 'of.decision_accepted' AND json_extract(payload, '$.stream') "
-         + ("= ?" if streams else "LIKE ?") + (" AND json_extract(payload, '$.org') = ?" if org else "")
-         + " ORDER BY CAST(json_extract(payload, '$.seq') AS INTEGER)")
-    args = [streams[0] if streams else f"{ask_id}@v%"] + ([org] if org else [])
-    for (pl,) in conn.execute(q, args):
-        try:
-            return json.loads(pl or "{}")
-        except ValueError:
-            continue
-    return None
+def _card_since(conn, ask_id):
+    """A lower bound for the time of any answer to ASK_ID: its card's own time, a day back for clocks apart; None when
+    the card is not in this store."""
+    r = conn.execute("SELECT ts, org FROM event WHERE event_id = ?", (ask_id,)).fetchone()
+    if not r or not r[0]:
+        return None, None
+    try:
+        t = time.mktime(time.strptime(r[0][:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone - 86400
+    except ValueError:
+        return None, r[1]
+    return of_events.now_iso(t), r[1]
 
 
-def newest_accepted(conn, ask_id):
-    """The accepted decision for ASK_ID's newest answered version (an amended card's newer answer), or None."""
-    best = None
-    for (pl,) in conn.execute("SELECT payload FROM event WHERE name = 'of.decision_accepted' AND "
-                              "json_extract(payload, '$.stream') LIKE ?", (f"{ask_id}@v%",)):
+def _accepted_rows(conn, ask_id):
+    """The trusted accepted decisions for ASK_ID's streams, by the name index from its card's time on."""
+    since, org = _card_since(conn, ask_id)
+    if since is not None:
+        found = conn.execute("SELECT host_id, payload FROM event WHERE name = 'of.decision_accepted' AND ts >= ? AND "
+                             "json_extract(payload, '$.stream') LIKE ?", (since, f"{ask_id}@v%"))
+    else:   # the card is not here (yet): at most the first few, by the name index
+        found = conn.execute("SELECT host_id, payload FROM event WHERE name = 'of.decision_accepted' AND "
+                             "json_extract(payload, '$.stream') LIKE ? LIMIT 64", (f"{ask_id}@v%",))
+    out = []
+    for host, pl in found:
         try:
             p = json.loads(pl or "{}")
         except ValueError:
             continue
         a, v = parse_stream(p.get("stream"))
-        if a == ask_id and (best is None or v > best[0]):
-            best = (v, p)
-    return best[1] if best else None
+        if a == ask_id and trusted(p.get("org") or org, host):
+            out.append((v, p))
+    return out
+
+
+def accepted(conn, ask_id, version=None, org=None):
+    """The accepted decision's payload for an answer to ASK_ID at VERSION (every version when None), from the log,
+    lowest seq first; None when none. Only the accept's own records count (trusted). For whatever acts on an answer."""
+    rows = [(p.get("seq") or 0, p) for v, p in _accepted_rows(conn, ask_id)
+            if (version is None or v == int(version)) and (org is None or p.get("org") == org)]
+    return min(rows, key=lambda x: x[0])[1] if rows else None
+
+
+def newest_accepted(conn, ask_id):
+    """The accepted decision for ASK_ID's newest answered version (an amended card's newer answer), or None."""
+    rows = _accepted_rows(conn, ask_id)
+    return max(rows, key=lambda x: x[0])[1] if rows else None
 
 
 def cutover_of_ask(conn, ask_id):
-    """The time decisions were turned on for ASK_ID's organization (its of.decision_cutover), or None."""
+    """The time decisions were turned on for ASK_ID's organization (its server's of.decision_cutover), or None."""
     r = conn.execute("SELECT org FROM event WHERE event_id = ?", (ask_id,)).fetchone()
     org = r[0] if r else None
     if not org:
         return None
-    r = conn.execute("SELECT MIN(ts) FROM event WHERE name = 'of.decision_cutover' AND (org = ? OR "
-                     "json_extract(payload, '$.org') = ?)", (org, org)).fetchone()
+    r = conn.execute("SELECT ts FROM event WHERE name = 'of.decision_cutover' AND host_id = ? AND (org = ? OR "
+                     "json_extract(payload, '$.org') = ?) ORDER BY ts LIMIT 1", (SERVER_HOST, org, org)).fetchone()
     return r[0] if r else None
 
 

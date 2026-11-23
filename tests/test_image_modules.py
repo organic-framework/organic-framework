@@ -66,6 +66,8 @@ NOT_IN_IMAGE = {
                                                 "Kubernetes, never under the user's systemd",
                    "of_server.systemd_units": "the same: written only by `of server install` on a Linux host"},
     "of_client": {"of_ship._ship_server": "`of ship`'s client side; the server uses of_ship's batch code only",
+                  "of_decisions._default_post": "a machine sends its proposals to its organization's server; the image "
+                                                "accepts decisions and never proposes one",
                   "of_events.card_ref": "a machine asks its organization's server for a card id; in the image no "
                                         "orgs.yaml names a server, so the import is never reached, and it sits in a "
                                         "try that files the ask without an id"},

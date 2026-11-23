@@ -32,6 +32,10 @@ EVENTS = frozenset({
     # each machine's spend per hour, account and position, so `of capacity spend --by` on any machine shows them all
     # (of_capacity, 2026-11-22: the founder found the agent host's spend missing from the laptop's day and hour views)
     "of.spend_hours",
+    # decisions the organization's server accepted once, and the switch that turned them on (event store step 1,
+    # organic-framework-build reports/framework/event-store/04-design.md §2): the server writes both into the feed
+    # at the accept itself; a machine's own copies travel the same way
+    "of.decision_accepted", "of.decision_cutover",
 })
 PREFIXES = ("of.handover_", "of.diff_")
 

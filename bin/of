@@ -5907,11 +5907,9 @@ def _diff_answer(conn, ask_id):
         return None
     since = of_decisions.cutover_of_ask(conn, ask_id)
     last = None
-    for ts, pl in conn.execute("SELECT ts, payload FROM event WHERE name = 'of.agent_question_answered' "
-                               "ORDER BY ts, rowid"):
+    for (pl,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered' AND (? IS NULL OR "
+                              "ts < ?) ORDER BY ts, rowid", (since, since)):
         p = json.loads(pl or "{}")
-        if since and (ts or "") >= since and p.get("via") != "reconcile" and not p.get("decision"):
-            continue
         if ask_id in (p.get("ask_ids") or [p.get("ask_id")]) and p.get("by") == "owner" and p.get("via") == "asks-ui":
             last = bool(yes.match(str(p.get("answer") or "")))
     return last
