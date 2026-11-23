@@ -564,14 +564,9 @@ def accept(store, buffer, router, machine, batch, body_sha, served=None, redacti
     `finance`: the one record is a finance fact from POST /v1/finance_facts (of_server_finance), which has
     checked it. Anywhere else an of.finance_fact is refused (docs/events.md, Finance facts: server-only write)."""
     bid = batch.get("batch_id")
-    with store.conn() as c:
-        row = c.execute("SELECT body_sha, state, accepted, rejected, duplicates FROM batches WHERE batch_id = ?",
-                        (bid,)).fetchone()
-    if row:
-        if row[0] != body_sha:
-            return 409, {"type": "conflict", "title": "batch_id reused with a different body"}
-        return 202, {"batch_id": bid, "state": row[1], "accepted": row[2], "rejected": json.loads(row[3]),
-                     "duplicates": row[4]}
+    known = _receipt(store, bid, body_sha)
+    if known:
+        return known
     orgs = set(json.loads(machine["orgs"]))
     raw_orgs = set(json.loads(machine["raw_orgs"]))
     tenant = bool(machine["tenant"])
@@ -620,6 +615,11 @@ def accept(store, buffer, router, machine, batch, body_sha, served=None, redacti
     # lock over the whole step keeps two batches that share a record from both queuing it.
     duplicates, fresh_keys = 0, []
     with _ACCEPT_LOCK:
+        # again under the lock: the same batch id sent twice at once (a retry after a timeout) finds the first one's
+        # receipt here, never queues an empty copy over its records (of_review on organic-framework PR 611)
+        known = _receipt(store, bid, body_sha)
+        if known:
+            return known
         if kept and not replace:
             fresh, inside = [], set()
             with store.conn() as c:
@@ -655,6 +655,19 @@ def accept(store, buffer, router, machine, batch, body_sha, served=None, redacti
 
 
 _ACCEPT_LOCK = threading.Lock()   # accept's dedup, queueing and commit, one batch at a time in this process
+
+
+def _receipt(store, bid, body_sha):
+    """(202, the batch's receipt) when BID was accepted before with this body, (409, …) with another body, else None."""
+    with store.conn() as c:
+        row = c.execute("SELECT body_sha, state, accepted, rejected, duplicates FROM batches WHERE batch_id = ?",
+                        (bid,)).fetchone()
+    if not row:
+        return None
+    if row[0] != body_sha:
+        return 409, {"type": "conflict", "title": "batch_id reused with a different body"}
+    return 202, {"batch_id": bid, "state": row[1], "accepted": row[2], "rejected": json.loads(row[3]),
+                 "duplicates": row[4]}
 
 
 # ----------------------------------------------------------------- redaction
