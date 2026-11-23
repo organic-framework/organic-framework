@@ -394,6 +394,20 @@ class BenchLineTest(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         of_benchpath._plain(f)
 
+    def test_a_pipe_or_a_folder_at_owner_yaml_reads_as_none_at_once(self):
+        """of_secrets-review on PR 575: the read never waits on a pipe and takes only a regular file, as the guard's."""
+        import of_benchpath
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            pipe = os.path.join(d, "owner.yaml")
+            os.mkfifo(pipe)
+            t0 = time.monotonic()
+            self.assertIsNone(of_benchpath._plain(pipe))
+            self.assertLess(time.monotonic() - t0, 5)
+            folder = os.path.join(d, "folder.yaml")
+            os.mkdir(folder)
+            self.assertIsNone(of_benchpath._plain(folder))
+
 
 class BenchOwnerSetTest(unittest.TestCase):
     def test_a_development_clone_is_refused_as_benchs_folder(self):
