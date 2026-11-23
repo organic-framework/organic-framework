@@ -613,34 +613,48 @@ def accept(store, buffer, router, machine, batch, body_sha, served=None, redacti
         return 400, {"type": "bad_request", "title": "a replacement record was rejected", "rejected": rejected}
     # A record this server has already accepted, in any batch, is not written again: a re-sent
     # batch with a new id adds nothing (ReplacingMergeTree would only merge it away later).
-    duplicates = 0
-    if kept and not replace:
-        with store.tx() as c:
-            fresh = []
-            for k, rec in zip(keys, kept):
-                if c.execute("INSERT OR IGNORE INTO seen VALUES (?)", (k,)).rowcount:
+    # The batch is queued before its keys count as seen, and the keys and its receipt row are committed together after
+    # (the writer takes only a batch with a row). A put that fails, or a crash between the put and that commit, leaves
+    # nothing marked, so the client's retry of the same batch id queues the same records again; marked first, the retry
+    # found them seen and queued none, a loss (2026-11-23, of_server, found checking the event store's design). One
+    # lock over the whole step keeps two batches that share a record from both queuing it.
+    duplicates, fresh_keys = 0, []
+    with _ACCEPT_LOCK:
+        if kept and not replace:
+            fresh, inside = [], set()
+            with store.conn() as c:
+                for k, rec in zip(keys, kept):
+                    if k in inside or c.execute("SELECT 1 FROM seen WHERE k = ?", (k,)).fetchone():
+                        continue
+                    inside.add(k)
                     fresh.append(rec)
-        duplicates = len(kept) - len(fresh)
-        if duplicates:
-            by_org = {}
-            for rec in fresh:
-                o = rec["data"]["org_id"] or "unassigned"
-                by_org[o] = by_org.get(o, 0) + 1
-        kept = fresh
-    payload = {"batch_id": bid, "machine_id": machine["machine_id"], "records": kept}
-    if redaction is not None:
-        payload["redaction"] = redaction
-    buffer.put(bid, payload)
-    state = "queued" if kept or redaction is not None else "committed"
-    with store.conn() as c:
-        tiers = {o: (["typed", "raw"] if tenant or o in raw_orgs else ["typed"]) for o in by_org}
-        c.execute("INSERT INTO batches (batch_id, machine_id, body_sha, state, accepted, rejected, by_org, created_at,"
-                  " committed_at, tiers, duplicates) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                  (bid, machine["machine_id"], body_sha, state, len(kept), json.dumps(rejected), json.dumps(by_org),
-                   of_events.now_iso(), None if state == "queued" else of_events.now_iso(), json.dumps(tiers), duplicates))
+                    fresh_keys.append(k)
+            duplicates = len(kept) - len(fresh)
+            if duplicates:
+                by_org = {}
+                for rec in fresh:
+                    o = rec["data"]["org_id"] or "unassigned"
+                    by_org[o] = by_org.get(o, 0) + 1
+            kept = fresh
+        payload = {"batch_id": bid, "machine_id": machine["machine_id"], "records": kept}
+        if redaction is not None:
+            payload["redaction"] = redaction
+        buffer.put(bid, payload)
+        state = "queued" if kept or redaction is not None else "committed"
+        with store.tx() as c:
+            c.executemany("INSERT OR IGNORE INTO seen VALUES (?)", [(k,) for k in fresh_keys])
+            tiers = {o: (["typed", "raw"] if tenant or o in raw_orgs else ["typed"]) for o in by_org}
+            c.execute("INSERT INTO batches (batch_id, machine_id, body_sha, state, accepted, rejected, by_org, created_at,"
+                      " committed_at, tiers, duplicates) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                      (bid, machine["machine_id"], body_sha, state, len(kept), json.dumps(rejected), json.dumps(by_org),
+                       of_events.now_iso(), None if state == "queued" else of_events.now_iso(), json.dumps(tiers),
+                       duplicates))
     if state != "queued":
         buffer.done(bid)
     return 202, {"batch_id": bid, "state": state, "accepted": len(kept), "rejected": rejected, "duplicates": duplicates}
+
+
+_ACCEPT_LOCK = threading.Lock()   # accept's dedup, queueing and commit, one batch at a time in this process
 
 
 # ----------------------------------------------------------------- redaction
