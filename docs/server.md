@@ -186,6 +186,17 @@ itself, in its own transaction, rather than after the batch writer.
   win over a decision made after the loss waits for the client's resend and readers that apply `supersedes`, which
   stays null until then. No new proposal waits for a restoration. A resend of a proposal the server still holds
   gets its first answer.
+- **What a receipt survives.** The key under the receipts is the tenant's master key (`tenant_key_file`, by default
+  `~/.config/of/tenant.key`, which the server makes on its first start), or the derived key in `secret_key_file`.
+  `of server backup` copies the store and the ClickHouse databases, never that key, and step 1 keeps no copy of
+  either outside the server's machine (the founder's choice). So a loss that keeps the disk keeps the key: a store
+  restored from the nightly backup after corruption, a bad migration or a rollback verifies every receipt, and the
+  lost decisions come back through restorations. A loss of the whole disk takes the key, the store and the backups
+  together. Then every restore gets `400 bad_receipt`, since nothing can tell a real receipt from a made-up one.
+  With `decision_orgs` gone, the organization reads `decisions_off` and takes today's path until its cutover is run
+  again. The machines keep the accepted records they hold, but the server can accept a card's version again. The
+  masking tags change too, as on any new tenant key. A copy of the key alone, kept outside the machine, would let
+  receipts outlive the disk; it is a later step.
 - **The switch.** Decisions are off for an organization until its machines run the client that proposes. Then the
   server's keeper or the owner runs `of_server.py decisions --org <org> on` on the server's host, which writes
   `of.decision_cutover` (its time and the first seq) into the feed, and gives the same record again when run once
