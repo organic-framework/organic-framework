@@ -460,7 +460,10 @@ system: the pane token `system`, the tabs `of apply` lays out by system and the 
 stay as they are everywhere else (`of who`, records, the guard). The OF team's registry sets both to `of` (the founder:
 "make the naming of the organic_framework agents in herdr be of, please"). `of registry check` refuses a `label:` that is `desk`, another
 organization's name or workspace label, or not one word of at most 32 letters, digits, `.`, `_`, `·` and `-`; herdr then shows the
-name (of_review on PR 570).
+name (of_review on PR 570). `of org set <org> workspace` is an agents' command (docs/guard.md G33), so it refuses the
+same labels, and also another organization's registry `label:`; a `workspace:` in `orgs.yaml` that clashes all the same
+(written by hand or before the check) is named by `of registry check`, and herdr shows the organization's name
+(of_server on PR 570).
 
 ## Goals (2026-11-07, `of_architect`; the goal tree 2026-11-12)
 

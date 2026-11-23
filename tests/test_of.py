@@ -610,6 +610,56 @@ class ApplyTest(unittest.TestCase):
                 self.assertEqual({p["name"]: p["_workspace"] for p in positions}["build_a"], "build", bad)
                 self.assertTrue(any(why in x and "label" in x for x in problems), (bad, problems))
 
+    def test_of_org_set_refuses_another_organizations_name_or_label(self):
+        """of_server on PR 570: of org set is an agents' command, so a workspace label that is another organization's
+        name, orgs.yaml workspace or registry label, or the desk, is refused, and orgs.yaml is left as it was."""
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            for org, label in (("build", None), ("acme", "ac")):
+                os.makedirs(os.path.join(d, org, "registry"))
+                with open(os.path.join(d, org, "registry", "positions.yaml"), "w") as fh:
+                    yaml.safe_dump({"organization": org, **({"label": label} if label else {}), "positions": []}, fh)
+            orgs = os.path.join(d, "orgs.yaml")
+            text = (f"orgs:\n  - name: build\n    path: {d}/build\n  - name: acme\n    path: {d}/acme\n"
+                    f"    workspace: acme-ws\n  - name: remote\n    server: https://of.example\n")
+            with open(orgs, "w") as fh:
+                fh.write(text)
+            with mock.patch.object(of, "ORGS_FILE", orgs):
+                for bad in ("acme", "acme-ws", "ac", "remote", "desk", "two words"):
+                    self.assertEqual(of.main(["org", "set", "build", "workspace", bad]), 2, bad)
+                    with open(orgs) as fh:
+                        self.assertEqual(fh.read(), text, bad)
+                self.assertEqual(of.main(["org", "set", "build", "workspace", "of"]), 0)
+                self.assertEqual(of.main(["org", "set", "acme", "workspace", "acme"]), 0)   # its own name
+            with open(orgs) as fh:
+                doc = yaml.safe_load(fh)
+            self.assertEqual([o.get("workspace") for o in doc["orgs"]], ["of", "acme", None])
+
+    def test_an_orgs_yaml_workspace_that_clashes_falls_back_to_the_name(self):
+        """of_server on PR 570: orgs.yaml may have been written before the refusal, or by hand: the loader names the
+        clash and herdr shows the organization's name, as for the registry's label."""
+        with tempfile.TemporaryDirectory() as d:
+            for org in ("build", "acme"):
+                os.makedirs(os.path.join(d, org, "registry"))
+                with open(os.path.join(d, org, "registry", "positions.yaml"), "w") as fh:
+                    yaml.safe_dump({"organization": org,
+                                    "positions": [{"name": f"{org}_a", "system": "x", "role": "a"}]}, fh)
+            orgs = os.path.join(d, "orgs.yaml")
+            for build_ws, acme_ws, want in (("acme", None, {"build_a": "build", "acme_a": "acme"}),
+                                            ("same", "same", {"build_a": "build", "acme_a": "acme"}),
+                                            ("desk", None, {"build_a": "build", "acme_a": "acme"}),
+                                            ("of", None, {"build_a": "of", "acme_a": "acme"})):
+                with open(orgs, "w") as fh:
+                    yaml.safe_dump({"orgs": [{"name": "build", "path": os.path.join(d, "build"), "workspace": build_ws},
+                                             {"name": "acme", "path": os.path.join(d, "acme"),
+                                              **({"workspace": acme_ws} if acme_ws else {})}]}, fh)
+                positions, problems = of.load_positions(orgs)
+                self.assertEqual({p["name"]: p["_workspace"] for p in positions}, want, build_ws)
+                clash = [x for x in problems if "orgs.yaml" in x and "workspace" in x]
+                self.assertEqual(bool(clash), want["build_a"] == "build", (build_ws, problems))
+                if clash:
+                    self.assertEqual(of.ORG_SHORT["build"], "build")
+
     def test_idempotent(self):
         positions = [pos("of_a", "of", "a", "s1", summary="d", _workspace="of")]
         agents = [agent("w1:p1", "s1", name="of_a", tokens={"system": "of", "role": "a", "summary": "d"})]
