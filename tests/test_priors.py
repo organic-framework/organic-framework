@@ -47,23 +47,37 @@ class TallyTest(unittest.TestCase):
 
     def test_current_version_only(self):
         labels = {"old": lab("chatty", 2, "false_positive", "x"),      # @2 is not carried by @4
-                  "carried": lab("chatty", 3, "true_positive", "y"),   # @3 is
-                  "bare": dict(lab("chatty", 4, "true_positive", "z"), rule_version=None),
+                  "carried": lab("chatty", 3, "true_positive", "y"),   # @3 is: replayed
+                  "bare": dict(lab("chatty", 4, "true_positive", "z"), rule_version=None),   # replayed
                   "gone": lab("broker", 0, "true_positive", "w"),
-                  "quiet": lab("chatty", 4, "false_positive", "fixed by @4")}
+                  "quiet": lab("chatty", 3, "false_positive", "fixed by @4"),               # @4 no longer raises it
+                  "now": lab("chatty", 4, "true_positive", "v")}       # given on @4: @4 raised it, no replay
         out, meta, _ = self.run_tally(labels, raised={"carried", "bare", "old"})
         r = out["ap.chatty@4"]
         self.assertEqual((r["labels"], r["older_version"], r["not_raised"], r["counted"], r["false_positive"]),
-                         (4, 1, 1, 2, 0))
+                         (5, 1, 1, 3, 0))
         self.assertEqual(meta["gone"], 1)
         # a rule blocked in the replay judges nothing: its labels count apart, never as no longer raised
         out, _, _ = self.run_tally(labels, raised=set(), blocked={"ap.chatty"})
         r = out["ap.chatty@4"]
-        self.assertEqual((r["older_version"], r["replay_blocked"], r["not_raised"], r["counted"]), (1, 3, 0, 0))
+        self.assertEqual((r["older_version"], r["replay_blocked"], r["not_raised"], r["counted"]), (1, 3, 0, 1))
+
+    def test_sittings_replay_only_carried_labels(self):
+        h = "2026-11-16T"
+        labels = {"a": lab("chatty", 3, "true_positive", ts=h + "09:10:00Z"),
+                  "b": lab("lingering", 0, "true_positive", ts=h + "09:50:00Z"),   # on lingering@0, the current one
+                  "c": lab("chatty", 3, "true_positive", ts=h + "10:05:00Z"),     # 55 min after a: the same sitting
+                  "d": dict(lab("off-map-work", 1, "true_positive", ts=h + "12:00:00Z"), rule_version=None),
+                  "e": lab("chatty", 2, "true_positive", ts=h + "13:00:00Z")}      # @2 is not carried: none
+        plan, end_of = of_priors.sittings(labels, CAT)
+        e = of_priors.of_model.epoch
+        self.assertEqual(plan, [(e(h + "11:00:00Z"), {"chatty"}), (e(h + "12:00:00Z"), {"off-map-work"})])
+        self.assertEqual(end_of, {"a": e(h + "11:00:00Z"), "c": e(h + "11:00:00Z"), "d": e(h + "12:00:00Z")})
 
     def test_replay_per_hour_after_the_label(self):
-        labels = {"a": lab("lingering", 0, "true_positive", ts="2026-11-16T10:20:00Z"),
-                  "b": lab("lingering", 0, "true_positive", ts="2026-11-16T10:59:59Z")}
+        labels = {"a": lab("chatty", 3, "true_positive", ts="2026-11-16T10:20:00Z"),
+                  "b": lab("chatty", 3, "true_positive", ts="2026-11-16T10:59:59Z"),
+                  "c": lab("lingering", 0, "true_positive", ts="2026-11-16T12:30:00Z")}   # current version: none
         _, _, seen = self.run_tally(labels)
         self.assertEqual(set(seen), {of_priors.of_model.epoch("2026-11-16T11:00:00Z")})
 
