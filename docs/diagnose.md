@@ -416,7 +416,7 @@ A rule reports `blocked` while the organization has no declared loop or no run i
 | 2.16 | `ap.loop-cheapest-rung@0` | ≥ 2 runs on a rung for a hypothesis that has no accepted run on a cheaper rung that already existed (`since` ≤ the run) | doer | low |
 | 2.17 | `ap.loop-checkpoint@0` | The loop ran in the last `checkpoint_days` (default 3), but no run reached a production rung in that time, counted from the loop's start or its last production run | work_owner | medium |
 | 2.18 | `ap.loop-plateau@2` | 3 consecutive runs on the target metric each improve the best earlier result by < 1% of it | work_owner | medium |
-| 2.19 | `ap.loop-wip@0` | More than `wip_arms` hypotheses in `testing` for ≥ 12 h | doer | low |
+| 2.19 | `ap.loop-wip@1` | More than its limit of hypotheses in `testing` in one group for ≥ 12 h: a cell when the loop declares `cells`, a rung when `wip_arms` is a map by rung, else the work | doer | low |
 | 2.20 | `ap.loop-babysit-model@0` | ≥ 100 runner commands and monitors by the loop's doers on a model ranked above `babysit_model` (default `sonnet`) | doer, with `of_capacity` | low |
 | 2.21 | `ap.loop-objective-drift@2` | `unpriced`: ≥ 3 runs, and ≥ 30% of the loop's runs, measure a metric that is neither the target's nor a measure with `to_money`. `untied`: the same on a target the owner decided (`decided`), where a measure with `to_target` is tied too, or any change of objective recorded there. `context`: a run, a hypothesis or a change of objective names a part outside the target's segment | work_owner | medium |
 | 2.22 | `ap.loop-eval-bottleneck@0` | On one rung with ≥ 3 runs, the wait share (queued to started, over queued to ended) is > 40% | work_owner | medium |
@@ -442,7 +442,9 @@ Per rule:
   - The first user organization's case: the day pass stayed at the same value from 11-05 to 11-07.
 - **2.19 WIP limit.**
   - Arms in flight are hypotheses whose last status is `testing`.
-  - Nudge: "Finish or park one arm."
+  - From v1 (2026-11-23) they are counted per group, as `wip_arms` counts them (§4.1, `metrics.wip_groups`): per cell when the loop declares `cells`, and per rung when `wip_arms` is a map by rung, a hypothesis's rung being that of its latest run, else the one its cost names, else the ladder's first. Each group stands against its own limit; a rung the map does not name has none. A loop with a whole number and no cells is one group, the work, as in v0, with the same evidence. Basis: `of_architect`'s hand-over `c4ef8758`, after a user organization's six hypotheses in testing over four cells, none above its limit of three, were flagged as six against three (`of_review` on organic-framework PR 577).
+  - Evidence: `hours_over` and `limit` of the group longest over, the work's hypotheses in testing, and with cells or a map, `groups`: each group over, with its `cell`, `rung`, `limit`, `hours_over` and `most`, the most it held while over.
+  - Nudge: "Finish or park one arm" (with groups, in the cell or rung named).
 - **2.20 Babysitting model.**
   - Runner commands and monitors are tool calls classed `runner` or `monitor` (§4.1).
   - The model rank is `haiku` < `sonnet` < `opus` < `fable`, by the model id's family.

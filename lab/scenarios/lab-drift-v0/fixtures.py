@@ -333,6 +333,20 @@ def _loop_case(name, events, label, doc=None, rule=None):
             "labels": [{"rule": rule, "affected": [_LW], "label": label}]}
 
 
+def _arms(spread, rung="offline"):
+    """One hypothesis per letter, filed in that cell and run once on RUNG (2.19 v1: wip_arms per cell and rung,
+    hand-over c4ef8758); h1 runs again late, so the loop is not stalled (2.29)."""
+    out = []
+    for i, c in enumerate(spread, 1):
+        out += [ev(f"lc{i}", "2026-11-06T09:00Z", "of.loop_hypothesis", "s-bot_search",
+                   {"work": _LW, "id": f"h{i}", "change": f"h{i}", "status": "open", "cell": c}, position="bot_search"),
+                _lrun(i, "2026-11-06T10:00Z", rung, f"h{i}")]
+    return out + [_lrun(99, "2026-11-07T22:00Z", rung, "h1")]
+
+
+_CELLS = {c: "bot_search" for c in "abcd"}
+
+
 SCENARIOS += [
     _loop_case("loop-cheapest-rung/positive",
                [_lrun(1, "2026-11-06T14:00Z", "day_pass", "h1", 300), _lrun(2, "2026-11-07T14:00Z", "day_pass", "h2", 310)],
@@ -358,6 +372,15 @@ SCENARIOS += [
                "positive", rule="ap.loop-wip"),
     _loop_case("loop-wip/negative-at-limit", [_lrun(i, "2026-11-06T10:00Z", "offline", f"h{i}") for i in (1, 2)],
                "negative", rule="ap.loop-wip"),
+    # v1: a user organization's six hypotheses over four cells, none above its limit of three (hand-over c4ef8758)
+    _loop_case("loop-wip/negative-cells-under", _arms("aabbcd"), "negative", rule="ap.loop-wip",
+               doc=_loop_doc(wip_arms=3, cells=_CELLS)),
+    _loop_case("loop-wip/positive-cell-over", _arms("aaaabc"), "positive", rule="ap.loop-wip",
+               doc=_loop_doc(wip_arms=3, cells=_CELLS)),
+    _loop_case("loop-wip/positive-rung-map", _arms("xy"), "positive", rule="ap.loop-wip",
+               doc=_loop_doc(wip_arms={"offline": 1})),
+    _loop_case("loop-wip/negative-rung-unnamed", _arms("xyz"), "negative", rule="ap.loop-wip",
+               doc=_loop_doc(wip_arms={"gate": 1})),
     _loop_case("loop-babysit-model/positive", [_lrun(1, "2026-11-06T12:00Z", "offline", "h1")] + _calls("claude-fable-5-1", 120),
                "positive", rule="ap.loop-babysit-model"),
     _loop_case("loop-babysit-model/negative-sonnet",

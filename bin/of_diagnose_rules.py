@@ -1084,22 +1084,54 @@ def rule_loop_plateau(model, rows, a, b, cat, spec):
     return out
 
 
+def _hours_over(series, limit, a, b):
+    """Hours in [a, b] a step series [(ts, n)] stood above LIMIT, and the most it held then."""
+    over, most, prev_t, prev_n = 0.0, 0, None, 0   # the count is prev_n from prev_t until the next step
+    for t, n in sorted(series, key=lambda p: p[0]) + [(b, None)]:
+        lo, hi = max(prev_t if prev_t is not None else a, a), min(t, b)
+        if prev_n > limit and hi > lo:
+            over, most = over + hi - lo, max(most, prev_n)
+        prev_t, prev_n = t, n
+    return round(over / 3600, 1), most
+
+
 def rule_loop_wip(model, rows, a, b, cat, spec):
+    """v1 (2026-11-23): each group that wip_arms counts by stands against its own limit, from the projection's
+    metrics.wip_groups (of_studio's): a cell when the loop declares cells, a rung when wip_arms is a map by rung, else
+    the work as a whole. A rung the map does not name has no limit. Basis: of_architect's hand-over c4ef8758, after a
+    user organization's six hypotheses over four cells, none above its limit of three, were flagged as six against
+    three (of_review on organic-framework PR 577)."""
     out = []
     for w, lp in _loops(model).items():
-        limit = lp.get("wip_arms") or _t(spec, "wip_arms_default", 2)
-        series = sorted(((lp.get("metrics") or {}).get("wip") or []), key=lambda p: p[0])
-        over, prev_t, prev_n = 0.0, None, 0   # the count is prev_n from prev_t until the next step
-        for t, n in series + [(b, None)]:
-            lo, hi = max(prev_t if prev_t is not None else a, a), min(t, b)
-            if prev_n > limit and hi > lo:
-                over += hi - lo
-            prev_t, prev_n = t, n
-        hours = round(over / 3600, 1)
-        if hours >= _t(spec, "over_hours_gte", 12):
-            testing = [h["id"] for h in lp.get("hypotheses") or [] if h.get("status") == "testing"]
-            out.append(issue(cat, "loop-wip", [w], {"work": w, "hours_over": hours, "limit": limit, "testing": testing},
-                             f"{w} had more than {limit} arms in flight for {hours} h: finish or park one"))
+        metrics = lp.get("metrics") or {}
+        groups = metrics.get("wip_groups")
+        if groups is None:   # a projection without groups: the work's total against a number
+            arms = lp.get("wip_arms")
+            if isinstance(arms, dict):
+                continue      # a limit per rung, and no count per rung to read it against
+            groups = [{"cell": None, "rung": None, "limit": arms or _t(spec, "wip_arms_default", 2),
+                       "series": metrics.get("wip") or []}]
+        hit = []
+        for g in groups:
+            if g.get("limit") is None:
+                continue
+            hours, most = _hours_over(g.get("series") or [], g["limit"], a, b)
+            if hours >= _t(spec, "over_hours_gte", 12):
+                hit.append({"cell": g.get("cell"), "rung": g.get("rung"), "limit": g["limit"], "hours_over": hours,
+                            "most": most})
+        if not hit:
+            continue
+        testing = [h["id"] for h in lp.get("hypotheses") or [] if h.get("status") == "testing"]
+        top = max(hit, key=lambda x: x["hours_over"])
+        ev = {"work": w, "hours_over": top["hours_over"], "limit": top["limit"], "testing": testing}
+        if all(x["cell"] is None and x["rung"] is None for x in hit):
+            summary = f"{w} had more than {top['limit']} arms in flight for {top['hours_over']} h: finish or park one"
+        else:
+            ev["groups"] = hit
+            where = "; ".join(" / ".join(f"{k} {x[k]}" for k in ("cell", "rung") if x[k] is not None)
+                              + f" had more than {x['limit']} for {x['hours_over']} h" for x in hit)
+            summary = f"{w}: arms in flight over their limit: {where}: finish or park one there"
+        out.append(issue(cat, "loop-wip", [w], ev, summary))
     return out
 
 

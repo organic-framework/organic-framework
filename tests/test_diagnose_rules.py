@@ -851,8 +851,10 @@ class LoopRulesTest(unittest.TestCase):
             pl["started_at"] = started
         return ev(f"run{i}", ts, "of.loop_run", "s-search", pl, position="bot_search")
 
-    def hyp(self, i, ts, hid, predict=None, change=None, status="open"):
+    def hyp(self, i, ts, hid, predict=None, change=None, status="open", cell=None):
         pl = {"work": self.W, "id": hid, "change": change or hid, "status": status}
+        if cell:
+            pl["cell"] = cell
         if predict:
             pl["predict"] = predict
         return ev(f"h{i}", ts, "of.loop_hypothesis", "s-search", pl, position="bot_search")
@@ -928,6 +930,36 @@ class LoopRulesTest(unittest.TestCase):
         self.assertGreaterEqual(got[0]["evidence"]["hours_over"], 12)
         settled = three + [self.decide(3, "2026-11-05T14:00Z", "h3")]
         self.assertEqual(self.found("loop-wip", settled)[0], [])   # 4 h over the limit
+        # v1: a loop with no cells and a whole number keeps v0's issue, evidence and all (labels_carry_from: [0])
+        self.assertEqual(got[0]["rule_version"], "ap.loop-wip@1")
+        self.assertEqual(set(got[0]["evidence"]), {"work", "hours_over", "limit", "testing"})
+        self.assertEqual(got[0]["evidence"]["limit"], 2)
+
+    def test_wip_limit_per_cell_and_rung(self):
+        """v1: each cell, and each rung of a wip_arms map, against its own limit (hand-over c4ef8758): a user
+        organization's six hypotheses in testing over four cells, none above its limit of three, read as over."""
+        cells = {c: "bot_search" for c in "abcd"}
+
+        def arms(spread, rung="offline"):
+            out = []
+            for i, c in enumerate(spread, 1):
+                out += [self.hyp(i, "2026-11-05T09:00Z", f"h{i}", cell=c),
+                        self.run_(i, "2026-11-05T10:00Z", rung, f"h{i}", 1)]
+            return out
+        basis = self.doc(wip_arms=3, cells=cells)
+        self.assertEqual(self.found("loop-wip", arms("aabbcd"), basis)[0], [])   # 6 in test, at most 2 a cell
+        got, _ = self.found("loop-wip", arms("aaaabc"), basis)                    # cell a: 4 against 3
+        self.assertEqual(len(got), 1)
+        g = got[0]["evidence"]["groups"]
+        self.assertEqual([(x["cell"], x["rung"], x["limit"], x["most"]) for x in g], [("a", None, 3, 4)])
+        self.assertGreaterEqual(g[0]["hours_over"], 12)
+        self.assertIn("cell a had more than 3", got[0]["summary"])
+        # a map by rung: each rung against its own number; a rung the map does not name has no limit
+        by_rung = self.doc(wip_arms={"offline": 1, "gate": 3})
+        got, _ = self.found("loop-wip", arms("xy"), by_rung)
+        self.assertEqual([(x["cell"], x["rung"], x["limit"]) for x in got[0]["evidence"]["groups"]], [(None, "offline", 1)])
+        self.assertEqual(self.found("loop-wip", arms("xyz", rung="gate"), by_rung)[0], [])
+        self.assertEqual(self.found("loop-wip", arms("xyzw", rung="day_pass"), by_rung)[0], [])
 
     def test_babysit_model(self):
         def calls(model, n):
