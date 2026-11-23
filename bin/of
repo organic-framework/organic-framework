@@ -3460,7 +3460,7 @@ def _asks_deliver(position=None, now=None):
         if events:  # the screen's proposals, sent before anything is typed: only an accepted answer goes in
             try:      # (event store step 1; of_asks_answer.decide)
                 import of_decisions
-                of_decisions.send_pending(conn, only=events, log=lambda m: None)
+                of_decisions.send_pending(conn, only=events, log=lambda m: None, timeout=of_asks_answer.ONE_TRY_S)
             except Exception as e:  # noqa: BLE001 - the background child and the pulse send them later
                 print(f"{_now_iso()} deliver now: not sent: {type(e).__name__}: {e}")
         asks = _asks_now(conn, quiet=True)

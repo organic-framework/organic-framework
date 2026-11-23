@@ -425,6 +425,8 @@ def _ship_now():
 # pane, and whoever gave a refused one is told who answered first.
 
 DELIVERABLE = ("accepted", "off")
+ONE_TRY_S = 5  # a send from a screen's thread, the chat or a command: one try; the background child retries
+# (of_server on PR 613: without a timeout the client retries for up to 30 s while the server is down)
 
 
 def _org_of(conn, ask_id):
@@ -462,13 +464,13 @@ def decide(conn, pairs, log=None):
     counted (waiting, and written as today's answer, since its organization's decisions are not on here yet). record:
     the accepted decision (its own, or the one that won over it)."""
     import of_decisions
-    got = of_decisions.send_pending(conn, only=[p for _, p in pairs], log=log or (lambda m: None))
+    got = of_decisions.send_pending(conn, only=[p for _, p in pairs], log=log or (lambda m: None), timeout=ONE_TRY_S)
     out = {}
     for aid, pid in pairs:
         g = got.get(pid) or {"state": "waiting", "record": None}
         state, rec = g.get("state"), g.get("record")
         if state == "refused" and not rec:
-            rec = _refusal_record(conn, pid)
+            rec = _refusal_record(conn, pid)  # the winner it names, or {"reason"} when none won (a malformed one)
         if state == "waiting" and has_event(conn, of_decisions.legacy_id(pid)):
             state = "counted"
         out[aid] = (state, rec)
@@ -480,15 +482,19 @@ def _refusal_record(conn, pid):
     import of_decisions
     r = conn.execute("SELECT payload FROM event WHERE event_id = ?", (of_decisions.refused_id(pid),)).fetchone()
     try:
-        return (json.loads(r[0] or "{}").get("accepted") or None) if r else None
+        p = json.loads(r[0] or "{}") if r else {}
     except ValueError:
         return None
+    return p.get("accepted") or ({"reason": p["reason"]} if p.get("reason") else None)
 
 
 def refusal(ask_id, rec):
     """What the person whose answer lost is told on their own screen: who answered the card first, when, and with
     what (04-design.md §2: "the second answer is not lost and not silent")."""
     rec = rec or {}
+    if rec.get("reason") and not rec.get("by"):  # refused with no winner: the server would not take it at all
+        return (f"not accepted: the server refused the answer to {card_id(ask_id)} ({rec['reason']}); your answer "
+                "was not sent to the asker")
     who = rec.get("by") or "someone"
     who = "the founder" if who in ("owner", "founder") else who
     where = {"asks-ui": "in the questions screen", "conductor": "in the conductor's chat", "status": "by its asker",

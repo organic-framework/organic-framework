@@ -64,7 +64,7 @@ class Base(unittest.TestCase):
         """The organization has a server; POST /v1/decisions answers with ANSWER(body) -> (status, body). Set after
         the card is filed: its card id would ask that server for a number."""
         for p in (mock.patch.object(of_events, "_org_server_url", lambda org: "https://127.0.0.1:1"),
-                  mock.patch.object(of_decisions, "_default_post", lambda url, body: answer(body))):
+                  mock.patch.object(of_decisions, "_default_post", lambda url, body, timeout=None: answer(body))):
             p.start()
             self.addCleanup(p.stop)
 
@@ -160,6 +160,26 @@ class ServerTest(Base):
         self.assertTrue(ok, status)
         self.assertEqual([t[0] for t in self.typed], ["pane-of_a"])
         self.assertEqual(self.state(aid)["state"], "answered")
+
+    def test_a_malformed_refusal_says_so_and_types_nothing(self):
+        self.cut_over()
+        aid, item = self.card()
+        self.server(lambda body: (400, {"title": "text over 16 KiB"}))
+        ok, status = of_asks_answer.answer(self.conn, item, "yes", POSITIONS, lambda name: "pane-" + name)
+        self.assertFalse(ok)
+        self.assertIn("not accepted: the server refused", status)
+        self.assertIn("text over 16 KiB", status)
+        self.assertEqual(self.typed, [])
+
+    def test_the_screens_send_is_one_short_try(self):
+        seen = []
+        aid, item = self.card()
+        self.server(lambda body: (404, {}))
+        real = of_decisions.settle
+        with mock.patch.object(of_decisions, "settle",
+                               lambda *a, **k: seen.append(k.get("timeout")) or real(*a, **k)):
+            of_asks_answer.answer(self.conn, item, "yes", POSITIONS, lambda name: "pane-" + name)
+        self.assertEqual(seen, [of_asks_answer.ONE_TRY_S])
 
     def test_a_refusal_from_the_server_names_the_winner(self):
         won = {"proposal": "p-other", "by": "owner", "via": "conductor", "answer": "no, Tuesday",
