@@ -16,14 +16,19 @@ CARD_KEYS = ("question", "options", "tags", "tags_guessed", "to", "from", "block
 
 
 def _lock_text_names_it(project):
-    """Does the organization's Benchfile.lock name of-asks? Read as text, with no Bench and no Lua."""
+    """Does the organization's Benchfile.lock name of-asks? Read as text, with no Bench and no Lua, and only as a
+    regular file reached without a link, opened without waiting, read up to of_context.read_in's limit: the folder holds
+    what is pushed to the organization's repository, so a link or a FIFO committed under that name must never make
+    every `of ask`, the pulse or the listener wait on it or read what it names (of_review on PR 574). Bench's own
+    read_lock reads it the same way. Anything else under that name reads as no lock."""
     if not project:
         return False
+    import of_context
     try:
-        with open(os.path.join(project, LOCK), encoding="utf-8", errors="replace") as fh:
-            return f'"{PACKAGE}"' in fh.read()
+        text = of_context.read_in(project, LOCK)
     except OSError:
         return False
+    return text is not None and f'"{PACKAGE}"' in text
 
 
 def _lock_entry(project):
