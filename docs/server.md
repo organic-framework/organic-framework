@@ -141,7 +141,10 @@ itself, in its own transaction, rather than after the batch writer.
   "proposer", "signature": null, "restore": null}`. The stream is one card at one version; its one step is open →
   answered. The payload holds the answer and its fields as the client records them today, and any further key of
   the client's own (the chat's proof, a status's note): at most 32 lowercase keys, never one the server sets.
-  `via` is `asks-ui`, `conductor`, `cli`, `unit` or `status`. The machine is the authenticated one. Answers: `200
+  `via` and `by` are any short lowercase names: no authority is read from them in step 1. The machine is the
+  authenticated one. Whether the organization's decisions are on is checked before the proposal's form, so until
+  the cutover every proposal gets `404 decisions_off` and takes today's path. `of_client.Client.decide(body)`
+  returns the status and the answer's body read whole, a refusal's accepted record included. Answers: `200
   {"state": "accepted", "decision": <record>}`; `409 {"type": "refused", "accepted": <record>}` when the stream is
   decided; the same `id` again gets its first answer, and with other content `409 conflict`; `404 decisions_off`
   until the switch (below); `503` while the organization is moving; `403` for an organization the machine has not

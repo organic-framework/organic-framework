@@ -27,6 +27,11 @@ def no_agent_env():
 KEY_PATH = os.environ.get("OF_MACHINE_KEY") or of_events.config_path("machine_ed25519")
 
 
+# a decision's answer: a refusal carries the accepted record whole, bounded by the server's 64 KiB proposal and
+# its own fields (bin/of_server_decisions.py)
+DECISION_BODY_CAP = 512 * 1024
+
+
 class ServerError(Exception):
     def __init__(self, status, body):
         super().__init__(f"of-server {status}: {body}")
@@ -418,7 +423,7 @@ class Client:
         self.token_path = os.path.join(state_dir or of_events.STATE_DIR, f"server-token-{tag}.json")
         self.machine_id = of_events.machine_id()
 
-    def _request(self, method, path, body=None, token=None, raw=None, encoding=None, timeout=None):
+    def _request(self, method, path, body=None, token=None, raw=None, encoding=None, timeout=None, body_cap=1000):
         data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
         headers = {"Content-Type": "application/json"}
         if encoding:
@@ -442,7 +447,7 @@ class Client:
                     return r.status, json.loads(r.read() or b"{}")
             except urllib.error.HTTPError as e:
                 try:
-                    body = e.read()[:1000].decode(errors="replace")
+                    body = e.read(body_cap + 1)[:body_cap].decode(errors="replace")
                     retry_after = e.headers.get("Retry-After") if e.headers else None
                 finally:
                     e.close()
@@ -492,6 +497,22 @@ class Client:
             if e.status != 401:
                 raise
             return self._request(method, path, token=self.token(refresh=True), **kw)
+
+    def decide(self, body, timeout=None):
+        """POST /v1/decisions (docs/server.md, Decisions): (status, the answer's body parsed), a refusal's included,
+        whose accepted record is read whole (of_platform, message 01a208aa-8599: past the usual 1,000 bytes of an
+        error's body the winner was lost). Raises TransportError when the server cannot be reached. TIMEOUT: one try
+        with that timeout, as for every call that has one."""
+        try:
+            return self._authed("POST", "/v1/decisions", body=body, timeout=timeout, body_cap=DECISION_BODY_CAP)
+        except TransportError:
+            raise
+        except ServerError as e:
+            try:
+                out = json.loads(e.body) if isinstance(e.body, str) else e.body
+            except ValueError:
+                out = None
+            return e.status, out if isinstance(out, dict) else {"title": str(e.body)[:200]}
 
     def send_batch(self, records, batch_id=None):
         body = json.dumps({"batch_id": batch_id or _uuid7(), "machine_id": self.machine_id, "schema": 1,

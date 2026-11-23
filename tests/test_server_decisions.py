@@ -9,7 +9,6 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
-import of_client  # noqa: E402
 import of_events  # noqa: E402
 import of_server  # noqa: E402
 import of_server_decisions as D  # noqa: E402
@@ -29,14 +28,13 @@ def proposal(stream=f"{ASK}@v1", pid=None, answer="Yes, go", by="owner", org="of
 
 class DecisionsTest(ServerBase):
     def post(self, body):
-        try:
-            return 200, self.client._authed("POST", "/v1/decisions", body=body, timeout=30)[1]   # one try: no backoff
-        except of_client.ServerError as e:
-            return e.status, json.loads(e.body)
+        return self.client.decide(body, timeout=30)                        # one try: no backoff
 
     def test_off_until_the_switch_then_one_answer_per_card_version(self):
         status, out = self.post(proposal())
         self.assertEqual((status, out["type"]), (404, "decisions_off"))     # the client records the answer as before
+        status, out = self.post(dict(proposal(), kind="withdraw", extra=1))
+        self.assertEqual((status, out["type"]), (404, "decisions_off"))     # off before its form is read: never lost
         rec, turned = D.turn_on(self.app, "ofb")
         self.assertTrue(turned)
         self.assertEqual((rec["event.name"], rec["of.payload"]["first_seq"]), ("of.decision_cutover", 1))
@@ -93,6 +91,7 @@ class DecisionsTest(ServerBase):
                          (dict(proposal(), extra=1), "a proposal is"),
                          (dict(proposal(), payload={"answer": "y", "ask_id": ASK2}), "the stream's ask"),
                          (dict(proposal(), payload={"answer": "y", "by": "Not A Name"}), "payload.by"),
+                         (dict(proposal(), payload={"answer": "y", "via": "x" * 80}), "payload.via"),
                          (dict(proposal(), payload={"answer": "y", "seq": 9}), "the server's to set"),
                          (dict(proposal(), payload={"answer": "y", "ask_ids": [ASK]}), "the server's to set"),
                          (dict(proposal(), payload={"answer": "y", "Bad Key": 1}), "lowercase name"),
@@ -118,6 +117,18 @@ class DecisionsTest(ServerBase):
             "answer": "done myself", "via": "status", "by": "k8s_keeper", "ask_id": ASK2, "note": "checked the pods"})
         status, out = self.post(mine)
         self.assertEqual((status, out["decision"]["of.payload"]["signed"]), (200, None))   # a position's step
+
+    def test_a_refusal_carries_a_long_accepted_record_whole(self):
+        """of_platform, message 01a208aa-8599: an error's body was cut at 1,000 bytes, so a refusal past it lost the
+        winner; decide() reads it whole."""
+        D.turn_on(self.app, "ofb")
+        first = proposal(payload={"answer": "y" * 4000, "via": "relay", "by": "of_conductor", "ask_id": ASK,
+                                  "quote": "q" * 3000})
+        self.assertEqual(self.post(first)[0], 200)                         # any short via and by pass
+        status, out = self.post(proposal(answer="no"))
+        self.assertEqual(status, 409)
+        self.assertEqual(out["accepted"]["of.payload"]["proposal"], first["id"])
+        self.assertEqual(len(out["accepted"]["of.payload"]["answer"]), 4000)
 
     def test_a_restoration_wins_over_a_later_decision_and_keeps_its_seq(self):
         D.turn_on(self.app, "ofb")

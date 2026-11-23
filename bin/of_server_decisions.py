@@ -46,7 +46,6 @@ ACCEPTED, CUTOVER = "of.decision_accepted", "of.decision_cutover"
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 STREAM = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})@v([1-9][0-9]{0,5})\Z")
 ORG = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}\Z")
-NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z")
 MAX_BODY = 64 * 1024
 MAX_TEXT = 16 * 1024
 KEYS = {"v", "id", "org", "kind", "stream", "payload", "proposer", "signature", "restore"}
@@ -55,10 +54,13 @@ KEYS = {"v", "id", "org", "kind", "stream", "payload", "proposer", "signature", 
 # sets on the accepted record or one the client never sends
 RESERVED = {"proposal", "org", "kind", "stream", "stream_version", "seq", "step", "machine", "proposer", "signed",
             "accepted_at", "restored", "supersedes", "version", "ask_ids", "decision"}
-PAYLOAD_KEY = re.compile(r"[a-z][a-z0-9_]{0,31}\Z")
+PAYLOAD_KEY = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")   # as the client checks them (bin/of_decisions.py)
 MAX_KEYS = 32
 PROPOSER = {"position", "session", "person"}
-VIA = {"asks-ui", "conductor", "cli", "unit", "status"}
+# via and by are the client's words, kept on the record; no authority is read from them in step 1, so any short name
+# passes (today's answers carry asks-ui, conductor, relay, pulse and more), and a proposal is never lost to a word the
+# server did not list
+WORD = re.compile(r"[a-z][a-z0-9_.:-]{0,63}\Z")
 
 
 class DecisionError(Exception):
@@ -114,11 +116,9 @@ def validate(body):
         raise bad(f"payload.answer: at most {MAX_TEXT} bytes, no NUL")
     if p.get("ask_id") not in (None, m.group(1)):
         raise bad("payload.ask_id: the stream's ask")
-    if p.get("via") is not None and p["via"] not in VIA:
-        raise bad(f"payload.via: one of {', '.join(sorted(VIA))}")
-    if p.get("by") is not None and not (isinstance(p["by"], str) and (p["by"] in ("owner", "founder")
-                                                                         or NAME.fullmatch(p["by"]))):
-        raise bad("payload.by: owner or a position's name")
+    for k in ("via", "by"):
+        if p.get(k) is not None and not (isinstance(p[k], str) and WORD.fullmatch(p[k])):
+            raise bad(f"payload.{k}: a short lowercase name")
     if p.get("verdict") not in (None, "not_a_question"):
         raise bad("payload.verdict: not_a_question or none")
     who = body.get("proposer")
@@ -205,6 +205,18 @@ def status(store, org=None):
     return out
 
 
+def _off(store, org, c=None):
+    """DecisionError 404 decisions_off unless ORG's decisions are on."""
+    if c is None:
+        with store.conn() as c2:
+            on = c2.execute("SELECT 1 FROM decision_orgs WHERE org = ?", (org,)).fetchone()
+    else:
+        on = c.execute("SELECT 1 FROM decision_orgs WHERE org = ?", (org,)).fetchone()
+    if not on:
+        raise DecisionError(404, "decisions_off", f"decisions are not on for {org}: the client records the answer as "
+                                                  "before")
+
+
 def propose(app, m, body, joined, served):
     """POST /v1/decisions: (status, body). M is the authenticated machine, JOINED its organizations, SERVED whether
     this server serves the proposal's organization."""
@@ -212,14 +224,20 @@ def propose(app, m, body, joined, served):
     import of_server_coord
     ensure(app.store)
     of_server_coord.ensure(app.store)
-    if len(json.dumps(body, ensure_ascii=False).encode()) > MAX_BODY:
-        raise DecisionError(413, "too_large", f"a proposal is at most {MAX_BODY} bytes")
-    validate(body)
-    org, pid, stream = body["org"], body["id"], body["stream"]
+    org = body.get("org") if isinstance(body, dict) else None
+    if not isinstance(org, str) or not ORG.fullmatch(org):
+        raise DecisionError(400, "bad_request", "org: an organization's name")
     if not served:
         raise DecisionError(404, "unknown_org", f"organization {org} is not served here")
     if not m["tenant"] and org not in joined:
         raise DecisionError(403, "forbidden", f"organization {org} not joined by this machine")
+    # off before anything else is checked: until the cutover a proposal the server would read otherwise takes
+    # today's path on the client, never a refusal for its form
+    _off(app.store, org)
+    if len(json.dumps(body, ensure_ascii=False).encode()) > MAX_BODY:
+        raise DecisionError(413, "too_large", f"a proposal is at most {MAX_BODY} bytes")
+    validate(body)
+    pid, stream = body["id"], body["stream"]
     sha = _sha(body)
     # every text of the payload masked before it is stored, the answer's and any proof's or note's, as a relay
     # message's is at post
@@ -230,9 +248,7 @@ def propose(app, m, body, joined, served):
         _durable(c)
     accepted_rec, sightings = None, []
     with app.store.tx() as c:
-        if not c.execute("SELECT 1 FROM decision_orgs WHERE org = ?", (org,)).fetchone():
-            raise DecisionError(404, "decisions_off", f"decisions are not on for {org}: the client records the answer "
-                                                      "as before")
+        _off(app.store, org, c)
         had = c.execute("SELECT body_sha, status, answer FROM proposals WHERE proposal = ?", (pid,)).fetchone()
         if had:
             if had[0] != sha:
