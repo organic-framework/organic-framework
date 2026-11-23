@@ -117,6 +117,50 @@ class LoopCheckTest(unittest.TestCase):
             self.assertTrue(any("both in the registry and in" in x for x in of.loop_files(works, [root])))
 
 
+class CellsTest(unittest.TestCase):
+    """of_architect, hand-over c4ef8758: a loop may declare cells, each with one decider; wip_arms is counted per cell,
+    and per rung when it is a map (a user organization's six hypotheses over four cells were flagged over three)."""
+
+    def test_cells_and_a_wip_map_are_checked(self):
+        ok = dict(LOOP, cells={"router": "acme_router", "pricing": "acme_pricing"}, wip_arms={"day_pass": 1, "offline": 3})
+        self.assertEqual(of_loop.check_loop(ok, "w", positions={"acme_router", "acme_pricing"}), [])
+        bad = dict(LOOP, cells={"Router": "acme_router", "p": ["a", "b"], "q": "nobody_here"},
+                   wip_arms={"moon": 1, "offline": 0})
+        out = "\n".join(of_loop.check_loop(bad, "w", positions={"acme_router"}))
+        for said in ("cell 'Router' must match", "cell 'p' needs one deciding position", "'nobody_here' is no position",
+                     "wip_arms names rung 'moon'", "wip_arms[offline] must be a positive whole number"):
+            self.assertIn(said, out)
+        self.assertIn("cells is a map", "\n".join(of_loop.check_loop(dict(LOOP, cells=[]), "w")))
+
+    def test_wip_counts_per_cell_and_per_rung(self):
+        loop = dict(LOOP, cells={"a": "p1", "b": "p2", "c": "p3", "d": "p4"}, wip_arms=3)
+        hyps = [{"id": f"h{i}", "status": "testing", "cell": c} for i, c in enumerate("aabbcd")]
+        hyps.append({"id": "hx", "status": "open", "cell": "a"})
+        rows = of_loop.wip(loop, hyps)
+        self.assertEqual([(r["cell"], r["testing"], r["over"]) for r in rows],
+                         [("a", 2, False), ("b", 2, False), ("c", 1, False), ("d", 1, False)])
+        self.assertTrue(of_loop.wip(dict(LOOP, wip_arms=3), hyps)[0]["over"])   # no cells: per work, 6 over 3
+        by_rung = dict(LOOP, wip_arms={"day_pass": 1})
+        two = [{"id": "h1", "status": "testing", "last_run": {"rung": "day_pass"}},
+               {"id": "h2", "status": "testing", "cost_rung": "day_pass"},
+               {"id": "h3", "status": "testing"}]                               # the ladder's first rung: no limit
+        rows = {r["rung"]: r for r in of_loop.wip(by_rung, two)}
+        self.assertEqual((rows["day_pass"]["testing"], rows["day_pass"]["over"]), (2, True))
+        self.assertEqual((rows["oracle"]["limit"], rows["oracle"]["over"]), (None, False))
+
+    def test_the_cell_is_required_where_cells_are_declared(self):
+        loop = dict(LOOP, cells={"a": "p1"})
+        self.assertIsNone(of_loop.cell_refusal(loop, "a"))
+        self.assertIn("name the hypothesis's cell", of_loop.cell_refusal(loop, None))
+        self.assertIn("'z' is not one", of_loop.cell_refusal(loop, "z"))
+        self.assertIsNone(of_loop.cell_refusal(LOOP, None))                       # no cells: nothing changes
+        self.assertIn("declares no cells", of_loop.cell_refusal(LOOP, "a"))
+
+    def test_a_hypothesis_keeps_its_cell(self):
+        rows = [ev(1, "of.loop_hypothesis", 1, work="w", id="h1", change="x", status="open", cell="a")]
+        self.assertEqual(of_loop.register(rows, "w", LOOP)["hypotheses"][0]["cell"], "a")
+
+
 class RegisterTest(unittest.TestCase):
     def test_status_is_derived_and_the_next_is_first(self):
         rows = [ev(1, "of.loop_hypothesis", 1, work="w", hypothesis="h1", change="cheap and valuable", cost="oracle, 0",

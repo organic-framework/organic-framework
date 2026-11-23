@@ -31,7 +31,9 @@ DECISIONS = ("keep", "drop", "park", "reopen", "step_up", "step_back", "change_o
 STATUS_OF = {"keep": "kept", "drop": "dropped", "park": "parked", "reopen": "open"}
 REOPENS = ("parked", "dropped", "kept")  # the statuses reopen leaves; open and testing are open already
 MODELS = ("haiku", "sonnet", "opus", "fable")
-LOOP_KEYS = {"target", "measures", "ladder", "checkpoint_days", "wip_arms", "babysit_model"}
+LOOP_KEYS = {"target", "measures", "ladder", "checkpoint_days", "wip_arms", "babysit_model", "cells"}
+CELL_ID = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+POSITION_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 SEGMENT_KEYS = {"start", "end", "context"}  # the target's controlled segment (docs/registry.md, Works)
 CONTEXT_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 THROUGHPUT = ("raise", "sustain", "expense", "measure", "coordinate")
@@ -198,7 +200,7 @@ def owners_yes(loop, resolve):
     return d if found and found != UNREAD else None
 
 
-def check_loop(loop, wid, warn="warning: ", resolve=None):
+def check_loop(loop, wid, warn="warning: ", resolve=None, positions=None):
     """Problems with a work's loop (RFC 0005 §4); warnings start with `warn`. On a target the owner decided, money is
     optional and a measure chains to the target (to_target) or to money (docs/registry.md, Works, "The owner's
     measure"). With RESOLVE (`of registry check`: resolve_decided over this machine's log), a decided id the log does
@@ -288,10 +290,34 @@ def check_loop(loop, wid, warn="warning: ", resolve=None):
                 out.append(f"{tag}: rung {rid!r}: production is true or false (shadow and higher are production)")
             if r.get("since") is not None and not re.match(r"^\d{4}-\d{2}-\d{2}", str(r["since"])):
                 out.append(f"{tag}: rung {rid!r}: since is a date (YYYY-MM-DD)")
-    for k in ("checkpoint_days", "wip_arms"):
-        v = loop.get(k)
-        if v is not None and (not isinstance(v, int) or isinstance(v, bool) or v < 1):
-            out.append(f"{tag}: {k} must be a positive whole number")
+    def whole(v):
+        return isinstance(v, int) and not isinstance(v, bool) and v >= 1
+    v = loop.get("checkpoint_days")
+    if v is not None and not whole(v):
+        out.append(f"{tag}: checkpoint_days must be a positive whole number")
+    # wip_arms: a number, or a map by rung; counted per cell when the loop has cells (of_architect, hand-over c4ef8758)
+    v = loop.get("wip_arms")
+    if isinstance(v, dict):
+        known = set(rungs(loop))
+        for r, n in v.items():
+            if str(r) not in known:
+                out.append(f"{tag}: wip_arms names rung {r!r}, which is not on the ladder")
+            if not whole(n):
+                out.append(f"{tag}: wip_arms[{r}] must be a positive whole number")
+    elif v is not None and not whole(v):
+        out.append(f"{tag}: wip_arms must be a positive whole number, or a map of rung to one")
+    cells = loop.get("cells")
+    if cells is not None:
+        if not isinstance(cells, dict) or not cells:
+            out.append(f"{tag}: cells is a map of cell id to its deciding position")
+        else:
+            for c, who in cells.items():
+                if not CELL_ID.match(str(c)):
+                    out.append(f"{tag}: cell {c!r} must match {CELL_ID.pattern}")
+                if not isinstance(who, str) or not POSITION_NAME.match(who):
+                    out.append(f"{tag}: cell {c!r} needs one deciding position, by its name")
+                elif positions is not None and who not in positions:
+                    out.append(f"{tag}: cell {c!r}'s decider {who!r} is no position of this organization")
     bm = loop.get("babysit_model")
     if bm is not None and str(bm).split("-")[0] not in MODELS and not str(bm).startswith("claude-"):
         out.append(f"{warn}{tag}: babysit_model {bm!r} is not a known model family ({', '.join(MODELS)})")
@@ -619,7 +645,8 @@ def register(rows, work, loop=None):
             cost = p.get("cost") if isinstance(p.get("cost"), dict) else {"text": p.get("cost"), "runner_h": p.get("cost_h", 1.0)}
             hyps[hid] = {"id": hid, "change": p.get("change"), "predict": p.get("predict"), "cost": cost.get("text"),
                          "cost_h": cost.get("runner_h", 1.0), "voi": p.get("voi"), "status": p.get("status") or "open",
-                         "runs": 0, "since": r["ts"], "last": r["ts"]}
+                         "runs": 0, "since": r["ts"], "last": r["ts"], "cell": p.get("cell"),
+                         "cost_rung": cost.get("rung")}
         elif r["name"] == LOCATED or (r["name"] == "of.loop_run" and is_locate(p)):  # `of loop locate`: from now on
             i = by_run.get(p.get("run"))
             if i is not None:
@@ -660,3 +687,45 @@ def register(rows, work, loop=None):
         per = VOI.get(h["voi"] or "med", 1) / max(h.get("cost_h") or 0.0, 0.05)
         return (h["status"] not in live, -per, h["since"])
     return {"hypotheses": sorted(hyps.values(), key=key), "runs": runs, "decisions": decs, "waits": waits(rows, work)}
+
+
+def cells(loop):
+    """{cell id: its deciding position} of a loop, {} when it declares none."""
+    c = (loop or {}).get("cells")
+    return {str(k): v for k, v in c.items()} if isinstance(c, dict) else {}
+
+
+def wip(loop, hypotheses):
+    """The work in progress against wip_arms, one row per group: [{cell, rung, testing, limit, over}]. The hypotheses
+    in testing are counted per cell when the loop has cells, and per rung when wip_arms is a map, a hypothesis's rung
+    being that of its latest run, else the one its cost named, else the ladder's first (of_architect, hand-over
+    c4ef8758; a user organization's six hypotheses over four cells were flagged over a limit of three counted per
+    work). Without wip_arms the limit is 2. A rung the map does not name has no limit."""
+    w = (loop or {}).get("wip_arms")
+    by_rung = isinstance(w, dict)
+    first = (rungs(loop) or [None])[0]
+    groups = {}
+    for h in hypotheses or []:
+        if h.get("status") != "testing":
+            continue
+        rung = ((h.get("last_run") or {}).get("rung") or h.get("cost_rung") or first) if by_rung else None
+        cell = h.get("cell") if cells(loop) else None
+        groups.setdefault((cell, rung), []).append(h.get("id"))
+    out = []
+    for (cell, rung), ids in sorted(groups.items(), key=lambda x: (str(x[0][0]), str(x[0][1]))):
+        limit = (w.get(rung) if by_rung else w) if w is not None else 2
+        out.append({"cell": cell, "rung": rung, "testing": len(ids), "limit": limit,
+                    "over": limit is not None and len(ids) > limit, "hypotheses": ids})
+    return out
+
+
+def cell_refusal(loop, cell, work="the work"):
+    """Why `of loop hypothesis --cell CELL` is refused for LOOP, or None: with cells declared the cell is required and
+    must be one of them; with none, --cell is not taken."""
+    declared = cells(loop)
+    if declared and cell not in declared:
+        return (f"{work}'s loop has cells ({', '.join(sorted(declared))}): name the hypothesis's cell with --cell"
+                + (f"; {cell!r} is not one" if cell else ""))
+    if cell and not declared:
+        return f"{work}'s loop declares no cells; leave out --cell"
+    return None
