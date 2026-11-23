@@ -911,6 +911,14 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(cm.exception.status, 403)
         self.assertEqual(self.call(b, "POST", "/v1/messages/sent", dict(head, reply_to="q7"))["kept"], True)
         self.assertEqual(self.call(b, "POST", "/v1/messages/sent", dict(head, reply_to="q7"))["kept"], True)  # again
+        # what a reply could not answer gives no standing either: expired, failed, or past the 7 days (PR 596)
+        for i, (col, val) in enumerate((("state", "expired"), ("state", "dead"), ("done_at", "2026-10-01T00:00:00Z"))):
+            with self.app.store.conn() as c:
+                c.execute("UPDATE messages SET state = 'delivered', done_at = NULL WHERE msg_id = 'q7'")
+                c.execute(f"UPDATE messages SET {col} = ? WHERE msg_id = 'q7'", (val,))
+            with self.assertRaises(of_client.ServerError) as cm:
+                self.call(b, "POST", "/v1/messages/sent", dict(head, msg_id=f"x7-{i}", reply_to="q7"))
+            self.assertEqual(cm.exception.status, 403, val)
 
     def test_a_grant_limited_to_positions_admits_no_other(self):
         a = self.machine("a", ["ofb", "zeta"])

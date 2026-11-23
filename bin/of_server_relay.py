@@ -456,17 +456,9 @@ class Relay:
             return None, f"reply_to {rid} names no message (give its full id)"
         if (r[0], r[1], r[2], r[3]) != (to_org, to_pos, from_org, from_pos):
             return None, f"reply_to {rid} is not a message from {to_org}:{to_pos} to {from_org}:{from_pos}"
-        if r[4] not in ("queued", "leased", "delivered"):
-            return None, (f"reply_to {rid} never reached {from_org}:{from_pos}: "
-                          f"{self.NEVER_REACHED.get(r[4], f'its state is {r[4]}')}")
-        at = r[6]
-        if r[5]:
-            try:
-                at = calendar.timegm(time.strptime(r[5][:19], "%Y-%m-%dT%H:%M:%S"))
-            except ValueError:
-                pass
-        if not at or time.time() - at > self.REPLY_WINDOW_S:
-            return None, f"reply_to {rid} was sent or delivered more than {self.REPLY_WINDOW_S // 86400} days ago"
+        stale = self._unanswerable(rid, from_org, from_pos, r[4], r[5], r[6])
+        if stale:
+            return None, stale
         holds, held_why = self._holds(m, from_org, from_pos)
         if not holds:
             return None, held_why
@@ -531,14 +523,32 @@ class Relay:
             raise RelayError(409, "conflict", "msg_id kept already with other ends")
         return {"msg_id": msg_id, "kept": True}
 
+    def _unanswerable(self, rid, to_org, to_pos, state, done_at, created):
+        """Why a message from here cannot be answered as a reply (to_org:to_pos its receiver), or None: it never
+        reached its receiver (expired, failed), or it was sent or delivered more than REPLY_WINDOW_S ago. One test for
+        a reply and for a header that stands on the message it answers (of_secrets-review on PR 596)."""
+        if state not in ("queued", "leased", "delivered"):
+            return (f"reply_to {rid} never reached {to_org}:{to_pos}: "
+                    f"{self.NEVER_REACHED.get(state, f'its state is {state}')}")
+        at = created
+        if done_at:
+            try:
+                at = calendar.timegm(time.strptime(done_at[:19], "%Y-%m-%dT%H:%M:%S"))
+            except ValueError:
+                pass
+        if not at or time.time() - at > self.REPLY_WINDOW_S:
+            return f"reply_to {rid} was sent or delivered more than {self.REPLY_WINDOW_S // 86400} days ago"
+        return None
+
     def _sent_here(self, rid, from_org, from_pos, to_org, to_pos):
-        """Is RID a message here from from_org:from_pos to to_org:to_pos?"""
+        """Is RID a message here from from_org:from_pos to to_org:to_pos that a reply could still answer?"""
         if not isinstance(rid, str) or not rid:
             return False
         with self.app.store.conn() as c:
-            return c.execute("SELECT 1 FROM messages WHERE msg_id = ? AND from_org = ? AND from_position = ? AND"
-                             " to_org = ? AND to_position = ?", (rid, from_org, from_pos, to_org, to_pos)).fetchone() \
-                is not None
+            r = c.execute("SELECT state, done_at, created FROM messages WHERE msg_id = ? AND from_org = ? AND"
+                          " from_position = ? AND to_org = ? AND to_position = ?",
+                          (rid, from_org, from_pos, to_org, to_pos)).fetchone()
+        return r is not None and self._unanswerable(rid, to_org, to_pos, *r) is None
 
     def post(self, m, body):
         body = body or {}
