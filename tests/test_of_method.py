@@ -35,6 +35,13 @@ def setUpModule():
     import bench as b
     bench = b
     bench.FRAMEWORK = of_method.on_install
+    try:   # Bench evaluates only inside its own OS sandbox, which cannot start inside a session's (docs/bench.md)
+        bench.evaluate({"probe.lua": "return 1"}, "probe.lua", [])
+    except bench.BenchError as e:
+        if os.environ.get("CI"):
+            raise AssertionError(f"Bench cannot evaluate in CI: {e}")
+        tearDownModule()
+        raise unittest.SkipTest(f"Bench cannot evaluate here: {e}")
 
 
 def tearDownModule():

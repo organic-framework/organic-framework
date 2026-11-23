@@ -9,27 +9,29 @@ Bench is RubyGems and Bundler, and OF is Rails. The design is organic-framework-
 ## Setting it up
 
 - **Bench's checkout.** Clone `organic-framework/bench` to `~/.local/share/bench`, or anywhere and name it with
-  `of owner set bench <folder>`, and check out the commit this OF is tested with, `54e4cc352a3fe5b5c476bb9a5fe2b1bc80a54c18` (Bench's
-  first slice, its pull request 1; CI pins the same commit) (the owner's alone, in a plain terminal: OF runs its code). `of owner show` says where
-  OF looks. OF never takes the path from an environment variable. Without a checkout, `of bench` says where it looked,
-  and an organization without a `Benchfile.lock` naming a package runs as before.
+  `of owner set bench <folder>` (the owner's alone, in a plain terminal: OF runs its code), and check out the commit
+  this OF is tested with, `54e4cc352a3fe5b5c476bb9a5fe2b1bc80a54c18`: Bench's first slice (its pull request 1;
+  CI pins the same commit). `of owner show` says where OF looks. OF never takes the path from an environment variable.
+  Without a checkout, `of bench` says where it looked, and an organization without a `Benchfile.lock` naming a package
+  runs as before.
 - **Bench's outer sandbox.** Bench evaluates only inside an operating-system sandbox of its own: `sandbox-exec` on
   macOS, which is there; on Linux `bubblewrap` (`apt install bubblewrap`) in a scope of the user's systemd manager
   (`systemd-run --user`). Ubuntu 24.04's AppArmor keeps bwrap from making user namespaces until
   `kernel.apparmor_restrict_unprivileged_userns` is 0, which is the machine owner's to set. It cannot start inside an
   agent session's sandbox.
-- **A Lua runtime.** Bench reads every Lua file in a closed environment of its own: Lua 5.4, LuaJIT 2.1 or Lua 5.1
-  (macOS: `brew install luajit`; Debian or Ubuntu: `apt install lua5.4`).
+- **A Lua runtime.** Bench reads every Lua file in a closed environment of its own: Lua 5.4, Lua 5.5, LuaJIT 2.1 or
+  Lua 5.1 (macOS: `brew install luajit`; Debian or Ubuntu: `apt install lua5.4`).
 - **Protection.** The checkout is code OF imports, the pulse included, outside any sandbox, so it is protected as OF's
   own checkout is: every session's sandbox denies writes to it (`of_spawn.of_checkouts`), and so does the guard.
   `of owner set bench` refuses a development clone (one that runs the release gate), since positions write those.
 - **The reader's closedness.** OF evaluates an organization's `config/settings/*.lua` and `extensions/*/*.lua` through
-  Bench's reader, outside any sandbox, the pulse included; those files come from the organization's repository, which
-  agents write. Their safety rests on the reader: a Lua process of its own given no file, with no `io`, `os`, `load`,
-  `require` beyond the package's sources or `debug`, and budgets on instructions, memory and wall time. Those
-  controls and their tests live in `organic-framework/bench` (its `docs/bench.md`, "The reader", and
-  `tests/test_bench.py`'s hostile set, one test per case); the guard's keeper has not yet passed that set (11-first-slice.md,
-  part 1), so until then this rests on the tests alone.
+  Bench's reader, only outside agent sessions (the pulse included); those files come from the organization's
+  repository, which agents write. Their safety rests on two layers. The reader: a Lua process of its own given no
+  file, with no `io`, `os`, `load`, `require` beyond the package's sources or `debug`, and budgets on instructions,
+  memory and wall time. Around it, Bench's operating-system sandbox (above): Bench evaluates only inside it and
+  refuses when it cannot start. Both layers and their tests live in `organic-framework/bench` (its `docs/bench.md`,
+  "The reader", and `tests/test_bench.py`'s hostile set, one test per case), and the guard's keeper passed them in
+  that repository's pull request 1.
 
 ## The commands
 
@@ -73,6 +75,6 @@ setting `escalate_after`, only where the organization's `Benchfile.lock` names t
 
 `bin/of_benchpath.py` (where Bench is), `bin/of_method.py` (main.lua's words, settings, hooks), `cmd_bench` in
 `bin/of`. Tests: `tests/test_of_method.py`, which take a Bench checkout from `OF_TEST_BENCH` (read by the tests only)
-and skip without one. CI's unit job checks out Bench at `54e4cc352a3fe5b5c476bb9a5fe2b1bc80a54c18` into `OF_TEST_BENCH`, with bubblewrap
-installed, so these tests run there, never skip. A newer Bench is pinned here and in `.github/workflows/tests.yml`
-together.
+and skip without one, or where Bench's sandbox cannot start (inside a session's). CI's unit job checks out Bench at
+`54e4cc352a3fe5b5c476bb9a5fe2b1bc80a54c18` into `OF_TEST_BENCH`, with bubblewrap installed, so these tests run there and
+never skip. A newer Bench is pinned here and in `.github/workflows/tests.yml` together.
