@@ -3333,12 +3333,21 @@ def _give_room(pane, log=print):
     agent host nine panes shared one tab, halved split by split, and of_tools, two rows high, stood on its limit while
     its rescue failed run after run with "no input box visible"."""
     try:
-        got = _herdr("pane", "get", pane)
-        rows = (((got.get("pane") or got).get("scroll") or {}).get("viewport_rows")) if isinstance(got, dict) else None
-        if rows is None or rows >= MIN_PANE_ROWS:
-            return lambda: None
         lay = _herdr("pane", "layout", "--pane", pane)
         lay = (lay.get("layout") or lay) if isinstance(lay, dict) else {}
+        rect = next(((x.get("rect") or {}) for x in lay.get("panes") or [] if x.get("pane_id") == pane), {})
+        if lay.get("zoomed") and lay.get("focused_pane_id") not in (None, pane):
+            rows = 0  # another pane fills the tab: this one is hidden
+        elif rect.get("height"):
+            # the layout's height, less the pane's label row: herdr's viewport_rows lags a pane moved to another tab
+            # (of_herdr, message 01a207a2-34cd: 2 rows still read after the pane had the whole tab)
+            rows = rect["height"] - 1
+        else:
+            got = _herdr("pane", "get", pane)
+            rows = (((got.get("pane") or got).get("scroll") or {}).get("viewport_rows")) if isinstance(got, dict) \
+                else None
+        if rows is None or rows >= MIN_PANE_ROWS:
+            return lambda: None
         before = lay.get("focused_pane_id") if lay.get("zoomed") else None
         _herdr("pane", "zoom", pane, "--on")
         time.sleep(1)

@@ -5202,13 +5202,14 @@ class DryRunPastTheLimitWait(unittest.TestCase):
         rescue failed run after run with "no input box visible"."""
         calls = []
 
-        def herdr(rows, zoomed=False, focused="w1:p9"):
+        def herdr(rows, zoomed=False, focused="w1:p9", stale=None):
             def f(*a, **k):
                 calls.append(a)
                 if a[:2] == ("pane", "get"):
-                    return {"pane": {"scroll": {"viewport_rows": rows}}}
+                    return {"pane": {"scroll": {"viewport_rows": rows if stale is None else stale}}}
                 if a[:2] == ("pane", "layout"):
-                    return {"layout": {"zoomed": zoomed, "focused_pane_id": focused}}
+                    return {"layout": {"zoomed": zoomed, "focused_pane_id": focused,
+                                       "panes": [{"pane_id": "w1:p1", "rect": {"height": rows + 1}}]}}
                 return {}
             return f
         with mock.patch.object(of_capacity.time, "sleep", lambda *_: None):
@@ -5225,6 +5226,11 @@ class DryRunPastTheLimitWait(unittest.TestCase):
             with mock.patch.object(of_capacity, "_herdr", herdr(0, zoomed=True)):   # its tab had another pane zoomed
                 of_capacity._give_room("w1:p1", log=lambda *_: None)()
             self.assertEqual([c for c in calls if c[1] == "zoom"][-1], ("pane", "zoom", "w1:p9", "--on"))
+            del calls[:]
+            # herdr's viewport_rows lags a pane moved to a tab of its own: the layout's height decides (of_herdr)
+            with mock.patch.object(of_capacity, "_herdr", herdr(52, stale=2)):
+                of_capacity._give_room("w1:p1", log=lambda *_: None)()
+            self.assertEqual([c for c in calls if c[1] == "zoom"], [])
 
     def test_an_untrusted_rest_ends_once_an_account_trusts_the_folder(self):
         """2026-11-23: a move refused for an untrusted worktree at 23:33Z left its session resting six hours; the trust
