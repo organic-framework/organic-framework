@@ -390,6 +390,21 @@ def write_rules(positions, org_paths, dry_run=False, log=print, run=None, sessio
     # a rules file OF did not write, under the name OF uses: a session can leave one, which the exclude line hides
     # and every session there would load as rules; removed in each folder OF writes rules into (of_server,
     # 2026-11-22, on the rules writer's first fix)
+    # a position's own folder: its rules live in the work_root above it, so a rules file under OF's name in the folder
+    # itself, left by an earlier start, would load beside them (of_secrets-review on PR 608)
+    try:
+        import of_spawn
+        for root in sorted(set(of_spawn.work_roots().values())):
+            for name in sorted(os.listdir(root)):
+                sub = os.path.join(root, name)
+                if os.path.islink(sub) or not os.path.isdir(sub):
+                    continue
+                for n in _rules_names(sub):
+                    if n.startswith("of-") and n.endswith(".md") and not dry_run and \
+                            remove_in(sub, os.path.join(os.path.dirname(RULES_FILE.format(org="x")), n)):
+                        log(f"  removed {os.path.join(sub, '.claude', 'rules', n)}: its rules are in the work_root")
+    except OSError:
+        pass
     for r in sorted({os.path.realpath(d) for dirs in folders.values() for d in dirs}):
         for name in _rules_names(r):
             if name.startswith("of-") and name.endswith(".md") and name not in keep.get(r, set()) and not dry_run:

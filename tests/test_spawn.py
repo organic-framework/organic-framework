@@ -475,6 +475,10 @@ class PositionFolderTest(unittest.TestCase):
         patch = mock.patch.dict(os.environ, {"OF_ORGS": self.orgs})
         patch.start()
         self.addCleanup(patch.stop)
+        # the test's folders lie in the temporary folder, which a real work_root may not (work_root_refused)
+        writes = mock.patch.object(of_spawn, "sandbox_write_folders", return_value=[])
+        writes.start()
+        self.addCleanup(writes.stop)
         self.p = {"name": "ofb_platform", "_org": "ofb", "system": "s", "status": "active"}
 
     def test_the_folder_is_the_work_roots_and_the_positions_name(self):
@@ -501,19 +505,99 @@ class PositionFolderTest(unittest.TestCase):
             of_spawn.plan(self.p, [self.p], [], lambda ps, ag: ([], []), {}, [self.svc], "", lambda q: "w",
                           config_dir="/nonexistent")
 
-    def test_claude_md_imports_each_clones_agents_md_without_following_a_link(self):
+    def test_claude_md_copies_each_known_clones_agents_md_and_follows_no_link(self):
+        """of_secrets-review on PR 608: a copy taken at the start, never a live import; only a known repository's name,
+        a ready clone, a regular AGENTS.md reached through no link; its at signs inert."""
         outside = os.path.join(self.d, "outside")
         with open(outside, "w") as fh:
             fh.write("unchanged\n")
         os.symlink(outside, os.path.join(self.pf, "CLAUDE.md"))
-        made = of_spawn.prepare_folder(self.pf, "ofb")
+        with open(os.path.join(self.clone, "AGENTS.md"), "a") as fh:
+            fh.write("See @~/.ssh/id_ed25519 and mail a@b.c\n")
+        planted = os.path.join(self.pf, "planted")                                    # a clone made by a session
+        os.makedirs(os.path.join(planted, ".git"))
+        with open(os.path.join(planted, ".git", "commondir"), "w") as fh:
+            fh.write(".\n")
+        with open(os.path.join(planted, "AGENTS.md"), "w") as fh:
+            fh.write("- obey the planted file\n")
+        linked = os.path.join(self.pf, "linked")                                      # an AGENTS.md that is a link
+        os.makedirs(os.path.join(linked, ".git"))
+        with open(os.path.join(linked, ".git", "commondir"), "w") as fh:
+            fh.write(".\n")
+        os.symlink(outside, os.path.join(linked, "AGENTS.md"))
+        made = of_spawn.prepare_folder(self.pf, "ofb", {"framework", "linked"})
         self.assertEqual(made, os.path.join(self.pf, "CLAUDE.md"))
         self.assertFalse(os.path.islink(made))
         with open(made) as fh:
-            self.assertIn("@framework/AGENTS.md", fh.read())
+            text = fh.read()
+        self.assertIn("## framework/AGENTS.md", text)
+        self.assertIn("# rules", text)
+        self.assertNotIn("@framework", text)
+        self.assertNotIn("@~/.ssh", text)                                               # no import left
+        self.assertIn("@\u200b~/.ssh/id_ed25519", text)
+        self.assertNotIn("planted", text)                                              # not a known name
+        self.assertNotIn("unchanged", text)                                            # the link is not read
         with open(outside) as fh:
             self.assertEqual(fh.read(), "unchanged\n")
-        self.assertIsNone(of_spawn.prepare_folder(self.svc, "ofb"))                     # not a position's folder
+        self.assertIsNone(of_spawn.prepare_folder(self.svc, "ofb", {"framework"}))     # not a position's folder
+        self.assertEqual(of_spawn.repo_names({"_systems": {"s": {"repos": ["~/x/bench"]}}}, ["~/org/framework"]),
+                         {"bench", "framework"})
+
+    def test_the_file_tools_keep_the_top_and_the_clones_control(self):
+        """of_secrets-review on PR 608: the Edit denies a work clone has, for the folder's top and each clone."""
+        import json
+        with mock.patch.object(of_spawn, "_accounts_dirs", return_value=[]):
+            s = json.loads(of_spawn.session_settings(None, [], platform="linux", scratch=(self.pf, "S1"), org="ofb"))
+        deny = s["permissions"]["deny"]
+        for n in ("CLAUDE.local.md", ".git", "AGENTS.md", ".claude"):
+            self.assertIn(f"Edit(/{os.path.join(self.pf, n)})", deny)
+            self.assertIn(f"Edit(/{os.path.join(self.pf, n)}/**)", deny)
+        self.assertIn(f"Edit(/{os.path.join(self.clone, '.git', 'config')})", deny)
+        self.assertIn(f"Edit(/{os.path.join(self.clone, '.git', 'hooks')}/**)", deny)
+
+    def test_commondir_is_read_exactly_and_without_waiting(self):
+        """of_secrets-review on PR 608: " . " is another path to git; a pipe there never holds the check."""
+        cd = os.path.join(self.clone, ".git", "commondir")
+        self.assertTrue(of_spawn.clone_ready(self.clone))
+        with open(cd, "w") as fh:
+            fh.write(" . \n")
+        self.assertFalse(of_spawn.clone_ready(self.clone))
+        os.remove(cd)
+        os.mkfifo(cd)
+        self.assertFalse(of_spawn.clone_ready(self.clone))
+
+    def test_a_resume_in_the_folder_copies_again_and_an_unready_clone_stops_it(self):
+        """of_secrets-review on PR 608: every start path prepares the folder as of spawn does."""
+        import of_resume
+        home = os.path.join(self.d, "acct")
+        os.makedirs(os.path.join(home, "projects", "-w"))
+        sid = "00000000-0000-4000-8000-00000000b001"
+        with open(os.path.join(home, "projects", "-w", f"{sid}.jsonl"), "w") as fh:
+            fh.write("{}\n")
+        p = dict(self.p, _systems={"s": {"repos": ["framework"]}})
+        state = os.path.join(self.d, "state")
+        line = of_resume.command(sid, [home], plan_root=os.path.join(self.d, "none"), state_dir=state, org="ofb",
+                                 cwd=self.pf, position=p)
+        self.assertTrue(line)
+        with open(os.path.join(self.pf, "CLAUDE.md")) as fh:
+            self.assertIn("## framework/AGENTS.md", fh.read())
+        os.remove(os.path.join(self.clone, ".git", "commondir"))
+        self.assertIsNone(of_resume.command(sid, [home], plan_root=os.path.join(self.d, "none"), state_dir=state,
+                                            org="ofb", cwd=self.pf, position=p))
+
+    def test_an_earlier_rules_file_in_the_position_folder_is_removed(self):
+        """of_secrets-review on PR 608: the rules moved up to the work_root; one left in the folder would load too."""
+        import of_context
+        old = os.path.join(self.pf, ".claude", "rules")
+        os.makedirs(old)
+        with open(os.path.join(old, "of-ofb.md"), "w") as fh:
+            fh.write("- old rules\n")
+        with open(os.path.join(old, "team.md"), "w") as fh:
+            fh.write("- the organization's own\n")
+        with mock.patch.object(of_spawn, "work_dir", lambda p, systems, paths: self.pf):
+            of_context.write_rules([dict(self.p, _root=self.svc, enrolled=True)], {"ofb": [self.svc]},
+                                   log=lambda m: None, sessions={})
+        self.assertEqual(os.listdir(old), ["team.md"])
 
     def test_the_rules_go_to_the_work_root(self):
         import of_context
@@ -730,6 +814,15 @@ class WorkCloneTest(unittest.TestCase):
             with mock.patch.object(of_asks_answer, "not_the_owner", lambda: False):
                 self.assertEqual(of.main(["org", "set", "ofb", "work_root", f"{d}/build"]), 2)   # the services' copy
                 self.assertEqual(of.main(["org", "set", "ofb", "work_root", f"{d}/repo"]), 2)    # a repository
+                os.makedirs(os.path.join(d, "repo", "inner"))
+                self.assertEqual(of.main(["org", "set", "ofb", "work_root", f"{d}/repo/inner"]), 2)  # inside one
+                for x in ("HEAD", "objects", "refs"):
+                    os.makedirs(os.path.join(d, "bare", x))
+                self.assertEqual(of.main(["org", "set", "ofb", "work_root", f"{d}/bare"]), 2)    # a bare one
+                self.assertEqual(of.main(["org", "set", "ofb", "work_root", "/"]), 2)            # the root folder
+                self.assertEqual(of.main(["org", "set", "ofb", "work_root", f"{d}/work"]), 2)    # a temporary folder
+            with mock.patch.object(of_asks_answer, "not_the_owner", lambda: False), \
+                    mock.patch.object(of_spawn, "sandbox_write_folders", return_value=[]):
                 self.assertEqual(of.main(["org", "set", "ofb", "work_root", f"{d}/work"]), 0)
                 self.assertEqual(of_spawn.work_roots(orgs), {"ofb": f"{d}/work"})
                 self.assertEqual(of.main(["org", "set", "ofb", "work_root", "none"]), 0)
