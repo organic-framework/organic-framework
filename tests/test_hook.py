@@ -663,6 +663,61 @@ class HandleTest(unittest.TestCase):
             self.fire("PreToolUse", tool_name="Bash", tool_input={"command": "ls"})
         self.assertNotIn("permissionDecision", out.getvalue())
 
+    def test_a_guard_that_does_not_decide_in_time_denies(self):
+        """of_server, 2026-11-23: a guard that waits past the hook's limit would leave the call to the harness."""
+        import contextlib
+        import io
+        import time as _t
+        from unittest import mock
+        of_hook.OUTPUT, of_hook.GUARD_DECIDED = None, False
+        out = io.StringIO()
+        start = _t.monotonic()
+        with mock.patch.object(of_hook, "GUARD_STALL_S", 1), \
+                mock.patch.object(of_hook, "critical_deny", side_effect=lambda *a, **k: _t.sleep(5)), \
+                contextlib.redirect_stdout(out):
+            self.fire("PreToolUse", tool_name="Bash", tool_input={"command": "ls"})
+        self.assertLess(_t.monotonic() - start, 4)
+        decision = json.loads(out.getvalue())["hookSpecificOutput"]
+        self.assertEqual(decision["permissionDecision"], "deny")
+        self.assertIn("guard failed (GuardStalled)", decision["permissionDecisionReason"])
+        import signal
+        self.assertEqual(signal.alarm(0), 0)                     # disarmed after the decision
+
+    def test_a_stall_a_handler_takes_or_an_unreadable_file_still_denies(self):
+        """of_secrets-review, 2026-11-23: a handler in the guard's work may take the stall, and a file that is there
+        but not regular was read as empty."""
+        import contextlib
+        import io
+        import time as _t
+        from unittest import mock
+
+        def swallowed(*a, **k):
+            try:
+                _t.sleep(5)
+            except Exception:  # noqa: BLE001 - what a reader in the guard does
+                pass
+            try:
+                _t.sleep(5)
+            except BaseException:  # noqa: BLE001 - and a broader one
+                pass
+
+        def unreadable(*a, **k):
+            of_guard.UNREADABLE.append("/x/.git/config")
+        for side, kind in ((swallowed, "GuardStalled"), (unreadable, "GuardUnreadable")):
+            of_hook.OUTPUT, of_hook.GUARD_DECIDED = None, False
+            out = io.StringIO()
+            with mock.patch.object(of_hook, "GUARD_STALL_S", 1), \
+                    mock.patch.object(of_hook, "critical_deny", side_effect=side), contextlib.redirect_stdout(out):
+                self.fire("PreToolUse", tool_name="Bash", tool_input={"command": "ls"})
+            decision = json.loads(out.getvalue())["hookSpecificOutput"]
+            self.assertEqual(decision["permissionDecision"], "deny", kind)
+            self.assertIn(f"guard failed ({kind})", decision["permissionDecisionReason"])
+        of_hook.OUTPUT = None
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):                   # the next call starts clean
+            self.fire("PreToolUse", tool_name="Bash", tool_input={"command": "ls"})
+        self.assertNotIn("permissionDecision", out.getvalue())
+
     def test_a_system_exit_or_a_failure_before_the_guard_answers_denies(self):
         """of_secrets-review on organic-framework PR 469: SystemExit escaped except Exception, and an error before the
         guard ran fell into main's catch-all, both letting the call run."""

@@ -7,6 +7,7 @@ The first false denies after the guard went live on all four accounts:
 """
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "bin"))
@@ -992,6 +993,47 @@ class GuardBashTest(unittest.TestCase):
         self.assertIn("(.env)", why)
         self.assertEqual(subject, "cd /r && cat .env")
 
+
+
+class NoWaitTest(unittest.TestCase):
+    """of_server, 2026-11-23: the files the guard reads for a command are read only when regular, without waiting."""
+
+    def setUp(self):
+        import signal
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old = signal.signal(signal.SIGALRM, lambda *a: (_ for _ in ()).throw(AssertionError("the guard waited")))
+        signal.alarm(10)
+
+    def tearDown(self):
+        import signal
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, self.old)
+        self.tmp.cleanup()
+
+    def test_a_fifo_never_holds_the_guard(self):
+        root = os.path.join(self.tmp.name, "r")
+        os.makedirs(os.path.join(root, ".git", "hooks"))
+        os.mkfifo(os.path.join(root, ".git", "config"))
+        os.mkfifo(os.path.join(root, ".git", "hooks", "pre-commit"))
+        self.assertEqual(of_guard._remotes(root), {})
+        del of_guard.UNREADABLE[:]
+        self.assertFalse(of_guard.framework_writes("Bash", {"command": "git push origin main"}, root))
+        self.assertIn(os.path.join(root, ".git", "config"), of_guard.UNREADABLE)   # the hook denies the call
+        del of_guard.UNREADABLE[:]
+        of_guard._remotes(os.path.join(self.tmp.name, "none"))                   # a file not there reads as empty
+        self.assertEqual(of_guard.UNREADABLE, [])
+        with self.assertRaises(OSError):
+            of_guard._read_text(os.path.join(root, ".git", "config"))
+        wt = os.path.join(self.tmp.name, "wt")
+        gd = os.path.join(self.tmp.name, "gd")
+        os.makedirs(wt)
+        os.makedirs(gd)
+        os.mkfifo(os.path.join(gd, "commondir"))
+        with open(os.path.join(wt, ".git"), "w") as fh:
+            fh.write(f"gitdir: {gd}\n")
+        self.assertEqual(of_guard._git_dir(wt), gd)                  # an unreadable commondir: the folder itself
+        os.mkfifo(os.path.join(self.tmp.name, "gitfile"))
+        self.assertEqual(of_guard._read_regular(os.path.join(wt, ".git"), 7), b"gitdir:")
 
 if __name__ == "__main__":
     unittest.main()

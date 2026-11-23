@@ -9,6 +9,7 @@ prompt_secret_mention(prompt) finds an @-mention of a secret path in a prompt. o
 turn their verdicts into the hook's output and of.mandate_check events. Tests: tests/test_guard*.py."""
 
 import ast
+import errno
 import os
 import re
 import shlex
@@ -3024,9 +3025,9 @@ def _stdin_script_deny(path, kind, depth):
     if _committed_clean(p):
         return None
     try:
-        with open(p, errors="replace") as fh:
-            body = fh.read(512 * 1024)
-    except OSError:
+        body = _read_text(p, 512 * 1024)
+    except OSError as e:
+        _unreadable(p, e)
         return f"a local script sent to a remote shell that the guard cannot read ({path})", path
     return _bash_deny(body, depth + 1) if kind == "shell" else _code_deny(body)
 
@@ -4039,9 +4040,8 @@ def _config_files_set(env, word):
         if not f or f == "/dev/null":
             continue
         try:
-            with open(_expanduser(f), errors="replace") as fh:
-                if word in fh.read(1 << 20).lower():
-                    return True
+            if word in _read_text(_expanduser(f), 1 << 20).lower():
+                return True
         except OSError:
             return True
     return False
@@ -4071,8 +4071,9 @@ def _config_sections(path, section):
     """{name in lower case: value} of one section of a git config file (`[alias]`), and its include paths."""
     out, inc, cur = {}, [], None
     try:
-        lines = open(_expanduser(path), errors="replace").read(1 << 20).splitlines()
-    except OSError:
+        lines = _read_text(_expanduser(path), 1 << 20).splitlines()
+    except OSError as e:
+        _unreadable(path, e)
         return out, inc
     for line in lines:
         t = line.strip()
@@ -4149,8 +4150,9 @@ def _gh_aliases(line):
     d = os.environ.get("GH_CONFIG_DIR") or os.path.join(os.environ.get("XDG_CONFIG_HOME") or "~/.config", "gh")
     out, inside = {}, False
     try:
-        lines = open(os.path.join(_expanduser(d), "config.yml"), errors="replace").read(1 << 20).splitlines()
-    except OSError:
+        lines = _read_text(os.path.join(_expanduser(d), "config.yml"), 1 << 20).splitlines()
+    except OSError as e:
+        _unreadable(os.path.join(d, "config.yml"), e)
         lines = []
     for ln in lines:
         if not ln.strip() or ln.lstrip().startswith("#"):
@@ -4192,6 +4194,44 @@ def gh_expand(args, line=None, depth=0):
     return gh_expand(args[:k] + words + rest, line, depth + 1)
 
 
+def _read_regular(path, limit=None):
+    """PATH's bytes, the first LIMIT or all, when it is a regular file. Opened without waiting, so a FIFO or a device
+    at a path a command or a repository names raises OSError instead of holding the guard (of_server, 2026-11-23)."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"{path}: not a regular file")
+        chunks, n = [], 0
+        while limit is None or n < limit:
+            b = os.read(fd, 1 << 16 if limit is None else min(1 << 16, limit - n))
+            if not b:
+                break
+            chunks.append(b)
+            n += len(b)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+# Paths the guard met that are there and could not be read as regular files (a FIFO, a device, a folder, no
+# permission). What it read from them stands for nothing, so the hook denies the call whatever the rules decided
+# (of_hook._guard; of_secrets-review, 2026-11-23). A file that is not there reads as empty, as git reads it.
+UNREADABLE = []
+
+
+def _unreadable(path, e):
+    """Record PATH when the error E is anything but its absence."""
+    if getattr(e, "errno", None) not in (errno.ENOENT, errno.ENOTDIR):
+        UNREADABLE.append(str(path))
+
+
+def _read_text(path, chars=None):
+    """PATH's text, the first CHARS characters or all (UTF-8, errors replaced), when it is a regular file
+    (_read_regular)."""
+    text = _read_regular(path, None if chars is None else chars * 4).decode("utf-8", "replace")
+    return text if chars is None else text[:chars]
+
+
 def _git_dir(path):
     """The git directory (the common one, for a worktree) of the repository holding PATH, or None."""
     p = os.path.abspath(_expanduser(path or "."))
@@ -4201,16 +4241,18 @@ def _git_dir(path):
             return g
         if os.path.isfile(g):
             try:
-                line = open(g).read().strip()
-            except OSError:
+                line = _read_text(g, 1 << 16).strip()
+            except OSError as e:
+                _unreadable(g, e)
                 return None
             if not line.startswith("gitdir:"):
                 return None
             d = line[7:].strip()
             d = d if os.path.isabs(d) else os.path.join(p, d)
             try:
-                return os.path.normpath(os.path.join(d, open(os.path.join(d, "commondir")).read().strip()))
-            except OSError:
+                return os.path.normpath(os.path.join(d, _read_text(os.path.join(d, "commondir"), 1 << 16).strip()))
+            except OSError as e:
+                _unreadable(os.path.join(d, "commondir"), e)
                 return d
         up = os.path.dirname(p)
         if up == p:
@@ -4226,9 +4268,9 @@ def gated(path):
         return False
     if g not in _GATED:
         try:
-            with open(os.path.join(g, "hooks", "pre-commit"), "rb") as fh:
-                _GATED[g] = GATE_MARK in fh.read(4096)
-        except OSError:
+            _GATED[g] = GATE_MARK in _read_regular(os.path.join(g, "hooks", "pre-commit"), 4096)
+        except OSError as e:
+            _unreadable(os.path.join(g, "hooks", "pre-commit"), e)
             _GATED[g] = False
     return _GATED[g]
 
@@ -4503,9 +4545,9 @@ def _launch_targets():
     f = os.path.realpath(_expanduser(LAUNCH_FILE))
     out = [f]
     try:
-        with open(f, errors="replace") as fh:
-            named = fh.readline(4096).strip()
-    except OSError:
+        named = _read_text(f, 4096).partition("\n")[0].strip()
+    except OSError as e:
+        _unreadable(f, e)
         return out
     if named:
         out.append(os.path.realpath(_expanduser(named)))
@@ -7993,8 +8035,9 @@ def _remotes(where):
     if not g:
         return out
     try:
-        text = open(os.path.join(g, "config"), encoding="utf-8", errors="replace").read()
-    except OSError:
+        text = _read_text(os.path.join(g, "config"))
+    except OSError as e:
+        _unreadable(os.path.join(g, "config"), e)
         return out
     name = None
     for line in text.splitlines():
