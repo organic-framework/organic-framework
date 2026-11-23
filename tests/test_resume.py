@@ -81,3 +81,34 @@ class ResumeCommandTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ResumeRulesTest(unittest.TestCase):
+    """of_secrets-review on PR 601: the resume line gave its sandbox no folder, so a session herdr resumed could write
+    OF's rules file there from Bash. Its settings now keep OF's rules files closed in the folder the line runs in and
+    in every folder above it, as of spawn's do."""
+
+    def test_the_resume_lines_sandbox_keeps_ofs_rules_files(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as home:
+            home = os.path.realpath(home)
+            d = os.path.join(home, ".claude-d")
+            os.makedirs(os.path.join(d, "projects", "-w"))
+            with open(os.path.join(d, "projects", "-w", f"{SID}.jsonl"), "w") as fh:
+                fh.write(json.dumps({"type": "user", "cwd": "/nowhere"}) + "\n")
+            top = os.path.join(home, "org")
+            work = os.path.join(top, "repo")
+            for f, n in ((top, "of-acme.md"), (work, "of-acme.md"), (work, "team.md")):
+                os.makedirs(os.path.join(f, ".claude", "rules"), exist_ok=True)
+                with open(os.path.join(f, ".claude", "rules", n), "w") as fh:
+                    fh.write("- a rule\n")
+            state = os.path.join(home, "state")
+            with mock.patch.object(of_spawn, "PLATFORM", "linux"), \
+                    mock.patch.object(of_spawn, "_accounts_dirs", return_value=[]):
+                argv = shlex.split(of_resume.command(SID, [d], plan_root=os.path.join(home, "none"), state_dir=state,
+                                                     cwd=work))
+            with open(argv[argv.index("--settings") + 1]) as fh:
+                deny = json.load(fh)["sandbox"]["filesystem"]["denyWrite"]
+            self.assertIn(os.path.join(work, ".claude", "rules", "of-acme.md"), deny)
+            self.assertIn(os.path.join(top, ".claude", "rules", "of-acme.md"), deny)   # a folder above loads too
+            self.assertNotIn(os.path.join(work, ".claude", "rules", "team.md"), deny)  # the organization's own

@@ -82,18 +82,18 @@ _DIR = getattr(os, "O_DIRECTORY", 0)
 _NB = getattr(os, "O_NONBLOCK", 0)
 
 
-def _dir_fd(base, parts, make=False):
+def _dir_fd(base, parts, make=False, make_from=0):
     """A descriptor of BASE/PARTS..., each component opened from the one above without following a link; None when one
-    is missing (and not MAKE) or is not a folder."""
+    is missing (and not MAKE, or it comes before MAKE_FROM) or is not a folder."""
     try:
         fd = os.open(os.path.realpath(base), os.O_RDONLY | _DIR | _NOFOLLOW | _NB)
     except OSError:
         return None
-    for part in parts:
+    for i, part in enumerate(parts):
         try:
             nxt = os.open(part, os.O_RDONLY | _DIR | _NOFOLLOW | _NB, dir_fd=fd)
         except FileNotFoundError:
-            if not make:
+            if not make or i < make_from:
                 os.close(fd)
                 return None
             try:
@@ -186,7 +186,7 @@ def _exclude(folder, run=None):
         return False
     if not stat.S_ISDIR(st.st_mode):
         return False
-    fd = _dir_fd(folder, [".git", "info"], make=True)
+    fd = _dir_fd(folder, [".git", "info"], make=True, make_from=1)  # .git is never made here (of_secrets-review)
     if fd is None:
         return False
     line = "/.claude/rules/of-*.md"
@@ -335,7 +335,7 @@ def write_rules(positions, org_paths, dry_run=False, log=print, run=None, sessio
     folders = rules_folders(positions, org_paths)
     shared = shared_folders(folders)
     roots = {(p.get("_orgid") or p.get("_org")): p.get("_root") for p in positions}
-    written = []
+    written, keep = [], {}   # keep: {folder: the names OF writes there}, only where it has text to write
     owners = folder_owners(folders)
     for cwd, orgs in sorted(stray_sessions(folders, session_orgs() if sessions is None else sessions).items()):
         own = sorted(owners.get(_nearest(cwd, owners)) or ())
@@ -349,7 +349,7 @@ def write_rules(positions, org_paths, dry_run=False, log=print, run=None, sessio
     for org, dirs in folders.items():
         text = rules_file_text(org, os.path.join(roots.get(org) or "", "AGENTS.md"))
         if not text:
-            continue
+            continue   # no rules text: its name is kept nowhere, so a file under it is removed below
         mine = [os.path.realpath(d) for d in dirs if os.path.realpath(d) not in shared]
         for d in dirs:
             r = os.path.realpath(d)
@@ -362,6 +362,7 @@ def write_rules(positions, org_paths, dry_run=False, log=print, run=None, sessio
                 if not dry_run and remove_in(d, RULES_FILE.format(org=org)):
                     log(f"  removed {inner}: the folder above holds the same rules")
                 continue
+            keep.setdefault(r, set()).add(os.path.basename(RULES_FILE.format(org=org)))
             path = os.path.join(d, RULES_FILE.format(org=org))
             if read_in(d, RULES_FILE.format(org=org)) == text:
                 continue
@@ -383,12 +384,6 @@ def write_rules(positions, org_paths, dry_run=False, log=print, run=None, sessio
     # a rules file OF did not write, under the name OF uses: a session can leave one, which the exclude line hides
     # and every session there would load as rules; removed in each folder OF writes rules into (of_server,
     # 2026-11-22, on the rules writer's first fix)
-    keep = {}
-    for org, dirs in folders.items():
-        for d in dirs:
-            r = os.path.realpath(d)
-            if r not in shared:
-                keep.setdefault(r, set()).add(os.path.basename(RULES_FILE.format(org=org)))
     for r in sorted({os.path.realpath(d) for dirs in folders.values() for d in dirs}):
         for name in _rules_names(r):
             if name.startswith("of-") and name.endswith(".md") and name not in keep.get(r, set()) and not dry_run:

@@ -416,7 +416,18 @@ def rules_files(folder):
                   and not os.path.islink(os.path.join(d, n)))
 
 
-def sandbox_settings(deny=None, platform=None, scratch=None, org=None):
+def rules_files_up(folder):
+    """rules_files of FOLDER and of every folder above it."""
+    out, d = [], os.path.realpath(folder)
+    while True:
+        out += rules_files(d)
+        up = os.path.dirname(d)
+        if up == d:
+            return out
+        d = up
+
+
+def sandbox_settings(deny=None, platform=None, scratch=None, org=None, rules_dirs=None):
     """The session's `sandbox` block on Linux, else None. DENY: its Read/Edit deny rules (`Read(//abs/path/**)`).
     SCRATCH: (its working folder, its session id), so its own scratch folder stays readable while the other sessions'
     are denied."""
@@ -475,12 +486,15 @@ def sandbox_settings(deny=None, platform=None, scratch=None, org=None):
     guarded = [svc for _, _, svc, _ in work_clones(include_refused=True)] + \
         [os.path.join(c, x) for c in writable for x in CLONE_CONTROL]
     cwd = (scratch or (None, None))[0]
-    if cwd:
-        # OF's rules files there are OF's to write: one a session changed would load as rules in every session of that
-        # folder, hidden from git by the exclude line. Only those: an organization's own rules beside them stay its
-        # sessions' to edit (of_review on PR 601). The ones there at the start; a sandbox cannot deny a name by a
-        # pattern, so a new file under OF's name lasts until write_rules removes it at its next pass.
-        guarded += rules_files(cwd)
+    # OF's rules files are OF's to write: one a session changed would load as rules in every session of its folder,
+    # hidden from git by the exclude line. Only those: an organization's own rules beside them stay its sessions' to
+    # edit (of_review on PR 601). In the start folder and every folder above it, since Claude Code loads the rules of
+    # those too (of_secrets-review on PR 601). The ones there at the start; a sandbox cannot deny a name by a pattern,
+    # so a new file under OF's name lasts until write_rules removes it at its next pass.
+    for base in ([cwd] if cwd else []) + list(rules_dirs or []):
+        for f in rules_files_up(base):
+            if f not in guarded:
+                guarded.append(f)
     return {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
             "autoAllowBashIfSandboxed": True,
             "filesystem": {"denyRead": denied,
@@ -494,7 +508,7 @@ def sandbox_settings(deny=None, platform=None, scratch=None, org=None):
                         "allowedDomains": list(SANDBOX_DOMAINS), "deniedDomains": []}}
 
 
-def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=None, org=None):
+def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=None, org=None, rules_dirs=None):
     """The one --settings JSON: AGENT_SETTINGS, the memory directory (bin/of_memory.py, RFC 0006), the credential
     deny rules, on Linux the sandbox block (sandbox_settings), and extra keys such as the tool profile's
     allowedMcpServers and enabledPlugins (of_tools.launch_parts, docs/tools.md §4)."""
@@ -502,7 +516,7 @@ def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=
     s.update(json.loads(memory) if memory else {})
     if deny:
         s.setdefault("permissions", {}).setdefault("deny", []).extend(deny)
-    box = sandbox_settings(deny, platform, scratch, org)
+    box = sandbox_settings(deny, platform, scratch, org, rules_dirs)
     if box:
         s["sandbox"] = box
         # the sandbox binds Bash only; the file tools, MCP servers and command hooks run outside it
