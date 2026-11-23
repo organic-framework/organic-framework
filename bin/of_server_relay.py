@@ -25,6 +25,7 @@ BACKOFF_MAX = 600
 MESSAGE_TTL = 14 * 24 * 3600
 MAX_TEXT = 64 * 1024
 POSITION_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z")  # AGENTS.md, agent names (herdr's rule)
+ORG_NAME = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}\Z")  # an organization's name, as orgs.yaml lists it
 KINDS = ("agent", "human")
 PRIORITIES = ("normal", "fyi", "urgent")  # fyi: never offered to an agent's relay, read with `of inbox --mine`
 
@@ -43,6 +44,7 @@ CREATE TABLE IF NOT EXISTS position_aliases (org TEXT, alias TEXT, position TEXT
 CREATE TABLE IF NOT EXISTS presented (org TEXT, position TEXT, last_seen REAL, PRIMARY KEY (org, position));
 CREATE TABLE IF NOT EXISTS sent_across (msg_id TEXT PRIMARY KEY, from_org TEXT, from_position TEXT, to_org TEXT,
   to_position TEXT, sender_machine TEXT, created REAL);
+CREATE INDEX IF NOT EXISTS sent_across_created ON sent_across (created);
 """
 ALIAS_TTL = 30 * 86400  # an alias a holder presented within this many seconds still readdresses a new message
 ALIAS_QUIET = 86400     # a name a holder presented within this many seconds is never taken as an alias
@@ -495,6 +497,9 @@ class Relay:
             raise RelayError(400, "bad_request", "msg_id is required")
         to_org, to_pos = parse_address(body.get("to"))
         from_org, from_pos = parse_address(body.get("from"))
+        for org, pos in ((to_org, to_pos), (from_org, from_pos)):  # a header is no store for free text
+            if not (ORG_NAME.match(org) and POSITION_NAME.match(pos)):
+                raise RelayError(400, "address", f"{org[:80]!r}:{pos[:80]!r} breaks the name rules")
         if from_org == to_org:
             raise RelayError(400, "bad_request", "a header is kept only for a message to another organization")
         if not self._org_known(from_org):
@@ -504,19 +509,36 @@ class Relay:
         holds, why = self._holds(m, from_org, from_pos)
         if not holds:
             raise RelayError(403, "forbidden", why)
+        # The header carries the standing its message needed: a grant with to_org that verifies here, or a reply_to
+        # naming a message here from the receiver to the sender. So a header opens a reply path only where the sender
+        # could write to the receiver at all (of_secrets-review on PR 593: else a holder could open one to itself from
+        # any position, for messages it never sent).
+        authority, why = self._authority(m, body, from_org, from_pos, to_org, to_pos)
+        if authority != "verified" and not self._sent_here(body.get("reply_to"), to_org, to_pos, from_org, from_pos):
+            raise RelayError(403, "forbidden", f"a header needs its message's standing: a grant with to_org ({why}), "
+                                               f"or a reply_to naming a message here from {to_org}:{to_pos}")
         ends = (from_org, from_pos, to_org, to_pos)
         with self.app.store.conn() as c:
             c.execute("DELETE FROM sent_across WHERE created < ?", (time.time() - self.REPLY_WINDOW_S,))
+            if c.execute("SELECT 1 FROM messages WHERE msg_id = ?", (msg_id,)).fetchone():
+                raise RelayError(409, "conflict", "msg_id names a message on this server")
+            # OR IGNORE: the same header posted twice at once is kept once, and both posts answer alike
+            c.execute("INSERT OR IGNORE INTO sent_across VALUES (?,?,?,?,?,?,?)",
+                      (msg_id, *ends, m["machine_id"], time.time()))
             old = c.execute("SELECT from_org, from_position, to_org, to_position FROM sent_across WHERE msg_id = ?",
                             (msg_id,)).fetchone()
-            if old and tuple(old) != ends:
-                raise RelayError(409, "conflict", "msg_id kept already with other ends")
-            if not old:
-                if c.execute("SELECT 1 FROM messages WHERE msg_id = ?", (msg_id,)).fetchone():
-                    raise RelayError(409, "conflict", "msg_id names a message on this server")
-                c.execute("INSERT INTO sent_across VALUES (?,?,?,?,?,?,?)",
-                          (msg_id, *ends, m["machine_id"], time.time()))
+        if tuple(old) != ends:
+            raise RelayError(409, "conflict", "msg_id kept already with other ends")
         return {"msg_id": msg_id, "kept": True}
+
+    def _sent_here(self, rid, from_org, from_pos, to_org, to_pos):
+        """Is RID a message here from from_org:from_pos to to_org:to_pos?"""
+        if not isinstance(rid, str) or not rid:
+            return False
+        with self.app.store.conn() as c:
+            return c.execute("SELECT 1 FROM messages WHERE msg_id = ? AND from_org = ? AND from_position = ? AND"
+                             " to_org = ? AND to_position = ?", (rid, from_org, from_pos, to_org, to_pos)).fetchone() \
+                is not None
 
     def post(self, m, body):
         body = body or {}
@@ -535,11 +557,12 @@ class Relay:
                                                   " no position could ever take the message")
         sha = hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         with self.app.store.conn() as c:
-            old = c.execute("SELECT body_sha, state, authority FROM messages WHERE msg_id = ?", (msg_id,)).fetchone()
+            old = c.execute("SELECT body_sha, state, authority, to_org, to_position FROM messages WHERE msg_id = ?",
+                            (msg_id,)).fetchone()
         if old:
             if old[0] != sha:
                 raise RelayError(409, "conflict", "msg_id reused with a different body")
-            return {"msg_id": msg_id, "state": old[1], "authority": old[2]}
+            return {"msg_id": msg_id, "state": old[1], "authority": old[2], "to": f"{old[3]}:{old[4]}"}
         if not self._org_known(to_org):
             raise RelayError(404, "unknown_org", f"organization {to_org} is not served here")
         to_pos = self._canonical(to_org, to_pos)  # an older name, kept as an alias, reaches the position
@@ -578,8 +601,9 @@ class Relay:
                                                       "location": f"message:{msg_id}"}) for (k, h), n in found.items()])
         with self.cond:
             self.cond.notify_all()
+        # `to` as stored, an alias resolved: the sender's header names the position a reply comes from (PR 593)
         return {"msg_id": msg_id, "state": "queued", "authority": authority, "authority_reason": why,
-                "priority": priority}
+                "priority": priority, "to": f"{to_org}:{to_pos}"}
 
     def system_post(self, to, text, priority="fyi", sender="of_server"):
         """A message of-server sends itself (docs/health.md §3: its own checks told to their owner): from SENDER of the
@@ -651,7 +675,9 @@ class Relay:
             if d.get("reply_to"):  # who sent the message this one answers: the client types a reply to the
                 with self.app.store.conn() as c:  # receiver's own message at once (docs/guard.md R9)
                     o = c.execute("SELECT from_org, from_position FROM messages WHERE msg_id = ?",
-                                  (d["reply_to"],)).fetchone()
+                                  (d["reply_to"],)).fetchone() or \
+                        c.execute("SELECT from_org, from_position FROM sent_across WHERE msg_id = ?",
+                                  (d["reply_to"],)).fetchone()  # a reply found by its header (PR 593)
                 d["reply_to_from"] = f"{o[0]}:{o[1]}" if o else None
             out.append(d)
         return out
