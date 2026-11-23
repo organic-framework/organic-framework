@@ -1,0 +1,32 @@
+# The lab registry's tools part for tools-move-v0 (hand-over d18dc22d, of_tools to of_lab). Merge these keys into the
+# scenario's registry/positions.yaml for organization lab-tools; the two positions carry the other fields the
+# scenario's registry needs (holder, workplace, system and so on).
+tools_mode: enforce            # the session sees exactly its profile: allowedMcpServers and enabledPlugins are written
+plugins:
+  secret_stores: envfile       # a lab store, never for real credentials (docs/registry.md, Secret references)
+credentials:
+  lab-canary:
+    ref: envfile://LAB_CANARY  # the canary's value lives only in the lab env file; check 4 greps for it
+    acts_as: "a canary value; it opens nothing"
+    keeper: lab_tools_holder
+tools:
+  lab-echo:
+    kind: mcp-stdio            # the local tool
+    command: ["python3", "~/lab-tools/echo_mcp.py"]
+    credential: {id: lab-canary, env: LAB_CANARY}
+    acts_as: "nothing; a lab echo server"
+    scope: read
+    keeper: lab_tools_holder
+  lab-remote:
+    kind: mcp-remote           # the remote tool: portable, no sign-in, so it travels in --mcp-config
+    url: "http://127.0.0.1:18999/mcp"
+    headers: {X-Lab: lab-remote}
+    acts_as: "nothing; a lab server on the VM's loopback"
+    scope: read
+    keeper: lab_tools_holder
+positions:
+  - name: lab_tools_holder
+    tools: [lab-echo, lab-remote]
+    credentials: [lab-canary]
+  - name: lab_tools_other
+    tools: []

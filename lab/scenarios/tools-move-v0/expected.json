@@ -1,0 +1,53 @@
+{
+ "_how": "of_tools' expected values for tools-move-v0 (hand-over d18dc22d), from of_tools.session_config on tools-registry.yaml. $HOME is the lab user's home; $OF_BIN is the resolved path of the `of` that starts the session (~/organic-framework/bin/of in the VM). Each config dir holds one installed plugin, lab-plugin@lab, in plugins/installed_plugins.json, so enabledPlugins is written; without it the key is absent. The same values hold on ~/.claude-a and ~/.claude-b, before and after the move (checks 1 and 2). mcp is the --mcp-config file's content; null means no --mcp-config argument at all (check 3).",
+ "canary": "check 4: the value of LAB_CANARY appears in no generated .mcp.json or settings file; the file names the credential lab-canary and the variable LAB_CANARY only",
+ "lab_tools_holder": {
+  "mcp": {
+   "mcpServers": {
+    "lab-echo": {
+     "type": "stdio",
+     "command": "$OF_BIN",
+     "args": [
+      "secret",
+      "run",
+      "lab-canary",
+      "--env",
+      "LAB_CANARY",
+      "--",
+      "python3",
+      "$HOME/lab-tools/echo_mcp.py"
+     ]
+    },
+    "lab-remote": {
+     "type": "http",
+     "url": "http://127.0.0.1:18999/mcp",
+     "headers": {
+      "X-Lab": "lab-remote"
+     }
+    }
+   }
+  },
+  "settings": {
+   "allowedMcpServers": [
+    {
+     "serverName": "lab-echo"
+    },
+    {
+     "serverName": "lab-remote"
+    }
+   ],
+   "enabledPlugins": {
+    "lab-plugin@lab": false
+   }
+  }
+ },
+ "lab_tools_other": {
+  "mcp": null,
+  "settings": {
+   "allowedMcpServers": [],
+   "enabledPlugins": {
+    "lab-plugin@lab": false
+   }
+  }
+ }
+}
