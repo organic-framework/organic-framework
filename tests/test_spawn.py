@@ -484,6 +484,24 @@ class WorkCloneTest(unittest.TestCase):
             with open(os.path.join(HERE, "..", "bin", name)) as fh:
                 self.assertNotIn("work_clone", fh.read(), name)          # only of_spawn reads it (bin/of only sets it)
 
+    def test_the_sandbox_write_folders_hold_every_clone_and_no_start_folder(self):
+        """of_server, message 01a205f4-a5e9: the folders a session's sandbox writes come from this module alone, for
+        of_capacity.started_folder, which refuses a start folder in one: the state and temporary folders and every
+        named clone, refused ones included; never an organization's paths or its work_root."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            d = os.path.realpath(d)
+            orgs = os.path.join(d, "orgs.yaml")
+            with open(orgs, "w") as fh:
+                fh.write(f"orgs:\n  - name: ofb\n    path: {d}/build\n    paths: [{d}/fw]\n    work_clone: {d}/clone\n"
+                         f"    work_root: {d}/work\n")
+            got = of_spawn.sandbox_write_folders(orgs)
+        self.assertIn(os.path.join(d, "clone"), got)                 # not there, so refused: listed all the same
+        for x in ("build", "fw", "work"):
+            self.assertNotIn(os.path.join(d, x), got)
+        self.assertIn(os.path.realpath("/tmp"), got)
+        self.assertIn(os.path.realpath(tempfile.gettempdir()), got)
+
     def test_the_owner_sets_the_clone_and_an_agent_does_not(self):
         import importlib.machinery
         import importlib.util

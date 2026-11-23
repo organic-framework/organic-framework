@@ -1918,10 +1918,13 @@ class Resume(unittest.TestCase):
         from unittest import mock
         self.home = tempfile.TemporaryDirectory()
         h = self.home.name
-        self.cfg, self.cwd = os.path.join(h, ".claude-e"), os.path.join(h, "acme")
-        os.makedirs(os.path.join(self.cfg, "projects", "-acme"))
+        # the real path, as a home has: a folder under a link (macOS: /var is /private/var) keys otherwise than the
+        # start folder a restore resolves
+        self.cfg, self.cwd = os.path.join(h, ".claude-e"), os.path.join(os.path.realpath(h), "acme")
+        self.key =of_capacity.folder_key(self.cwd)  # Claude Code files a session under its start folder's key
+        os.makedirs(os.path.join(self.cfg, "projects", self.key))
         os.makedirs(self.cwd)
-        with open(os.path.join(self.cfg, "projects", "-acme", "s1.jsonl"), "w") as fh:
+        with open(os.path.join(self.cfg, "projects", self.key, "s1.jsonl"), "w") as fh:
             for r in ({"type": "user", "cwd": self.cwd, "permissionMode": "bypassPermissions",
                        "timestamp": "2026-11-06T09:23:00Z"},
                       {"type": "assistant", "cwd": self.cwd, "timestamp": "2026-11-06T09:24:00Z",
@@ -1943,6 +1946,8 @@ class Resume(unittest.TestCase):
             return {}
         self.patches = [mock.patch.object(of_capacity.time, "sleep", lambda *_: None),
                         mock.patch.object(of_capacity, "STATE_DIR", h),
+                        # the fixture's folders lie in the temporary folder, which sessions write: its own test says so
+                        mock.patch("of_spawn.sandbox_write_folders", lambda: []),
                         mock.patch.object(of_capacity, "config_dirs", lambda *a: [self.cfg]),
                         mock.patch.object(of_capacity, "_herdr", herdr),
                         mock.patch.object(of_capacity, "_pane_lines", lambda *a, **k: list(self.screen)),
@@ -2079,8 +2084,8 @@ class Resume(unittest.TestCase):
         os.makedirs(os.path.join(src, "projects"))
         with open(os.path.join(src, ".claude.json"), "w") as fh:
             json.dump({"oauthAccount": {"emailAddress": "spent@x"}}, fh)
-        os.replace(os.path.join(self.cfg, "projects", "-acme"), os.path.join(src, "projects", "-acme"))
-        os.makedirs(os.path.join(src, "projects", "-acme", "s1", "subagents"))
+        os.replace(os.path.join(self.cfg, "projects", self.key), os.path.join(src, "projects", self.key))
+        os.makedirs(os.path.join(src, "projects", self.key, "s1", "subagents"))
         p = mock.patch.object(of_capacity, "config_dirs", lambda *a: [self.cfg, src])
         p.start()
         self.addCleanup(p.stop)
@@ -2094,19 +2099,64 @@ class Resume(unittest.TestCase):
         logs = []
         r = of_capacity.resume("runners_keeper", "s1", self.cfg, "w6:p18", log=logs.append, dry_run=True)
         self.assertTrue(r["dry_run"])
-        self.assertFalse(os.path.exists(os.path.join(self.cfg, "projects", "-acme", "s1.jsonl")))  # a dry run carries nothing
+        self.assertFalse(os.path.exists(os.path.join(self.cfg, "projects", self.key, "s1.jsonl")))  # a dry run carries nothing
         self.assertTrue(any("carried first from" in x for x in logs))
         r = self.resume()
         self.assertEqual(r["session"], "s1")
-        self.assertTrue(os.path.exists(os.path.join(self.cfg, "projects", "-acme", "s1.jsonl")))
-        self.assertTrue(os.path.isdir(os.path.join(self.cfg, "projects", "-acme", "s1", "subagents")))
-        self.assertFalse(os.path.exists(os.path.join(src, "projects", "-acme", "s1.jsonl")))  # set aside, not deleted
-        self.assertTrue(os.path.exists(os.path.join(r["work"], "backup", "source", "projects", "-acme", "s1.jsonl")))
+        self.assertTrue(os.path.exists(os.path.join(self.cfg, "projects", self.key, "s1.jsonl")))
+        self.assertTrue(os.path.isdir(os.path.join(self.cfg, "projects", self.key, "s1", "subagents")))
+        self.assertFalse(os.path.exists(os.path.join(src, "projects", self.key, "s1.jsonl")))  # set aside, not deleted
+        self.assertTrue(os.path.exists(os.path.join(r["work"], "backup", "source", "projects", self.key, "s1.jsonl")))
         held = next(c for c in self.calls if c[:2] == ("emit", "holder_changed"))[2]
         self.assertEqual(held["previous_workplace"]["config_dir"], src)
-        self.assertIn("projects/-acme/s1.jsonl", held["files"])
+        self.assertIn(f"projects/{self.key}/s1.jsonl", held["files"])
         run = next(c for c in self.calls if c[:2] == ("pane", "run"))
         self.assertIn(self.cfg, run[3])
+
+    def test_a_session_starts_only_in_a_folder_it_did_not_choose(self):
+        """of_server, messages 01a205d4-7bf7 and 01a205e4-b999; of_secrets-review, message 01a205e4-4f33: a resume took
+        the transcript's last cwd, which the session's own cd moves. The start folder is matched by exact path, and
+        only folders it did not choose count: the registry's and the first one its transcript records."""
+        from unittest import mock
+        wt = os.path.join(self.cwd, ".claude", "worktrees", "x")
+        os.makedirs(wt)
+        t = os.path.join(self.cfg, "projects", self.key, "s1.jsonl")
+        self.assertEqual(of_capacity.first_cwd(t), self.cwd)
+        self.assertEqual(of_capacity.started_folder(t, self.cwd), self.cwd)
+        self.assertEqual(of_capacity.started_folder(t, wt), self.cwd)         # a worktree it entered: its start folder
+        self.assertIsNone(of_capacity.started_folder(None, self.cwd))
+        # a folder that only looks like the start folder is never taken
+        start = os.path.join(self.home.name, "start-dir")
+        other = os.path.join(self.home.name, "start", "dir")
+        os.makedirs(start)
+        os.makedirs(other)
+        other_t = os.path.join(self.cfg, "projects", of_capacity.folder_key(start), "s9.jsonl")
+        os.makedirs(os.path.dirname(other_t))
+        with open(other_t, "w") as fh:
+            fh.write(json.dumps({"type": "user", "cwd": start}) + "\n" + json.dumps({"type": "user", "cwd": other}) + "\n")
+        self.assertEqual(of_capacity.folder_key(other), of_capacity.folder_key(start))
+        self.assertEqual(of_capacity.started_folder(other_t, other), start)
+        # the registry's start folder counts too, and the deepest folder holding the one it ran in wins
+        with mock.patch.object(of_capacity, "spawn_folder", lambda p: wt):
+            self.assertEqual(of_capacity.started_folder(t, wt, {"name": "runners_keeper"}), wt)
+            self.assertEqual(of_capacity.started_folder(t, self.cwd, {"name": "runners_keeper"}), self.cwd)
+        # a start folder inside a folder sessions write: none
+        with mock.patch("of_spawn.sandbox_write_folders", lambda: [os.path.realpath(self.home.name)]):
+            self.assertIsNone(of_capacity.started_folder(t, self.cwd))
+        # a resume from the worktree it entered starts in its start folder, and its note says where it ran
+        with open(t, "a") as fh:
+            fh.write(json.dumps({"type": "user", "cwd": wt, "timestamp": "2026-11-23T01:00:00Z"}) + "\n")
+        r = self.resume()
+        run = next(c for c in self.calls if c[:2] == ("pane", "run"))
+        self.assertIn(of_capacity._q(self.cwd), run[3])
+        self.assertNotIn(wt, run[3])
+        with open(os.path.join(r["work"], "note.md")) as fh:
+            self.assertIn(f"it last ran in {wt}", fh.read())
+        # a resume whose transcript names no start folder outside the folders sessions write refuses
+        self.up = False
+        with mock.patch("of_spawn.sandbox_write_folders", lambda: [os.path.realpath(self.home.name)]):
+            with self.assertRaisesRegex(of_capacity.MoveError, "start folder it did not choose"):
+                self.resume()
 
     def test_a_resume_starts_at_the_effort_the_session_last_ran_at(self):
         """A closed session has no process to read its effort from: its last recorded start gives it, and the
@@ -2129,15 +2179,15 @@ class Resume(unittest.TestCase):
         """A copy on the target and a newer one elsewhere that does not hold its last record: neither is taken (as
         a restore refuses it, of_review on PR 538). A newer one that continues it is carried."""
         src = self._on_another_account()
-        os.makedirs(os.path.join(self.cfg, "projects", "-acme"))
-        old = os.path.join(self.cfg, "projects", "-acme", "s1.jsonl")
+        os.makedirs(os.path.join(self.cfg, "projects", self.key))
+        old = os.path.join(self.cfg, "projects", self.key, "s1.jsonl")
         with open(old, "w") as fh:
             fh.write(json.dumps({"type": "user", "uuid": "u-other", "cwd": self.cwd}) + "\n")
         os.utime(old, (1, 1))
         with self.assertRaisesRegex(of_capacity.MoveError, "does not continue"):
             self.resume()
         self.assertFalse(any(c[:2] == ("pane", "run") for c in self.calls))
-        with open(os.path.join(src, "projects", "-acme", "s1.jsonl"), "a") as fh:
+        with open(os.path.join(src, "projects", self.key, "s1.jsonl"), "a") as fh:
             fh.write(json.dumps({"type": "user", "uuid": "u-other", "cwd": self.cwd}) + "\n")
         os.utime(old, (1, 1))
         self.assertEqual(self.resume()["session"], "s1")
@@ -2239,12 +2289,12 @@ class Resume(unittest.TestCase):
         from the host's newer copy under the work folder's key: the first copy glob listed won, the plan's folder did
         not exist here, the older copy's folder was the start folder, and nothing was rekeyed."""
         home = os.path.realpath(self.cwd)
-        stale = os.path.join(self.cfg, "projects", "-acme", "s1.jsonl")      # setUp's copy, in the start folder
+        stale = os.path.join(self.cfg, "projects", self.key, "s1.jsonl")      # setUp's copy, in the start folder
         fresh_dir = os.path.join(self.cfg, "projects", "-elsewhere-work")
         os.makedirs(fresh_dir)
         fresh = os.path.join(fresh_dir, "s1.jsonl")
         with open(fresh, "w") as fh:
-            fh.write(json.dumps({"type": "user", "cwd": "/nowhere/work", "timestamp": "2026-11-22T17:18:00Z",
+            fh.write(json.dumps({"type": "user", "cwd": "/elsewhere/work", "timestamp": "2026-11-22T17:18:00Z",
                                  "message": {"content": "turns on the other machine"}}) + "\n")
         os.utime(stale, (time.time() - 600, time.time() - 600))
         self.assertEqual(of_capacity.find_transcript(self.cfg, "s1"), fresh)   # the freshest, never the first listed
@@ -2252,7 +2302,7 @@ class Resume(unittest.TestCase):
             json.dump({"oauthAccount": {"emailAddress": "vp@x"}, "projects": {home: {"hasTrustDialogAccepted": True}}}, fh)
         start = mock.Mock(return_value={"pid": 9, "session": "s1"})
         e = {"name": "runners_keeper", "position": "runners_keeper", "session": "s1", "config_dir": self.cfg,
-             "cwd": "/nowhere/work", "model": "claude-opus-5-5"}
+             "cwd": "/elsewhere/work", "model": "claude-opus-5-5"}
         with mock.patch.multiple(of_capacity, _herdr=mock.Mock(return_value={
                 "panes": [], "workspaces": [], "tabs": [], "pane_id": "w6:p18"}),
                 load_policy=lambda: {"start_in": ["runners_keeper"]}, spawn_folder=lambda p: home,
@@ -2274,12 +2324,12 @@ class Resume(unittest.TestCase):
         carried_dir = os.path.join(self.cfg, "projects", "-elsewhere-work")
         os.makedirs(carried_dir)
         carried = os.path.join(carried_dir, "s1.jsonl")
-        turn = json.dumps({"type": "user", "uuid": "u-carried-9", "cwd": "/nowhere/work",
+        turn = json.dumps({"type": "user", "uuid": "u-carried-9", "cwd": "/elsewhere/work",
                            "message": {"content": "carried turn"}})
         tail = json.dumps({"type": "file-history-snapshot", "snapshot": {}})   # most transcripts end on such a line
         with open(carried, "w") as fh:
             fh.write(turn + "\n" + tail + "\n")
-        local = os.path.join(self.cfg, "projects", "-acme", "s1.jsonl")
+        local = os.path.join(self.cfg, "projects", self.key, "s1.jsonl")
         with open(local, "a") as fh:     # written after: another history, ending on the same uuid-less line
             fh.write(json.dumps({"type": "user", "uuid": "u-local-1", "cwd": self.cwd,
                                  "message": {"content": "resumed here"}}) + "\n" + tail + "\n")
@@ -2291,7 +2341,7 @@ class Resume(unittest.TestCase):
         with open(os.path.join(self.cfg, ".claude.json"), "w") as fh:
             json.dump({"oauthAccount": {"emailAddress": "vp@x"}, "projects": {home: {"hasTrustDialogAccepted": True}}}, fh)
         e = {"name": "runners_keeper", "position": "runners_keeper", "session": "s1", "config_dir": self.cfg,
-             "cwd": "/nowhere/work", "model": "claude-opus-5-5"}
+             "cwd": "/elsewhere/work", "model": "claude-opus-5-5"}
 
         def restore():
             start = mock.Mock(return_value={"pid": 9, "session": "s1"})
@@ -2320,14 +2370,15 @@ class Resume(unittest.TestCase):
         entry = {"name": "keeper", "position": "keeper", "org": "team", "session": sid,
                  "config_dir": "/source/.claude-e", "cwd": "/source/acme", "model": "m"}
         bundle = os.path.join(self.home.name, "bundle")
-        project = os.path.join(bundle, "files/source/.claude-e/projects/-acme")
+        project = os.path.join(bundle, "files/source/.claude-e/projects/-source-acme")
         os.makedirs(project)
         with open(os.path.join(bundle, "plan.json"), "w") as fh:
             json.dump({"kind": "carry", "org": "team", "home": "/source", "uid": os.getuid(),
                        "prepared_at": "2026-11-20T10:13:14Z", "entries": [entry]}, fh)
         prompt = "Read /source/acme/report and send the full summary."
         with open(os.path.join(project, sid + ".jsonl"), "w") as fh:
-            for row in ({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "CronCreate",
+            for row in ({"type": "user", "cwd": "/source/acme", "message": {"content": "start"}},
+                        {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "CronCreate",
                          "input": {"prompt": prompt, "cron": "52 11 21 11 *", "recurring": False}}]}},
                         {"type": "system", "subtype": "informational", "timestamp": "2026-11-20T10:13:13.999Z",
                          "content": "Stopped scheduled task: Earlier exit"},
@@ -2339,7 +2390,7 @@ class Resume(unittest.TestCase):
                                  load_policy=lambda: {}, deny_for=lambda *_: None, tools_for=lambda *_: None,
                                  rename_agent=mock.Mock(), start_session=mock.Mock(return_value={"pid": 9, "session": sid})):
             result, = of_carry.restore(bundle, [{"name": "keeper", "_org": "team"}], "team",
-                                       home=self.home.name, log=lambda _: None)
+                                       home=os.path.realpath(self.home.name), log=lambda _: None)
         self.assertEqual(result[:2], ("keeper", "resumed"))
         with open(os.path.join(result[2]["work"], "note.md")) as fh:
             note = fh.read()
