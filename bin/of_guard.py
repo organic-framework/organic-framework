@@ -309,6 +309,7 @@ def _reads(p):
 
 
 CODE_READS = "code that names a secret file in a string"
+_ATTR_LITERAL = re.compile(r"^(?:self|cls)\.[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _code_reads(lit):
@@ -1068,6 +1069,8 @@ def _code_deny(code, lang=None):
     for lit in lits:
         if _keychain_name(lit):  # G20: a keychain item an organization protects, named in code (Security framework)
             return KEYCHAIN_DENY, _keychain_name(lit)
+        if " " not in lit and _ATTR_LITERAL.match(lit):
+            continue  # self.key, cls.pem: an attribute written as code text, never a file's name (of_capacity, 2026-11-23)
         if " " not in lit and _secret_path(lit):
             if py is not None:
                 filters = _py_filters(code) if filters is None else filters

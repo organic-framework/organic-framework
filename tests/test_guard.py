@@ -936,5 +936,18 @@ class GuardBashTest(unittest.TestCase):
         self.assertEqual(subject, "cd /r && cat .env")
 
 
+
+class AttributeLiteralTest(unittest.TestCase):
+    """of_capacity, 2026-11-23: G8 read the attribute self.key, written into a test as code text, as a key file."""
+
+    def test_self_and_cls_attributes_are_code_text(self):
+        for lit in ("self.key", "cls.key", "self.pem", "self.secret_key"):
+            cmd = f"python3 - <<'EOF'\nt = t.replace('a', '{lit}')\nEOF"
+            self.assertIsNone(of_guard.critical_deny("Bash", {"command": cmd}, "/tmp"), lit)
+        for lit in ("server.key", "args.key", "self/server.key", "my.self.key", "self.key.pem"):
+            cmd = f"python3 - <<'EOF'\nprint(open('{lit}').read())\nEOF"
+            got = of_guard.critical_deny("Bash", {"command": cmd}, "/tmp")
+            self.assertTrue(got and "G8" in got[0], lit)
+
 if __name__ == "__main__":
     unittest.main()
