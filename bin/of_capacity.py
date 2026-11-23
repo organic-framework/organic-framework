@@ -2684,8 +2684,10 @@ def worktree_main(top):
     a worktree's canonical root, which its folder trust is keyed by: `top/.git` a file `gitdir: <admin>`, the admin
     folder `<common>/worktrees/<name>` by its own `commondir`, and its `gitdir` pointing back to `top/.git`; each file a
     regular one reached through no link. A worktree is read through its main repository only when Claude Code's own
-    checks hold, the main repository's own .git naming it back. A common dir not named .git (a bare repository) gives
-    none: stricter than Claude Code, never looser. Never the home folder or above it. None when any check fails."""
+    checks hold, the main repository's own .git naming it back. Trust is read only for the folder a session is started
+    or restarted in, which the session never chooses (of_server, message 01a205d4-7bf7). A common dir not named .git
+    (a bare repository) gives none: stricter than Claude Code, never looser. Never the home folder or above it. None
+    when any check fails."""
     try:
         top = os.path.realpath(top)
         dotgit = os.path.join(top, ".git")
