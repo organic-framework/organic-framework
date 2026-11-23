@@ -44,6 +44,15 @@ def transcript(uuid, project, raw='{"x": 1}'):
         "source_path": f"{HOME}/.claude-x/projects/{project}/T.jsonl", "raw": raw, "tool_names": ""}}
 
 
+def release_server(app):
+    """Wait for APP's stopped writer, then close the store connection this thread holds for it. A thread's connection
+    outlives the thread (Store.close_thread), so without this server.db, its -wal and -shm stayed open: of_review
+    counted about 340 descriptors over the six server modules on macOS, after PR 616."""
+    if app.writer.is_alive():   # its own connection closes as it stops, before the folder goes
+        app.writer.join(10)
+    app.store.close_thread()
+
+
 def release_store_conns(root):
     """Close the event log's cached connections to the stores under ROOT. of_events._conn keeps one per store path and
     thread, and each test's state folder is new, so they piled up, three descriptors a test, until the whole suite
@@ -94,6 +103,7 @@ class ServerBase(unittest.TestCase):
         self.httpd.shutdown()
         self.httpd.server_close()
         self.app.writer.stop.set()
+        release_server(self.app)
         of_events.STATE_DIR = self.saved_state
         release_store_conns(self.tmp.name)
         self.tmp.cleanup()
@@ -575,6 +585,7 @@ class PerOrgServerTest(unittest.TestCase):
         self.httpd.shutdown()
         self.httpd.server_close()
         self.app.writer.stop.set()
+        release_server(self.app)
         of_events.STATE_DIR = self.saved_state
         release_store_conns(self.tmp.name)
         self.tmp.cleanup()
@@ -1001,6 +1012,7 @@ class RedactionTest(unittest.TestCase):
         self.httpd.shutdown()
         self.httpd.server_close()
         self.app.writer.stop.set()
+        release_server(self.app)
         of_events.STATE_DIR = self.saved
         release_store_conns(self.tmp.name)
         self.tmp.cleanup()
