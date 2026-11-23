@@ -65,6 +65,9 @@ class HeartbeatTest(StateDir):
                     time.sleep(0.1)
             finally:
                 stop.set()
+                for t in threads:   # every loop ended before tearDown removes the folder they write into
+                    t.join(5)
+        self.assertFalse([t for t in threads if t.is_alive()])
         self.assertIn("poll http://s", loops)
         self.assertTrue(R.relay_healthy()[0])
 
@@ -108,6 +111,9 @@ class HeartbeatTest(StateDir):
                     time.sleep(0.1)
             finally:
                 stop.set()
+                for t in threads:   # every loop ended before tearDown removes the folder they write into
+                    t.join(5)
+        self.assertFalse([t for t in threads if t.is_alive()])
         self.assertLess(seen["b"] - seen["a"], 0.5)                          # b did not wait for a's slow pull
         self.assertIn("coord http://s|a", loops)
         self.assertIn("coord http://s|b", loops)
