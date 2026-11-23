@@ -126,6 +126,46 @@ class ServerTest(ServerBase):
         _, rc = self.client._request("POST", "/v1/batches", raw=body, token=self.client.token())
         self.assertEqual((rc["accepted"], rc["duplicates"]), (1, 0))       # the tenant may re-send on purpose
 
+    def test_a_failed_queueing_or_receipt_loses_no_record(self):
+        """2026-11-23, of_server: accept marked a batch's keys seen before it queued the batch, so a put that failed, or
+        a failure before the receipt row, left the client's retry of the same batch id finding every record seen and
+        queuing none. Now the keys and the row are committed together after the put, and the retry queues them."""
+        from unittest import mock
+        with self.app.store.conn() as c:
+            m = dict(zip(("machine_id", "orgs", "raw_orgs", "tenant"), c.execute(
+                "SELECT machine_id, orgs, raw_orgs, tenant FROM machines WHERE machine_id = ?",
+                (of_events.machine_id(),)).fetchone()))
+        batch = {"batch_id": "f1", "records": [event("f-e1", "ofb"), event("f-e2", "ofb")]}
+        accept = lambda: of_server.accept(self.app.store, self.app.buffer, self.app.router(), m, batch, "sha-f1")  # noqa
+        with mock.patch.object(self.app.buffer, "put", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                accept()
+        status, r = accept()
+        self.assertEqual((status, r["accepted"], r["duplicates"]), (202, 2, 0))       # nothing was marked seen
+        batch2 = {"batch_id": "f2", "records": [event("f-e3", "ofb")]}
+        real_tx = self.app.store.tx
+        calls = []
+
+        def failing_tx():
+            calls.append(1)
+            if len(calls) == 1:
+                raise sqlite3.OperationalError("database is locked")
+            return real_tx()
+        with mock.patch.object(self.app.store, "tx", failing_tx):
+            with self.assertRaises(sqlite3.OperationalError):
+                of_server.accept(self.app.store, self.app.buffer, self.app.router(), m, batch2, "sha-f2")
+            status, r = of_server.accept(self.app.store, self.app.buffer, self.app.router(), m, batch2, "sha-f2")
+        self.assertEqual((r["accepted"], r["duplicates"]), (1, 0))                     # queued again, not lost
+        self.assertEqual([x["data"]["event_id"] for x in self.app.buffer.get("f2")["records"]], ["f-e3"])
+        status, r = accept()                                                            # the same batch id: its receipt
+        self.assertEqual((r["accepted"], r["duplicates"]), (2, 0))
+        r3 = of_server.accept(self.app.store, self.app.buffer, self.app.router(), m,
+                              {"batch_id": "f3", "records": [event("f-e1", "ofb")]}, "sha-f3")[1]
+        self.assertEqual((r3["accepted"], r3["duplicates"]), (0, 1))                   # seen once committed
+        self.app.writer.drain()
+        got = sorted(x["event_id"] for _, _, rows in self.ch.inserts for x in rows)
+        self.assertEqual([e for e in got if e.startswith("f-")], ["f-e1", "f-e2", "f-e3"])
+
     def test_writer_retries_in_order_when_clickhouse_is_down(self):
         self.client.send_batch([event("e1", "ofb")], batch_id="b1")
         self.client.send_batch([event("e2", "ofb")], batch_id="b2")
