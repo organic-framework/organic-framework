@@ -7063,7 +7063,9 @@ def cmd_pulse(args):
         print(f"card ids: {e}")
     try:  # answers proposed while the organization's server could not be reached: sent again every pulse, so an
         import of_decisions  # answer never waits on the next one to leave (event store step 1; of_asks_answer)
-        sent = of_decisions.send_pending(conn, log=(lambda m: None) if args.quiet else print)
+        import of_asks_answer  # one short try per proposal: a server that is away never holds the pulse (of_platform)
+        sent = of_decisions.send_pending(conn, log=(lambda m: None) if args.quiet else print,
+                                         timeout=of_asks_answer.ONE_TRY_S)
         if sent and not args.quiet:
             print(f"decisions: {of_decisions.counts(sent)}")
     except Exception as e:  # noqa: BLE001 - the pulse runs on without them
