@@ -245,7 +245,8 @@ rules:
     remedies: [step back and reframe (double loop), reframe review by a second position the unit owner names]
 
   loop-wip:
-    version: 0
+    version: 1                   # v1 (2026-11-23): each cell, or rung of a wip_arms map, against its own limit (hand-over c4ef8758)
+    labels_carry_from: [0]       # v1 only narrows what fires on a v0 loop (a whole number, no cells)
     p: 0.6
     m_decide: 2
     thresholds: {wip_arms_default: 2, over_hours_gte: 12}
