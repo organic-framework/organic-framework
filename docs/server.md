@@ -151,27 +151,42 @@ itself, in its own transaction, rather than after the batch writer.
   joined.
 - **One transaction, durable.** The check and the append are one `BEGIN IMMEDIATE` at `synchronous = FULL`, with
   `fullfsync` and `checkpoint_fullfsync` on macOS, where fsync alone leaves the drive's cache unflushed. The answer
-  goes out after the commit. Every text in the payload is masked first, as a relay message's is at post, and the
-  findings go to the vault.
+  goes out after the commit. Every text in the payload and in `proposer` is masked first, as a relay message's is at
+  post, and the findings go to the vault. A body over 64 KiB is refused before it is parsed, and a payload nested
+  deeper than 8. The record's copy for the organization's database is queued after the commit, so a crash between
+  the two loses that copy alone; the tables and the feed keep the decision.
 - **The accepted record** is `of.decision_accepted`, written by the server (`host_id: of-server`), id
   `uuid5(of_events.STABLE_NS, "decision:" + <proposal id>)`, payload: the masked payload's fields, `proposal`, `org`,
   `kind`, `stream`, `stream_version`, `seq` (one counter per organization, from 1), `step`, `machine`, `proposer`,
-  `signed` (false for an owner's answer, null for a position's step), `accepted_at`, `restored`, `supersedes`. It
+  `signed` (false for an owner's answer, null for a position's step), `accepted_at`, `restored`, `supersedes`,
+  `receipt` (below), and on a restoration `restored_at` and `receipt_seq`. A refused proposal keeps no copy of the
+  winner: its 409 is the stream's accepted decision as it stands at each ask. It
   enters the feed in the accept's transaction, so every machine gets it, the proposer included, and goes to the
   organization's database through the writer. Only the accept writes `of.decision_accepted` and
   `of.decision_cutover`: `POST /v1/batches` refuses either name in a machine's batch, record by record, as it
   refuses a finance fact, and the writer never copies one into the feed (`of_server_coord.SERVER_ONLY`). So no
   machine can put an accepted decision of its own making before the others.
 - **Signed and unsigned.** A person's step will be signed by a key the agents' OS users cannot read; until the agents
-  leave the owner's OS user, `signature` must be null and an owner's answer is recorded `signed: false`, no worse
-  than before.
-- **Restoration.** The founder chose no off-host copy, so a lost disk loses the decisions since the last backup. A
-  client resends a receipt with `restore: {seq, stream_version, accepted_at}`; it is accepted with its own seq and
-  version, wins over a later decision on its stream that is no restoration (that one becomes `superseded`, named in
-  `supersedes`), and raises the counter above its seq. No new proposal waits for it.
+  leave the owner's OS user, `signature` must be null and an owner's answer is recorded `signed: false`. Until then
+  an agent's proposal, honestly named or claiming `by: owner`, can take a card's version first, and the owner's own
+  answer then gets the 409 with the agent's. Before, both answers were recorded and the fold's rule chose. So the
+  client shows the owner such a refusal, with the winner's machine and proposer, rather than leaving it in a log.
+- **Restoration.** The founder chose no off-host copy, so a lost disk loses the decisions since the last backup. Every
+  accepted record carries `receipt`: an HMAC under purpose `of/decision-receipt/v1` of the masking key, itself
+  derived from the tenant's master key, which lives outside the state folder. It covers the organization, the
+  proposal, the stream, the seq, the stream version, the accepted time and the proposal's content as sent. A client
+  resends the proposal unchanged with `restore: {seq, stream_version, accepted_at, receipt}` from its accepted record.
+  Without a receipt this server issued for exactly that proposal and those values, the answer is `400 bad_receipt`.
+  So a machine can restore only a decision the server made, and only as it was made. A restoration keeps its seq
+  when no decision of the organization holds it. Otherwise it takes the next one and records the receipt's as
+  `receipt_seq`, so `(org, seq)` stays unique and the organization keeps one order. It wins over a later decision on
+  its stream that is no restoration: that one becomes `superseded`, is named in `supersedes`, and its proposer's
+  resend gets the 409. No new proposal waits for a restoration. A resend of a proposal the server still holds gets
+  its first answer.
 - **The switch.** Decisions are off for an organization until its machines run the client that proposes. Then the
   server's keeper or the owner runs `of_server.py decisions --org <org> on` on the server's host, which writes
-  `of.decision_cutover` (its time and the first seq) into the feed; `of_server.py decisions status` shows each
+  `of.decision_cutover` (its time and the first seq) into the feed, and gives the same record again when run once
+  more, from its row; `of_server.py decisions status` shows each
   organization's counter, decisions and refusals. Before the cutover the fold keeps the earlier rule (the first
   eligible answer by time and row).
 - **Kept whole.** The tables `decisions`, `proposals` and `decision_orgs` do not share the feed's 30 days, and

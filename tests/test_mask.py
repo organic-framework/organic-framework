@@ -137,6 +137,26 @@ class DetectTest(unittest.TestCase):
         self.assertEqual((again, found), (out, {}))
 
 
+class ThreadTest(unittest.TestCase):
+    def test_each_thread_takes_only_its_own_findings(self):
+        """of-server's request threads and its writer share one masker (of_secrets-review on organic-framework PR 614:
+        one thread's take() filed another's findings under its own organization)."""
+        import threading
+        m = of_mask.Masker(KEY, DETECTOR)
+        m.text(f"pk={C['evm-private-key']}")                                 # this thread's finding, not yet taken
+        got = {}
+
+        def other():
+            m.text(f"token {C['github-pat']}")
+            got["other"] = m.take()
+        t = threading.Thread(target=other)
+        t.start()
+        t.join()
+        self.assertEqual({k for k, _ in got["other"]}, {"github-pat"})
+        self.assertEqual({k for k, _ in m.take()}, {"evm-private-key"})
+        self.assertEqual(m.take(), {})
+
+
 class JsonTest(unittest.TestCase):
     def test_transcript_line_stays_valid_json_and_loses_every_value(self):
         inner = json.dumps({"env": {"PRIVATE_KEY": "0x" + C["evm-private-key"]}, "note": C["private-key"]})
