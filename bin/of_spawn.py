@@ -349,7 +349,7 @@ def _server_keys(path=None):
 # hooks in them), hook scripts, skills, agents, commands, workflows and MCP servers
 PROTECTED_EDITS = ("**/.claude/settings.json", "**/.claude/settings.local.json", "**/.claude/hooks/**",
                    "**/.claude/skills/**", "**/.claude/agents/**", "**/.claude/commands/**", "**/.claude/workflows/**",
-                   "**/.mcp.json")
+                   "**/.mcp.json", "**/.claude/rules/**")
 
 
 def _is_checkout(d):
@@ -463,6 +463,11 @@ def sandbox_settings(deny=None, platform=None, scratch=None, org=None):
     writable = [c for o, c, _ in work_clones() if o == org and org and os.path.isdir(c) and clone_ready(c)]
     guarded = [svc for _, _, svc, _ in work_clones(include_refused=True)] + \
         [os.path.join(c, x) for c in writable for x in CLONE_CONTROL]
+    cwd = (scratch or (None, None))[0]
+    if cwd:
+        # the rules a session there loads are OF's to write: a file a session leaves there would load as rules in
+        # every session of that folder, hidden from git by the exclude line (of_server, 2026-11-22, on the rules writer's first fix)
+        guarded.append(os.path.join(os.path.realpath(cwd), ".claude", "rules"))
     return {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
             "autoAllowBashIfSandboxed": True,
             "filesystem": {"denyRead": denied,
