@@ -187,10 +187,12 @@ def claude_bin():
 
 
 def probe_command(model=PROBE_MODEL):
-    """No hooks (the probe is not a session of any position, so the recorder must not see it) and no MCP
-    servers: half the cost of a plain call, and nothing spawned."""
+    """No hooks (the probe is not a session of any position, so the recorder must not see it), no MCP servers (half
+    the cost of a plain call, and nothing spawned) and no transcript: its folder is fresh for each process, so every
+    probe left one under a project folder of its own (of_review on organic-framework PR 600: 31 on one machine)."""
     return [claude_bin(), "-p", PROBE_PROMPT, "--model", model, "--output-format", "stream-json", "--verbose",
-            "--max-turns", "1", "--settings", '{"disableAllHooks": true}', "--strict-mcp-config"]
+            "--max-turns", "1", "--settings", '{"disableAllHooks": true}', "--strict-mcp-config",
+            "--no-session-persistence"]
 
 
 def pct(u):
@@ -242,6 +244,18 @@ def parse_probe(lines, stderr, returncode):
     return r
 
 
+def _drop_empty_project(d, cwd):
+    """The project folder a probe's start leaves in config dir `d` for its fresh folder `cwd`: with no transcript
+    (probe_command), Claude Code still makes it with an empty memory folder, one per process and account. Removed
+    while empty; os.rmdir removes nothing else."""
+    proj = os.path.join(d, "projects", folder_key(os.path.realpath(cwd)))
+    for x in (os.path.join(proj, "memory"), proj):
+        try:
+            os.rmdir(x)
+        except OSError:
+            return
+
+
 def probe(d, now=None, runner=subprocess.run):
     """One minimal call on the cheapest model, from a neutral cwd (no project instructions to load): a fresh folder
     of its own process outside OF's state folder, which a session's sandbox can write on Linux, so no project settings
@@ -257,6 +271,7 @@ def probe(d, now=None, runner=subprocess.run):
         r = parse_probe([], "claude not found", 127)
     except subprocess.TimeoutExpired:
         r = parse_probe([], f"probe timed out after {PROBE_TIMEOUT_S}s", 124)
+    _drop_empty_project(d, cwd)
     r.update({"config_dir": d, "account": account_of(d), "observed_at": _reading_iso(now)})
     return r
 
