@@ -225,8 +225,8 @@ def _default_post(url, body):
     import of_client
     c = of_client.Client(url)
     try:
-        if hasattr(c, "decide"):
-            return 200, c.decide(body)
+        if hasattr(c, "decide"):   # of_server's: (status, the body read whole), a refusal's winner included
+            return c.decide(body)
         return c._authed("POST", "/v1/decisions", body=body)
     except of_client.ServerError as e:
         try:
