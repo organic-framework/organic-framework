@@ -1734,6 +1734,15 @@ def make_handler(app):
                     if self._moving(ends):
                         return None
                     return self._relay(lambda: app.relay.post(m, json.loads(raw or b"{}")), status=202)
+                if u.path == "/v1/messages/sent":  # the header of a message posted to another server (docs/server.md)
+                    try:
+                        sent = json.loads(raw or b"{}")
+                        ends = [str(sent.get("from") or "").partition(":")[0]]
+                    except (ValueError, AttributeError):
+                        ends = []
+                    if self._moving(ends):
+                        return None
+                    return self._relay(lambda: app.relay.sent(m, json.loads(raw or b"{}")))
                 if u.path.startswith("/v1/messages/") and u.path.endswith("/ack"):
                     msg_id = u.path[len("/v1/messages/"):-len("/ack")]
                     if self._moving(self._msg_orgs(msg_id)):  # a message of a moving organization, from any machine

@@ -818,6 +818,70 @@ class RelayTest(unittest.TestCase):
             self.call(a, "POST", "/v1/messages", dict(reply, msg_id="r6"))
         self.assertEqual(cm.exception.status, 403)
 
+    def test_a_reply_to_a_message_sent_to_another_server_finds_its_header(self):
+        """of_architect, msg 01a206a9-0644 (2026-11-23): once two organizations' servers were two, a reply from a
+        position with no grant went to its receiver's server, which never saw the message it answered: 403 "names no
+        message". The sender's machine keeps the header (no text) on its own organization's server; a reply finds it
+        there, at most 7 days after it came, back to that sender only, without authority."""
+        a, b = self.machine("a", ["ofb"]), self.machine("b", ["zeta"])
+        self.call(b, "PUT", "/v1/presence", {"holders": [{"org": "zeta", "position": "acme_org", "session_id": "S-zeta"}]})
+        self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "ofb", "position": "ofb_lead", "session_id": "S-lead"}]})
+        head = {"msg_id": "x1", "to": "ofb:ofb_lead", "from": "zeta:acme_org"}
+        reply = {"msg_id": "rx1", "to": "zeta:acme_org", "from": "ofb:ofb_lead", "text": "done", "reply_to": "x1"}
+        with self.assertRaises(of_client.ServerError) as cm:                # no header yet: as before
+            self.call(a, "POST", "/v1/messages", reply)
+        self.assertIn("names no message", json.loads(cm.exception.body)["title"])
+        self.assertEqual(self.call(b, "POST", "/v1/messages/sent", head), {"msg_id": "x1", "kept": True})
+        self.assertEqual(self.call(b, "POST", "/v1/messages/sent", head)["kept"], True)    # the same again: kept
+        with self.app.store.conn() as c:
+            row = c.execute("SELECT * FROM sent_across WHERE msg_id = 'x1'").fetchone()
+        self.assertEqual(row[:6], ("x1", "zeta", "acme_org", "ofb", "ofb_lead", "m-b"))  # no text column at all
+        r = self.call(a, "POST", "/v1/messages", reply)
+        self.assertEqual((r["authority"], r["authority_reason"]),
+                         ("none", "a reply to x1, sent from here to another server (no grant needed; carries no authority)"))
+        for bad, why in ((dict(reply, msg_id="rx2", to="zeta:acme_other"), "is not a message from zeta:acme_other"),
+                         (dict(reply, msg_id="rx3", **{"from": "ofb:ofb_dev"}), "is not a message from zeta:acme_org")):
+            with self.assertRaises(of_client.ServerError) as cm:
+                self.call(a, "POST", "/v1/messages", bad)
+            self.assertEqual(cm.exception.status, 403, bad["msg_id"])
+            self.assertIn(why, json.loads(cm.exception.body)["title"], bad["msg_id"])
+        self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "ofb", "position": "ofb_lead", "session_id": "S-x"}]})
+        with self.assertRaises(of_client.ServerError) as cm:              # the replier must hold the position
+            self.call(a, "POST", "/v1/messages", dict(reply, msg_id="rx4"))
+        self.assertIn("registered holder", json.loads(cm.exception.body)["title"])
+        self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "ofb", "position": "ofb_lead", "session_id": "S-lead"}]})
+        with self.app.store.conn() as c:                                    # the 7 days count from the header's arrival
+            c.execute("UPDATE sent_across SET created = created - 8 * 86400 WHERE msg_id = 'x1'")
+        with self.assertRaises(of_client.ServerError) as cm:
+            self.call(a, "POST", "/v1/messages", dict(reply, msg_id="rx5"))
+        self.assertIn("was sent more than 7 days ago", json.loads(cm.exception.body)["title"])
+
+    def test_a_header_is_kept_only_for_its_holder_and_never_twice_for_other_ends(self):
+        a, b = self.machine("a", ["ofb"]), self.machine("b", ["zeta"])
+        head = {"msg_id": "x2", "to": "ofb:ofb_lead", "from": "zeta:acme_org"}
+        for c, body, status, why in (
+                (b, head, 403, "does not present the position"),                    # no presence yet
+                (a, head, 403, "has not joined zeta"),                              # another organization's sender
+                (b, dict(head, to="zeta:other"), 400, "another organization"),      # within one organization
+                (b, dict(head, msg_id=""), 400, "msg_id is required"),
+                (b, dict(head, **{"from": "nowhere:acme_org"}), 404, "not served here")):
+            if c is b and status != 403:
+                self.call(b, "PUT", "/v1/presence",
+                          {"holders": [{"org": "zeta", "position": "acme_org", "session_id": "S-zeta"}]})
+            with self.assertRaises(of_client.ServerError) as cm:
+                self.call(c, "POST", "/v1/messages/sent", body)
+            self.assertEqual(cm.exception.status, status, why)
+            self.assertIn(why, json.loads(cm.exception.body)["title"])
+        self.call(b, "POST", "/v1/messages/sent", head)
+        with self.assertRaises(of_client.ServerError) as cm:
+            self.call(b, "POST", "/v1/messages/sent", dict(head, to="ofb:ofb_dev"))
+        self.assertEqual(cm.exception.status, 409)
+        self.call(b, "POST", "/v1/messages", {"msg_id": "here1", "to": "zeta:acme_org", "from": "zeta:acme_org",
+                                              "text": "a note"})
+        with self.assertRaises(of_client.ServerError) as cm:               # a message on this server has no header
+            self.call(b, "POST", "/v1/messages/sent", dict(head, msg_id="here1"))
+        self.assertEqual(cm.exception.status, 409)
+
     def test_a_grant_limited_to_positions_admits_no_other(self):
         a = self.machine("a", ["ofb", "zeta"])
         self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "ofb", "position": "ofb_lead", "session_id": "S-lead"}]})

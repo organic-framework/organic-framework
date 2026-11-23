@@ -2078,6 +2078,82 @@ class SendFyiIdleTest(unittest.TestCase):
         self.assertIsNone(n(None))
 
 
+class SendHeaderAcrossServersTest(unittest.TestCase):
+    """of_architect, msg 01a206a9-0644 (2026-11-23): a reply to a message its sender posted to another organization's
+    server comes to the sender's own server, which never saw the message. `of send` keeps its header there; when that
+    fails it says a reply will be refused, and the message is sent all the same."""
+    POS = [{"name": "sec_keeper", "_org": "acme", "holder": {"session": "S-SEC"}},
+           {"name": "k8s_keeper", "_org": "acme", "holder": {"session": "S-K8S"}},
+           {"name": "k8s_keeper", "_org": "beta", "holder": {"session": "S-B"}},
+           {"name": "k8s_keeper", "_org": "zeta", "holder": {"session": "S-Z"}}]
+
+    def send(self, to, header_error=None):
+        import contextlib
+        import io
+        import types
+        import of_client
+        import of_events
+        import of_ship
+        calls = []
+
+        class Fake:
+            def __init__(self, url):
+                self.url = url
+
+            def put_presence(self, body, merge=False):
+                calls.append(("presence", self.url))
+                return {}
+
+            def send_message(self, *a, **k):
+                calls.append(("message", self.url))
+                return {"state": "delivered", "msg_id": "m-1", "authority": "verified"}
+
+            def sent_header(self, msg_id, to, sender):
+                if header_error:
+                    raise header_error
+                calls.append(("header", self.url, msg_id, to, sender))
+                return {"msg_id": msg_id, "kept": True}
+
+        saved = (of._load_quiet, of.live_agents_or_none, of_client.Client, of_ship.config, of_ship.org_servers,
+                 of_events.emit)
+        of._load_quiet = lambda: self.POS
+        of.live_agents_or_none = lambda warn=True: []
+        of_client.Client = Fake
+        of_ship.config = lambda: {"server_url": "http://192.0.2.10:18200"}
+        of_ship.org_servers = lambda cfg: {"zeta": "http://192.0.2.20:18200/"}
+        of_events.emit = lambda *a, **k: None
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = of.cmd_send(types.SimpleNamespace(to=to, sender="acme:sec_keeper", text="hi", reply_to=None,
+                                                       grant=None, fyi=False, urgent=False))
+        finally:
+            (of._load_quiet, of.live_agents_or_none, of_client.Client, of_ship.config, of_ship.org_servers,
+             of_events.emit) = saved
+        return rc, calls, err.getvalue()
+
+    def test_a_message_to_another_server_leaves_its_header_on_the_senders(self):
+        rc, calls, err = self.send("zeta:k8s_keeper")
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls, [("presence", "http://192.0.2.20:18200/"), ("message", "http://192.0.2.20:18200/"),
+                                 ("presence", "http://192.0.2.10:18200"),
+                                 ("header", "http://192.0.2.10:18200", "m-1", "zeta:k8s_keeper", "acme:sec_keeper")])
+        self.assertEqual(err, "")
+
+    def test_one_server_or_one_organization_keeps_no_header(self):
+        for to in ("acme:k8s_keeper", "beta:k8s_keeper"):                   # the same server: the message is there
+            rc, calls, _ = self.send(to)
+            self.assertEqual(rc, 0)
+            self.assertNotIn("header", [c[0] for c in calls], to)
+
+    def test_a_header_that_fails_is_named_and_the_message_still_goes(self):
+        rc, calls, err = self.send("zeta:k8s_keeper", header_error=OSError("refused"))
+        self.assertEqual(rc, 0)
+        self.assertIn(("message", "http://192.0.2.20:18200/"), calls)
+        self.assertIn("a reply from zeta:k8s_keeper to it will be refused there", err)
+        self.assertIn("the message itself was sent", err)
+
+
 class SendPresenceTest(unittest.TestCase):
     """A user organization's structure keeper, msg 01a1e766-e334 (2026-11-16): `of send` from a launchd job that
     cannot read herdr PUT a presence of the sender alone, which replaces the machine's whole set: every other position
