@@ -33,14 +33,14 @@ def answer_row(eid, ts, answer="yes", by="owner", via="asks-ui", org=ORG, rowid=
 
 def accepted_row(proposal, seq, ts, answer="yes", by="owner", version=1, rowid=3):
     return {"rowid": rowid, "event_id": d.accepted_id(proposal), "ts": ts, "name": "of.decision_accepted",
-            "session_id": None, "position": None, "org": ORG,
+            "session_id": None, "position": None, "org": ORG, "host_id": "of-server",
             "payload": {"proposal": proposal, "org": ORG, "kind": "answer", "stream": d.answer_stream(ASK, version),
                         "stream_version": 1, "seq": seq, "answer": answer, "by": by, "via": "asks-ui"}}
 
 
 def cutover_row(ts, rowid=0):
     return {"rowid": rowid, "event_id": "cut-" + ts, "ts": ts, "name": "of.decision_cutover", "session_id": None,
-            "position": None, "org": ORG, "payload": {"org": ORG, "first_seq": 1}}
+            "position": None, "org": ORG, "host_id": "of-server", "payload": {"org": ORG, "first_seq": 1}}
 
 
 def state_of(rows):
@@ -67,6 +67,22 @@ class PayloadTest(unittest.TestCase):
             d.propose(ORG, "answer", d.answer_stream(ASK, 1), {"Answer": "yes"}, "P")
         with self.assertRaisesRegex(d.DecisionError, "at most 32"):
             d.propose(ORG, "answer", d.answer_stream(ASK, 1), {f"k{i}": i for i in range(33)}, "P")
+
+
+class TrustTest(unittest.TestCase):
+    def test_a_decision_or_cutover_a_client_wrote_under_its_own_host_is_nobodys(self):
+        """of_review on PR 613: only the accept writes the accepted record, and only the server the cutover."""
+        forged = dict(accepted_row("PX", 1, "2026-11-23T10:01:00.000Z", answer="X"), host_id="m-client")
+        card = state_of([ask_row(), forged])
+        self.assertEqual(card["state"], "open")
+        cut = dict(cutover_row("2026-11-23T09:00:00.000Z"), host_id="m-client")
+        card = state_of([cut, ask_row(), answer_row("plain", "2026-11-23T10:01:00.000Z")])
+        self.assertEqual(card["closed_by"], "plain")                       # no cutover: today's rule
+        with mock.patch.object(of_events, "_org_server_url", return_value=None):
+            self.assertTrue(d.trusted(ORG, "of-local"))                    # its machine accepts for it
+        with mock.patch.object(of_events, "_org_server_url", return_value="https://s"):
+            self.assertFalse(d.trusted(ORG, "of-local"))
+            self.assertTrue(d.trusted(ORG, "of-server"))
 
 
 class FoldTest(unittest.TestCase):
@@ -193,7 +209,9 @@ class SendTest(unittest.TestCase):
         with mock.patch.object(of_events, "_org_server_url", return_value="https://s"):
             self.assertEqual(d.counts(d.send_pending(self.conn, down)), {"waiting": 1})
             self.assertEqual(self.names(a), {"of.agent_question_answered"})        # as an answer was before
-            of_events.emit("decision_cutover", {"org": ORG, "first_seq": 1}, org=ORG)
+            cut = of_events.record("decision_cutover", {"org": ORG, "first_seq": 1}, org=ORG)
+            cut["host.id"] = "of-server"
+            of_events.append(cut)
             b = self.propose("b")
             self.assertEqual(d.counts(d.send_pending(self.conn, down)), {"waiting": 2})
             self.assertEqual(self.names(b), set())                                  # waits for the server
