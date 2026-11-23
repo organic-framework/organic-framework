@@ -177,9 +177,13 @@ def _legacy(p, off=False):
 
 
 def _store_record(rec):
-    """Keep a record the server made, as it made it (the feed brings the same id again; the store keeps one)."""
+    """Keep a record the server made, as it made it, marked as the feed's (raw_ref coord:<org>:<seq>), as the relay
+    stores what it pulls, so `of ship` never sends it back (of_server on PR 613); the feed brings the same id again,
+    and the store keeps one."""
     if isinstance(rec, dict) and rec.get("of.event.id"):
-        return of_events.append(rec)
+        import of_coord
+        p = rec.get("of.payload") or {}
+        return of_events.append(rec, f"{of_coord.RAW_REF}{rec.get('of.org') or p.get('org')}:{p.get('seq')}")
     return False
 
 
@@ -233,13 +237,14 @@ def _refused(p, won, reason):
     return "refused"
 
 
-def _default_post(url, body):
-    """(status, body) of POST /v1/decisions at the organization's server URL."""
+def _default_post(url, body, timeout=None):
+    """(status, body) of POST /v1/decisions at the organization's server URL. TIMEOUT: one try within it (the popup's
+    own thread), else the client's retries (the background child; of_server on PR 613)."""
     import of_client
     c = of_client.Client(url)
     try:
         if hasattr(c, "decide"):   # of_server's: (status, the body read whole), a refusal's winner included
-            return c.decide(body)
+            return c.decide(body, timeout=timeout)
         return c._authed("POST", "/v1/decisions", body=body)
     except of_client.ServerError as e:
         try:
@@ -253,7 +258,7 @@ def send_one(conn, p, post=None, server_url=None):
     return settle(conn, p, post, server_url)[0]
 
 
-def settle(conn, p, post=None, server_url=None):
+def settle(conn, p, post=None, server_url=None, timeout=None):
     """(state, record) for proposal P: the state as send_one gives it, and the accepted record (accepted: P's own;
     refused: the one that won), else None."""
     url = server_url if server_url is not None else of_events._org_server_url(p.get("org"))
@@ -264,7 +269,7 @@ def settle(conn, p, post=None, server_url=None):
             "payload": _fields(p.get("payload")),
             "proposer": p.get("proposer") or {}, "signature": None, "restore": None}
     try:
-        status, out = (post or _default_post)(url, body)
+        status, out = post(url, body) if post else _default_post(url, body, timeout)
     except Exception:  # noqa: BLE001 - unreachable: sent again later
         status, out = 0, None
     out = out if isinstance(out, dict) else {}
@@ -292,7 +297,7 @@ def settle(conn, p, post=None, server_url=None):
     return "waiting", None
 
 
-def send_pending(conn=None, post=None, log=print, now=None, only=None):
+def send_pending(conn=None, post=None, log=print, now=None, only=None, timeout=None):
     """Send every pending proposal, or those of ONLY (proposal ids: the popup's own, from its sending thread, so it
     types an answer into a pane as soon as it is accepted; of_asks, message 01a20896-c4dc). Returns {proposal:
     {"state": accepted|refused|off|waiting, "record": the accepted record (its own, or the one that won) or None}}."""
@@ -305,7 +310,7 @@ def send_pending(conn=None, post=None, log=print, now=None, only=None):
             if want is not None and p.get("proposal") not in want:
                 continue
             try:
-                state, rec = settle(conn, p, post)
+                state, rec = settle(conn, p, post, timeout=timeout)
             except Exception as e:  # noqa: BLE001 - one proposal never stops the others
                 log(f"of decisions: {p.get('proposal')}: {type(e).__name__}: {e}")
                 state, rec = "waiting", None
