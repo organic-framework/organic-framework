@@ -333,8 +333,12 @@ def work_roots(orgs_file=None):
             continue
         root = os.path.realpath(os.path.join(base, os.path.expanduser(str(o["work_root"]))))
         if not work_root_refused(root, entries, base, o):
-            name = o.get("name") or os.path.basename(os.path.realpath(os.path.expanduser(str(o.get("path") or ""))))
-            out[name] = root
+            # named as the registry loader names it (of_init.org_entry_name): the path as written, never resolved, so
+            # a path that is a link gives one name, not two (of_review on PR 608)
+            name = o.get("name") or (os.path.basename(os.path.expanduser(str(o["path"])).rstrip("/"))
+                                     if o.get("path") else None)
+            if name:
+                out[name] = root
     return out
 
 
@@ -369,6 +373,42 @@ def work_root_refused(root, entries, base=None, own=None):
         if other == root or other.startswith(root + os.sep) or root.startswith(other + os.sep):
             return f"it is, holds or lies in {o.get('name')}'s work_root {other}"
     return None
+
+
+def make_folder(org, position, sources, orgs_file=None, run=None, log=print):
+    """`of org folder`: the owner's setup of a position's own folder under ORG's work_root, so no file is written by hand
+    (of_review on PR 608): <work_root>/<position>, a clone of each of SOURCES below it under its repository's name
+    (`git clone`, in the owner's terminal), and each clone's .git/commondir holding "." (clone_ready). A clone already
+    there is kept and only readied. Returns the folder. The owner then trusts the folder on the default account."""
+    import subprocess
+    import of_context
+    root = work_roots(orgs_file).get(org)
+    if not root:
+        raise SpawnError(f"{org} names no work_root in orgs.yaml (of org set {org} work_root <folder>)")
+    if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", position or ""):
+        raise SpawnError(f"{position!r}: not a position's name")
+    folder = os.path.join(root, position)
+    if os.path.islink(folder):
+        raise SpawnError(f"{folder}: a link, not a folder")
+    os.makedirs(folder, mode=0o755, exist_ok=True)
+    run = run or subprocess.run
+    for src in sources or []:
+        name = re.sub(r"\.git$", "", os.path.basename(str(src).rstrip("/")))
+        if not REPO_NAME.fullmatch(name):
+            raise SpawnError(f"{src}: no plain repository name to clone it under")
+        dest = os.path.join(folder, name)
+        if not os.path.lexists(dest):
+            r = run(["git", "clone", "--quiet", str(src), dest])
+            if getattr(r, "returncode", 1) != 0:
+                raise SpawnError(f"git clone {src} {dest} failed")
+            log(f"  cloned {src} into {dest}")
+        if os.path.islink(dest) or not os.path.isdir(os.path.join(dest, ".git")) or \
+                os.path.islink(os.path.join(dest, ".git")):
+            raise SpawnError(f"{dest}: not a clone whose .git is a folder")
+        if not clone_ready(dest):
+            of_context.write_in(dest, os.path.join(".git", "commondir"), ".\n")
+            log(f"  {dest}/.git/commondir holds '.'")
+    return folder
 
 
 def position_folder(p, orgs_file=None):

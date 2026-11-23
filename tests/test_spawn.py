@@ -599,6 +599,36 @@ class PositionFolderTest(unittest.TestCase):
                                    log=lambda m: None, sessions={})
         self.assertEqual(os.listdir(old), ["team.md"])
 
+    def test_an_organization_is_named_as_the_registry_names_it(self):
+        """of_review on PR 608: with no name:, the path's folder as written, never resolved through a link."""
+        real = os.path.join(self.d, "real")
+        os.makedirs(real)
+        os.symlink(real, os.path.join(self.d, "linked"))
+        with open(self.orgs, "w") as fh:
+            fh.write(f"orgs:\n  - path: {self.d}/linked\n    work_root: {self.root}\n")
+        self.assertEqual(of_spawn.work_roots(), {"linked": self.root})
+
+    def test_the_owner_makes_the_folder_and_its_clones(self):
+        """of_review on PR 608: a command sets the folder up, with no file written by hand."""
+        calls = []
+
+        def run(argv):
+            calls.append(argv)
+            os.makedirs(os.path.join(argv[-1], ".git"))
+            return mock.Mock(returncode=0)
+        folder = of_spawn.make_folder("ofb", "ofb_new", ["https://example.invalid/acme/bench.git", self.clone],
+                                      run=run, log=lambda m: None)
+        self.assertEqual(folder, os.path.join(self.root, "ofb_new"))
+        self.assertEqual([os.path.basename(c[-1]) for c in calls], ["bench", "framework"])
+        for name in ("bench", "framework"):
+            self.assertTrue(of_spawn.clone_ready(os.path.join(folder, name)))
+        of_spawn.make_folder("ofb", "ofb_new", [self.clone], run=run, log=lambda m: None)   # kept, not cloned again
+        self.assertEqual(len(calls), 2)
+        with self.assertRaisesRegex(of_spawn.SpawnError, "not a position's name"):
+            of_spawn.make_folder("ofb", "../x", [], run=run)
+        with self.assertRaisesRegex(of_spawn.SpawnError, "names no work_root"):
+            of_spawn.make_folder("acme", "ofb_new", [], run=run)
+
     def test_the_rules_go_to_the_work_root(self):
         import of_context
         got = of_context.rules_folders([self.p], {"ofb": [self.svc]})
