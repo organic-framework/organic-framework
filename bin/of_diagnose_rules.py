@@ -1276,14 +1276,18 @@ _UNRESOLVED = {"not_found": "the log holds no person's yes with that id (an ask'
 
 
 def rule_loop_eval_bottleneck(model, rows, a, b, cat, spec):
-    """v0 reads of_studio's wait share per rung as the projection gives it (over the rung's runs so far)."""
+    """v0 reads of_studio's wait share per rung as the projection gives it (over the rung's runs so far). v1
+    (2026-11-23): the share is read only from runs with a queue time, so the gate counts those (wait_runs), not all the
+    rung's runs; a rung with none reads not observed and raises nothing (of_architect's hand-over 0985ab73; of_studio,
+    message 01a205ca-7cbf)."""
     out = []
     for w, lp in _loops(model).items():
         if not any(_ended_in(r, a, b) for r in lp.get("runs") or []):
             continue
         rungs = ((lp.get("metrics") or {}).get("rungs")) or {}
         hot = {n: m for n, m in rungs.items() if (m or {}).get("wait_share") is not None
-               and m["wait_share"] > _t(spec, "wait_share_gt", 0.40) and (m.get("runs") or 0) >= _t(spec, "rung_runs_gte", 3)}
+               and m["wait_share"] > _t(spec, "wait_share_gt", 0.40)
+               and (m.get("wait_runs", m.get("runs")) or 0) >= _t(spec, "rung_runs_gte", 3)}
         if hot:
             n, m = max(hot.items(), key=lambda kv: kv[1]["wait_share"])
             out.append(issue(cat, "loop-eval-bottleneck", [w], {"work": w, "rungs": hot},

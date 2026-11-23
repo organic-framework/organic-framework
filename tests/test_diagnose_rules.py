@@ -1107,6 +1107,11 @@ class LoopRulesTest(unittest.TestCase):
         self.assertEqual(len(got), 1)
         self.assertGreater(got[0]["evidence"]["rungs"]["gate"]["wait_share"], 0.4)
         self.assertEqual(self.found("loop-eval-bottleneck", [gate(i, "10:05") for i in (1, 2, 3)])[0], [])
+        self.assertEqual(got[0]["rule_version"], "ap.loop-eval-bottleneck@1")
+        # v1: the gate counts the runs the share is read from, those with a queue time (hand-over 0985ab73)
+        unqueued = [self.run_(i, f"2026-11-0{3 + i}T13:00Z", "gate", f"h{i}", 300) for i in (2, 3)]
+        self.assertEqual(self.found("loop-eval-bottleneck", [gate(1, "12:00")] + unqueued)[0], [])
+        self.assertEqual(self.found("loop-eval-bottleneck", unqueued)[0], [])
 
     # ---- 2.28 Observed elsewhere (hand-over e640ea57; docs/registry.md, Works, "Where a reading is taken")
     TARGET_AT = {"metric": "day_pass", "money": "USD per day", "observed_at": "the replay's revenue ledger"}
