@@ -52,12 +52,16 @@ def planned(sid, root=None):
 
 
 def command(sid, dirs=None, memory_dir=None, plan_root=None, deny=None, state_dir=None, tools=None, defaults=None,
-            org=None):
+            org=None, cwd=None, position=None):
     """The shell line that resumes `sid` as it ran, or None when no account holds it (the caller runs the bare one).
     deny: the position's credential deny rules (of_spawn.deny_rules), so a session herdr resumes keeps what of spawn
     gave it (of_capacity, 2026-11-11); with the memory directory they go in one settings file (of_spawn). tools:
     (argv, settings keys) of the position's tool profile (of_tools.launch_parts, docs/tools.md §4). defaults: the
-    organization's {model, effort} (orgs.yaml agents), used only when the session names neither."""
+    organization's {model, effort} (orgs.yaml agents), used only when the session names neither. cwd: the folder the
+    line runs in, the current one by default, which is where the session starts (the line has no cd), so its sandbox
+    keeps OF's rules files there and above closed, as of spawn's does; and the folder the session started in
+    (of_capacity.started_folder) too, where that differs (of_secrets-review on PR 601: the line gave the sandbox no
+    folder at all)."""
     d, t = newest_copy(sid, dirs)
     if not d:
         return None
@@ -65,8 +69,14 @@ def command(sid, dirs=None, memory_dir=None, plan_root=None, deny=None, state_di
         ["env", f"CLAUDE_CONFIG_DIR={os.path.expanduser(d)}"]
     argv = env + ["claude", "--resume", sid]
     tool_argv, tool_settings = tools or ([], {})
+    cwd = cwd or os.getcwd()
+    try:
+        started = of_capacity.started_folder(t, cwd, position)
+    except Exception:  # noqa: BLE001 - the folder it runs in is still covered
+        started = None
     settings = of_spawn.session_settings(json.dumps({"autoMemoryDirectory": memory_dir}) if memory_dir else None, deny,
-                                         tool_settings, scratch=(None, sid), org=org)
+                                         tool_settings, scratch=(cwd, sid), org=org,
+                                         rules_dirs=[started] if started and started != cwd else None)
     if settings:
         argv += ["--settings", of_spawn.settings_file(settings, sid, state_dir)]
     argv += list(tool_argv)

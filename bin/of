@@ -3099,7 +3099,8 @@ def cmd_resume_command(args):
     d, _ = of_resume.newest_copy(args.session)
     tools = _tool_parts(p["name"], args.session, d, log=lambda m: None) if p and d else None  # its tool profile
     line = of_resume.command(args.session, memory_dir=mem, deny=deny, tools=tools,
-                             defaults=org_agents(p.get("_org")) if p else None, org=p.get("_org") if p else None)
+                             defaults=org_agents(p.get("_org")) if p else None, org=p.get("_org") if p else None,
+                             position=p)
     if not line:
         return 1
     try:  # the settings file it just wrote, by its digest, as of spawn records it (of_server, msg 01a2033f-5402)

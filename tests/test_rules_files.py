@@ -167,6 +167,31 @@ class RulesFileTest(unittest.TestCase):
                                     starts={("acme", "a_keeper"): other})
         self.assertTrue(any(f"its last session started in {other}" in x for x in warn))
 
+    def test_a_name_with_no_rules_text_is_kept_nowhere_and_git_is_never_made(self):
+        """of_secrets-review on PR 601: a file under the name of an organization whose AGENTS.md gives no rules text is
+        removed like any other OF did not write; the exclude writer never makes a .git where none was."""
+        import of_spawn
+        saved = of_spawn.work_dir
+        of_spawn.work_dir = self.wd
+        try:
+            with open(os.path.join(self.root, "AGENTS.md"), "w") as fh:
+                fh.write("# Org\n\nno rules section\n")
+            rules_dir = os.path.join(self.work, ".claude", "rules")
+            os.makedirs(rules_dir)
+            with open(os.path.join(rules_dir, "of-acme.md"), "w") as fh:
+                fh.write("- a rule nobody reviewed\n")
+            of_context.write_rules(self.positions, {"acme": [self.work]}, log=lambda m: None, sessions={})
+            self.assertEqual(os.listdir(rules_dir), [])
+            bare = os.path.join(os.path.dirname(self.work), "bare")
+            os.makedirs(bare)
+            self.assertIsNone(of_context._dir_fd(bare, [".git", "info"], make=True, make_from=1))
+            self.assertFalse(os.path.exists(os.path.join(bare, ".git")))
+            fd = of_context._dir_fd(self.work, [".git", "info2"], make=True, make_from=1)   # below .git: made
+            os.close(fd)
+            self.assertTrue(os.path.isdir(os.path.join(self.work, ".git", "info2")))
+        finally:
+            of_spawn.work_dir = saved
+
     def test_nested_registry_folders(self):
         """of_review on PR 564: a folder above another organization's registry folder is shared (its sessions below
         would load both rules files); the nearest registry folder decides who is foreign; one position name in two
@@ -286,29 +311,6 @@ class RulesFileTest(unittest.TestCase):
         self.assertNotIn(os.path.join(real, "team.md"), deny)
         self.assertNotIn(real, deny)
         self.assertNotIn(os.path.join(real, "of-linked.md"), deny)
-
-    def test_nested_registry_folders(self):
-        """of_review on PR 564: a folder above another organization's registry folder is shared (its sessions below
-        would load both rules files); the nearest registry folder decides who is foreign; one position name in two
-        organizations is two rows."""
-        up, low = "/w/alpha", "/w/alpha/beta"
-        folders = {"alpha": [up], "beta": [low]}
-        self.assertEqual(of_context.shared_folders(folders), {up: {"alpha", "beta"}})
-        self.assertEqual(of_context.foreign_orgs("beta", low, folders), set())         # its own folder, below another's
-        self.assertEqual(of_context.foreign_orgs("alpha", up + "/x", folders), set())
-        self.assertEqual(of_context.foreign_orgs("beta", up + "/x", folders), {"alpha"})
-        both = {"alpha": [up], "beta": [up]}
-        self.assertEqual(of_context.foreign_orgs("alpha", up, both), set())             # both named there
-        self.assertEqual(of_context.foreign_orgs("beta", up, both), set())
-        self.assertEqual(of_context.stray_sessions(folders, {low: {"beta"}, up: {"beta"}}), {up: {"beta"}})
-        import sqlite3
-        import time as _t
-        conn = sqlite3.connect(":memory:")
-        conn.execute("CREATE TABLE event (name TEXT, ts TEXT, org TEXT, position TEXT, cwd TEXT)")
-        iso = _t.strftime("%Y-%m-%dT%H:%M:%S.000Z", _t.gmtime())
-        conn.executemany("INSERT INTO event VALUES ('of.session_start', ?, ?, 'keeper', ?)",
-                         [(iso, "alpha", up), (iso, "beta", low)])
-        self.assertEqual(of_context.position_starts(conn), {("alpha", "keeper"): up, ("beta", "keeper"): low})
 
     def test_spawn_refuses_another_organizations_folder(self):
         """of_architect, message 01a204f7-ef0e: a session of one organization must not start where another's
