@@ -4075,6 +4075,51 @@ class StartFolder(unittest.TestCase):
                                                        folder_of=gone), ra)
             self.assertIn("does not exist", logs[-1])
 
+    def test_a_position_folder_is_taken_and_readied_before_the_start(self):
+        """Hand-over 4c70deab (of_platform, message 01a2051a-dadb): with a work_root, a move takes the position's own
+        folder and refuses it, a dry run too, while a clone below is not ready, before anything is done. At the launch
+        it writes the folder's CLAUDE.md as a fresh copy of each known clone's AGENTS.md, as of spawn and of
+        resume-command do at each start (of_secrets-review on PR 608; of_platform, message 01a207f5-c430)."""
+        import of_spawn
+        with tempfile.TemporaryDirectory() as root, mock.patch.object(of_capacity.of_events, "CONFIG_DIR", root):
+            root = os.path.realpath(root)
+            work, repo = os.path.join(root, "work"), os.path.join(root, "alpha-repo")
+            folder = os.path.join(work, "k")
+            clone = os.path.join(folder, "framework")
+            os.makedirs(os.path.join(clone, ".git"))
+            os.makedirs(repo)
+            with open(os.path.join(clone, "AGENTS.md"), "w") as fh:
+                fh.write("# rules\n")
+            with open(os.path.join(root, "orgs.yaml"), "w") as fh:
+                fh.write(f"orgs:\n  - name: alpha\n    path: {repo}\n    work_root: {work}\n")
+            # the test's folders lie in the temporary folder, which a work_root may not (of_spawn.work_root_refused)
+            with mock.patch.object(of_spawn, "_orgs_file", lambda: os.path.join(root, "orgs.yaml")), \
+                    mock.patch.object(of_spawn, "sandbox_write_folders", return_value=[]):
+                self.assertEqual(of_capacity.spawn_folder({"name": "k", "_org": "alpha"}), folder)
+                for dry in (True, False):                       # a dry run refuses it too (of_platform on 1fd3337c)
+                    with self.assertRaisesRegex(of_capacity.MoveError, "commondir"):
+                        of_capacity.ready_position_folder("k", folder, "alpha", log=lambda *_: None, dry_run=dry)
+                with open(os.path.join(clone, ".git", "commondir"), "w") as fh:
+                    fh.write(".\n")
+                for dry in (True, False):                       # the check alone: nothing written before the launch
+                    self.assertEqual(of_capacity.ready_position_folder("k", folder, "alpha", log=lambda *_: None,
+                                                                       dry_run=dry), folder)
+                self.assertFalse(os.path.exists(os.path.join(folder, "CLAUDE.md")))
+                self.assertIsNone(of_capacity.ready_position_folder("k", repo, "alpha", log=lambda *_: None))
+                p = {"name": "k", "_org": "alpha", "_systems": {"fw": {"repos": ["/x/framework"]}}}
+                args = (folder, os.path.join(root, ".claude-e"), "s1", "k", os.path.join(root, "note.md"))
+                of_capacity.launch_command(*args, write=False, org="alpha", position=p, state_dir=root)
+                self.assertFalse(os.path.exists(os.path.join(folder, "CLAUDE.md")))   # a line for the log writes nothing
+                of_capacity.launch_command(*args, org="alpha", position=p, state_dir=root)
+                with open(os.path.join(folder, "CLAUDE.md")) as fh:
+                    text = fh.read()
+                self.assertIn("## framework/AGENTS.md", text)
+                self.assertIn("# rules", text)
+                with open(os.path.join(clone, ".git", "commondir"), "w") as fh:
+                    fh.write("elsewhere\n")                     # a clone no longer ready at the launch: no start
+                with self.assertRaisesRegex(of_capacity.MoveError, "commondir"):
+                    of_capacity.launch_command(*args, org="alpha", position=p, state_dir=root)
+
     def test_no_fallback_into_another_organizations_folder(self):
         """2026-11-22: a position moved to another organization was restarted with its start folder trusted nowhere and
         fell back to the old organization's root, which then lost its rules file (of_context.write_rules). The
