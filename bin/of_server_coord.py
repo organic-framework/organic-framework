@@ -42,13 +42,19 @@ def ensure(store):
         _ready.add(store.dir)
 
 
+# written into the feed only by the accept itself (bin/of_server_decisions.py), in its own transaction: one in a
+# machine's batch is no decision of this server's, and copied it would reach every machine's fold as accepted, with a
+# seq of the sender's choosing (event store step 1)
+SERVER_ONLY = ("of.decision_accepted", "of.decision_cutover")
+
+
 def copy(store, org, rows, now=None):
     """The writer, after it wrote `rows` (the `event` table's rows for `org`'s database): keep the
     coordination events in the feed. Shape copies of another organization's events are left out: a feed
     carries only the organization's own. Idempotent (a retried batch adds nothing). Returns the count added."""
     keep = []
     for r in rows:
-        if not of_coord.shared(r.get("name") or "") or not r.get("event_id"):
+        if not of_coord.shared(r.get("name") or "") or not r.get("event_id") or r.get("name") in SERVER_ONLY:
             continue
         try:
             rec = json.loads(r.get("record") or "{}")

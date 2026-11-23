@@ -158,7 +158,9 @@ itself, in its own transaction, rather than after the batch writer.
   `kind`, `stream`, `stream_version`, `seq` (one counter per organization, from 1), `step`, `machine`, `proposer`,
   `signed` (false for an owner's answer, null for a position's step), `accepted_at`, `restored`, `supersedes`. It
   enters the feed in the accept's transaction, so every machine gets it, the proposer included, and goes to the
-  organization's database through the writer.
+  organization's database through the writer. Only the accept writes `of.decision_accepted` and
+  `of.decision_cutover` into the feed: the writer never copies one that came in a machine's batch
+  (`of_server_coord.SERVER_ONLY`), so no machine can put an accepted decision of its own making before the others.
 - **Signed and unsigned.** A person's step will be signed by a key the agents' OS users cannot read; until the agents
   leave the owner's OS user, `signature` must be null and an owner's answer is recorded `signed: false`, no worse
   than before.
