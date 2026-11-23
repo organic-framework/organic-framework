@@ -38,7 +38,12 @@ KINDS = ("answer",)
 STREAM_RE = re.compile(r"^(?P<ask>[0-9a-fA-F-]{8,64})@v(?P<v>[1-9][0-9]{0,5})$")
 WINDOW_S = 30 * 86400   # proposals older than this are not sent again (the feed keeps 30 days)
 LOCAL_HOST = "of-local"
-RESERVED = ("version", "ask_ids", "proposal", "decision", "seq")   # the stream and the decision's own fields
+# the server's own keys and the stream's (step1-accept-contract.md §2, of_server, message 01a208a4-7e35): never in a
+# proposal's payload; every other key rides on the accepted record, at most MAX_KEYS, each a lowercase name
+RESERVED = ("proposal", "org", "kind", "stream", "stream_version", "seq", "step", "machine", "proposer", "signed",
+            "accepted_at", "restored", "supersedes", "version", "ask_ids", "decision")
+MAX_KEYS = 32
+KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
 def _fields(payload):
@@ -99,6 +104,11 @@ def propose(org, kind, stream, payload, proposal, proposer=None):
         raise DecisionError(f"{stream!r}: not <ask id>@v<version>")
     if not org:
         raise DecisionError("a proposal names its organization")
+    keys = list(_fields(payload))
+    bad = [k for k in keys if not KEY_RE.match(k)]
+    if bad or len(keys) > MAX_KEYS:
+        raise DecisionError(f"a proposal's payload takes at most {MAX_KEYS} keys, each a lowercase name"
+                            + (f" (not {', '.join(map(repr, bad[:3]))})" if bad else ""))
     body = {"v": 1, "proposal": str(proposal), "org": org, "kind": kind, "stream": stream,
             "payload": dict(payload or {}, ask_id=ask_id), "proposer": dict(proposer or {})}
     p = body["proposer"]
@@ -256,6 +266,8 @@ def settle(conn, p, post=None, server_url=None):
         return _refused(p, won, "already decided"), won
     if status == 409:
         return _refused(p, None, "the proposal's id was used with other content"), None
+    if status in (400, 413):   # malformed for the server: never accepted, so not sent again
+        return _refused(p, None, f"the server refused it as malformed: {str(out.get('title') or '')[:200]}"), None
     if status in (404, 405):   # decisions off for it, or a server without them: today's answer
         if not _has(conn, legacy_id(p["proposal"])):
             _legacy(p, off=True)
