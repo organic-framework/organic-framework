@@ -1259,6 +1259,53 @@ def folder_key(path):
     return re.sub(r"[^A-Za-z0-9]", "-", path)
 
 
+def first_cwd(transcript, max_lines=5000):
+    """The first folder a transcript records for its main thread: Claude Code's own record of where the session
+    started, which a sandboxed session cannot change, since transcripts are denied to it. None when none is found."""
+    try:
+        with open(transcript, "rb") as fh:
+            for i, ln in enumerate(fh):
+                if i >= max_lines:
+                    break
+                if b'"cwd"' not in ln:
+                    continue
+                try:
+                    j = json.loads(ln)
+                except ValueError:
+                    continue
+                if isinstance(j, dict) and j.get("cwd") and not j.get("isSidechain"):
+                    return j["cwd"]
+    except (OSError, TypeError):
+        return None
+    return None
+
+
+def started_folder(transcript, ran_in, p=None):
+    """The folder a moved, resumed or restored session starts in, matched by exact path. Only folders the session did
+    not choose count: the one `of spawn` starts its position in (spawn_folder, from the registry and orgs.yaml), and the first folder its
+    transcript records (first_cwd). Of those holding `ran_in`, the folder it ran in, the deepest; when neither holds
+    it, the registry's, else the transcript's, and the caller's note says where it ran. None when neither is known, or
+    when it lies in a folder a session's sandbox writes (of_spawn). The folder a session starts in decides what Claude Code
+    loads and trusts there, so the session never chooses it (of_server, message 01a205e4-b999; of_secrets-review,
+    message 01a205e4-4f33). The registry's folder is only as much the owner's as the registry is: where the registry
+    follows what sessions push, a pushed registry can name a position's folder. That is the owner's accepted risk there,
+    not this function's to close (of_server, message 01a205f3-0f5b)."""
+    real = lambda x: os.path.realpath(os.path.expanduser(str(x)))  # noqa: E731
+    inside = lambda a, b: a == b or a.startswith(b.rstrip(os.sep) + os.sep)  # noqa: E731
+    try:
+        registry = spawn_folder(p) if p else None
+    except Exception:  # noqa: BLE001  the transcript's own record still counts
+        registry = None
+    import of_spawn
+    writes = of_spawn.sandbox_write_folders()
+    cands = [x for x in (registry, first_cwd(transcript)) if x and not any(inside(real(x), w) for w in writes)]
+    if not cands:
+        return None
+    holding = [x for x in cands if ran_in and inside(real(ran_in), real(x))]
+    got = max(holding, key=lambda x: len(real(x))) if holding else cands[0]
+    return ran_in if ran_in and real(got) == real(ran_in) else got
+
+
 def spawn_folder(p):
     """The folder `of spawn` starts position `p` in: its system's first repository under its organization's paths
     (of_spawn.work_dir), from the registry and orgs.yaml; None when there is none."""
@@ -3289,9 +3336,15 @@ def _move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, 
         tasks = [t.get("description") for t in cont.get("background_tasks") or [] if t.get("status") == "running"]
         raise MoveError(f"{name}: background shells are running ({'; '.join(map(str, tasks)) or 'see the pane'}); "
                         "exiting stops them. Agree with the holder, then pass --allow-shells")
-    run_cwd = resume_folder(name, s["cwd"], src, target, cwd, log=log, p=p)
+    started = started_folder(find_transcript(src, sid), s["cwd"], p)
+    if not started:
+        raise MoveError(f"{name}: session {sid[:8]} has no start folder it did not choose: neither the registry nor its "
+                        f"transcript names one outside the folders sessions write")
+    run_cwd = resume_folder(name, started, src, target, cwd, log=log, p=p)
     if run_cwd != s["cwd"]:
-        extra_note = (f"Your working folder changed from {s['cwd']} to {run_cwd} (your position's start folder). "
+        why = ("your position's start folder" if run_cwd != started else "the folder this session started in: a "
+               "session resumes there, never in a folder it moved to; enter your worktree again if you worked in one")
+        extra_note = (f"Your working folder changed from {s['cwd']} to {run_cwd} ({why}). "
                       f"Relative paths, git and the folder's agent rules now refer to the new folder; files you "
                       f"left in the old one are still there." + ("\n\n" + extra_note if extra_note else ""))
     env, args = proc_env(s["pid"]), proc_args(s["pid"])
@@ -3527,7 +3580,7 @@ def _move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, 
             f"{', '.join(f'{f}:{a}' for f, a in mem if a != 'same') or 'unchanged'}")
     # one copy of the session on the target, under the key it resumes by: its start folder's, else the key it ran
     # under (taken from the transcript, never computed: of_review, PR 330)
-    rekeyed = rekey_session(target, sid, folder_key(run_cwd) if run_cwd != s["cwd"] else key,
+    rekeyed = rekey_session(target, sid, folder_key(run_cwd) if folder_key(run_cwd) != key else key,
                             os.path.join(work, "backup")) if key else []
     mark_copied(rekeyed)
     try:  # the old process has exited: a failed reading costs the note's list, never the move
@@ -3664,9 +3717,17 @@ def resume(name, sid, target, pane, extra_note=None, log=print, of_bin=None, dry
         transcript, src = newest
     if not transcript:
         raise MoveError(f"{name}: no transcript of session {sid} in any config dir")
-    cwd = last_field(transcript, "cwd")
+    ran_in = last_field(transcript, "cwd")
+    cwd = started_folder(transcript, ran_in, position)
     if not cwd or not os.path.isdir(cwd):
-        raise MoveError(f"{name}: no working directory for session {sid[:8]} in its transcript")
+        raise MoveError(f"{name}: no working directory for session {sid[:8]}: it last ran in {ran_in}, and neither the "
+                        f"registry nor its transcript names a start folder it did not choose, outside the folders "
+                        f"sessions write" + (f" ({cwd} does not exist here)" if cwd else ""))
+    if cwd != ran_in:
+        log(f"  it last ran in {ran_in}; it resumes in {cwd}, the folder it started in")
+        extra_note = (f"Your working folder is {cwd}, the folder this session started in; it last ran in {ran_in}. "
+                      f"A session resumes in its start folder, never in a folder it moved to: enter your worktree "
+                      f"again if you worked in one." + ("\n\n" + extra_note if extra_note else ""))
     if not trusted_key(target, cwd):
         raise MoveError(f"{name}: folder {cwd} is not trusted in {short(target)}; the owner decides (of ask)",
                         untrusted=cwd)
@@ -3715,11 +3776,12 @@ def resume(name, sid, target, pane, extra_note=None, log=print, of_bin=None, dry
     if src:  # the session is closed, so its transcript is final; carried as a move carries it
         files = copy_session(src, target, sid, backup)
         mark_copied([os.path.join(target, rel) for kind, rel in files if kind == "copy"])
-        mark_copied(rekey_session(target, sid, proj, backup))
         if not mem_dir:
             mem = merge_memory(mem_src, mem_dst, mem_base, os.path.join(work, "conflicts"))
         log(f"  carried {len([f for f in files if f[0] == 'copy'])} path(s); memory: "
             f"{', '.join(f'{f}:{a}' for f, a in mem if a != 'same') or 'unchanged'}")
+    # Claude Code finds a session by its folder's key: one copy, under its start folder's (none moves when it is there)
+    mark_copied(rekey_session(target, sid, folder_key(cwd), backup))
     if ensure_herdr_integration(target):
         log(f"  herdr's Claude integration installed in {short(target)}")
     if mem_dir:
@@ -4193,9 +4255,11 @@ def _restore_one(e, p, plan, ts, log=print, dry_run=False, home=None, claimed=No
                         f"the one that is not the session's history, then restore again")
     # the folder the process started in (its transcript's folder), not the transcript's last cwd: platform_owner
     # started in ~/acme and works in ~/acme/org, which its account does not trust (2026-11-10)
-    cwd = e.get("cwd") if e.get("cwd") and os.path.isdir(e["cwd"]) else last_field(transcript, "cwd")
+    ran = e.get("cwd") if e.get("cwd") and os.path.isdir(e["cwd"]) else last_field(transcript, "cwd")
+    cwd = started_folder(transcript, ran, p)  # never a folder the session chose (started_folder)
     if not cwd:
-        raise MoveError(f"no working directory for session {sid[:8]}")
+        raise MoveError(f"no working directory for session {sid[:8]}: it ran in {ran}, and neither the registry nor its "
+                        f"transcript names a start folder it did not choose, outside the folders sessions write")
     # start_in (capacity.yaml): a restore is a restart, so a listed position resumes in its start folder, the one of
     # spawn would start it in. On another machine that is the work folder its orgs.yaml names, not the live checkout
     # the home rewrite lands in (of_agent-server, hand-over 56a0e7dc, 2026-11-22). Its trust is the owner's decision

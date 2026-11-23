@@ -387,6 +387,24 @@ def post_door(folder="/srv/of-gh-post/of"):
     return [req, sig] if os.path.isdir(req) and not os.path.islink(req) else []
 
 
+def sandbox_write_folders(orgs_file=None):
+    """The folders a session's sandbox writes, resolved: OF's state folder, the temporary folders (Claude Code's
+    temporary root among them) and every work clone orgs.yaml names, refused ones included, as sandbox_settings lists
+    them, with the posting unit's door. No folder a session starts in may lie there (of_capacity.started_folder;
+    of_server, message 01a205f4-a5e9). An organization's paths and its work_root are not among them: the start folders
+    lie there by design. This module alone knows the clones (tests/test_spawn.py, WorkCloneTest)."""
+    import tempfile
+    import of_events
+    import of_scratch
+    out = [of_events.STATE_DIR, os.path.expanduser("~/.local/state/of"), of_scratch.base_dir(), tempfile.gettempdir(),
+           "/tmp", "/private/tmp", "/var/tmp"] + post_door()
+    try:
+        out += [c for _, c, _, _ in work_clones(orgs_file, include_refused=True)]
+    except Exception:  # noqa: BLE001  no orgs.yaml or a broken one: the fixed folders still count
+        pass
+    return sorted({os.path.realpath(x) for x in out})
+
+
 def sandbox_settings(deny=None, platform=None, scratch=None, org=None):
     """The session's `sandbox` block on Linux, else None. DENY: its Read/Edit deny rules (`Read(//abs/path/**)`).
     SCRATCH: (its working folder, its session id), so its own scratch folder stays readable while the other sessions'
