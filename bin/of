@@ -3772,9 +3772,9 @@ def cmd_server(args):
         with store.conn() as c:  # the tenant's machine stays the tenant's unless --no-tenant says otherwise
             row = c.execute("SELECT tenant, pubkey FROM machines WHERE machine_id = ? AND revoked_at IS NULL",
                             (mid,)).fetchone()
-        if row and (row[1] or "").split()[:2] != pub.split()[:2] and not args.replace_key:
+        if row and not args.replace_key and not of_server.same_key(row[1], pub):
             # a new key for an enrolled machine is a new identity: never by a re-enrolment that meant something else
-            # (2026-11-23: a lab test re-keyed this machine on its live server; the invite path refuses it too, 409)
+            # (2026-11-23: a lab test re-keyed this machine on its live server; enroll() refuses it too, 409)
             print(f"{mid} is enrolled on {store.dir} with another key: revoke it first, or pass --replace-key",
                   file=sys.stderr)
             return 1
@@ -3782,7 +3782,8 @@ def cmd_server(args):
             print(f"{mid} is the tenant's machine and stays it (pass --no-tenant to make it a plain machine)")
             args.tenant = True  # of_lab's walkthrough, 2026-11-19: enroll-machine had made it a plain machine silently
         orgs = args.org or ([o for o, _, _ in org_registries()] if args.tenant else [])
-        of_server.enroll(store, mid, pub, orgs, args.raw_org or (orgs if args.tenant else []), tenant=args.tenant)
+        of_server.enroll(store, mid, pub, orgs, args.raw_org or (orgs if args.tenant else []), tenant=args.tenant,
+                         replace_key=args.replace_key)
         print(f"enrolled {mid}{' (tenant)' if args.tenant else ''}: orgs {', '.join(orgs) or '-'}")
         return 0
     if args.action == "revoke":

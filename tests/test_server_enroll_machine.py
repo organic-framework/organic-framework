@@ -67,6 +67,17 @@ class EnrollMachineTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.key(), "ssh-ed25519 AAAAother m1")
 
+    def test_enroll_itself_refuses_a_new_key_without_replace_key(self):
+        # every caller, `of init` among them, which a scratch OF_CONFIG_DIR gives a fresh key for the real machine id
+        with self.assertRaises(of_server.EnrollError) as e:
+            of_server.enroll(self.store, "m1", "ssh-ed25519 AAAAscratch x", ["lab"], tenant=True)
+        self.assertEqual(e.exception.status, 409)
+        self.assertEqual(self.key(), "ssh-ed25519 AAAAexample m1")
+        of_server.enroll(self.store, "m1", "ssh-ed25519 AAAAexample renamed", ["acme", "beta"], tenant=True)
+        of_server.revoke(self.store, "m1")
+        of_server.enroll(self.store, "m1", "ssh-ed25519 AAAAnew m1", ["acme"], tenant=True)  # revoked: a new key is fine
+        self.assertEqual(self.key(), "ssh-ed25519 AAAAnew m1")
+
     def test_the_same_key_with_another_comment_is_no_new_key(self):
         with open(self.pub, "w") as fh:
             fh.write("ssh-ed25519 AAAAexample renamed\n")
