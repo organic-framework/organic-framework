@@ -1675,6 +1675,23 @@ class PageCacheTest(unittest.TestCase):
             self.assertTrue(of_studio._refresh_in_background())
             popen.assert_called_once()
         self.assertAlmostEqual(moved.call_args.args[0], of_studio.last_render(started=True))
+        # under load a periodic render waits, at most REFRESH_BUSY_MAX_S after the last one ended; a viewer's does not
+        os.remove(os.path.join(of_studio._pages_dir(), ".refresh"))
+        of_studio._write_page(os.path.join(of_studio._pages_dir(), ".rendered"),
+                              f"{time.time() - of_studio.PERIODIC_RENDER_S - 60:.0f} 300.0 60.0\n")
+        with mock.patch("os.getloadavg", return_value=(41.0, 40.0, 30.0)), mock.patch("os.cpu_count", return_value=10), \
+                mock.patch("subprocess.Popen") as popen:
+            self.assertTrue(of_studio.machine_busy())
+            self.assertFalse(of_studio._refresh_in_background())             # load 41 on 10 cores: waits
+            popen.assert_not_called()
+            of_studio._write_page(os.path.join(of_studio._pages_dir(), ".rendered"),
+                                  f"{time.time() - of_studio.REFRESH_BUSY_MAX_S - 60:.0f} 300.0 60.0\n")
+            self.assertTrue(of_studio._refresh_in_background())              # waited its longest: runs anyway
+            popen.assert_called_once()
+        self.assertFalse(of_studio.machine_busy(load=19.0, cores=10))
+        self.assertEqual(of_studio.RENDERS_DUE_S, 3600 + 600 + 3600 + 60)
+        os.remove(os.path.join(of_studio._pages_dir(), ".refresh"))
+        of_studio._write_page(os.path.join(of_studio._pages_dir(), ".rendered"), f"{time.time() - 600:.0f} 300.0 60.0\n")
         age = of_studio.page_cache_age()
         self.assertEqual((age["name"], age["owner"], age["lag_ok_s"]), ("studio.pages", "of_studio", of_studio.PAGE_CACHE_LAG_OK_S))
         self.assertGreaterEqual(age["age_s"], 590)
@@ -2739,7 +2756,7 @@ class EscalationsFromCacheTest(unittest.TestCase):
             esc, age, why = of_studio.read_escalations("acme", time.time() + of_studio.RENDERS_DUE_S + 60)
             self.assertIsNone(esc)
             self.assertGreater(age, of_studio.RENDERS_DUE_S)
-            self.assertIn("no render has ended for 102 min", why)
+            self.assertIn("no render has ended for 132 min", why)
             stale = (None, 6200.0, "no render has ended for 103 min")
             with mock.patch.object(of_studio, "read_escalations", return_value=stale), \
                     mock.patch("of_events.emit") as emit, mock.patch.object(of_studio_cli, "_tell") as tell:
@@ -2774,8 +2791,8 @@ class EscalationsFromCacheTest(unittest.TestCase):
             (t, (t + 1500, 1520), t + 1500 + 2400 + 1200, None),                 # a slow cadence, 85 min old: latest
             (t, (t - 100, 1600), t + 3700, None),                                # a render running long, no fault yet
             (t, (t + 900, 800), t + 1000, "the last render, ended"),              # began after the file, did not write
-            (t, (t - 60, 1200), t + of_studio.RENDERS_DUE_S + 60, "no render has ended for 102 min"),
-            (t, None, t + of_studio.RENDERS_DUE_S + 60, "no render has ended for 102 min"),   # never a .rendered
+            (t, (t - 60, 1200), t + of_studio.RENDERS_DUE_S + 60, "no render has ended for 132 min"),
+            (t, None, t + of_studio.RENDERS_DUE_S + 60, "no render has ended for 132 min"),   # never a .rendered
         ]
         for at, render, now, want in cases:
             last = rendered(*render) if render else (lambda started=False: None)
@@ -2785,7 +2802,7 @@ class EscalationsFromCacheTest(unittest.TestCase):
                 self.assertIsNone(why, (render, now - at))
             else:
                 self.assertIn(want, why or "", (render, now - at))
-        self.assertEqual(of_studio.RENDERS_DUE_S, 1800 + 600 + 3600 + 60)
+        self.assertEqual(of_studio.RENDERS_DUE_S, 3600 + 600 + 3600 + 60)
 
     def test_fresh_reads_what_was_told_and_an_unreadable_store_records_nothing(self):
         """--fresh reads what was escalated over ESCALATION_KEEP_S, as the pulse's pass does, not its 9 days of rows;

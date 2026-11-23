@@ -2918,6 +2918,10 @@ PAGE_CACHE_LAG_OK_S = 2700   # the cache's declared lag (docs/health.md, view.ag
 REFRESH_LOCK_S = 600   # at most one start per this many seconds; the render's flock keeps a second one out
 REFRESH_MAX_S = 3600   # wall time: a render still running is stopped, every thread's stack in the log, its lock with it
 REFRESH_STUCK_S = 60   # past REFRESH_MAX_S: SIGALRM stops a render whose C code holds the interpreter's lock
+REFRESH_BUSY_LOAD = 2.0   # a periodic render waits while the load stands above this many times the cores,
+REFRESH_BUSY_MAX_S = 3600   # for at most this long after the last render ended (as the listener's git import waits)
+# 2026-11-23: at load 41 on the founder's 10 cores, with memory pressure 2 and a GiB swapped out every 30 s, a render
+# held 2.0 GiB, the largest process after the Claude Code sessions (of_capacity, msg 01a20791-99fd)
 REFRESH_CPU_S = 900    # CPU time: a render past this is a runaway and is stopped (SIGXCPU), its lock with it
 # 2026-11-17: at a load of 62 to 73 on the founder's 10 cores, the old 1200 s of wall time stopped 4 of the last 20
 # renders while they still worked, so the pages and the escalations stayed over 2 hours old. A render at nice 10 there
@@ -3032,9 +3036,10 @@ def _render_cache(orgs_file=None, log=None):
 
 
 LISTENER_TICK_S = 600   # the listener asks for a render every 10 minutes (bin/of_listen.py, StudioCacheProcessor)
-RENDERS_DUE_S = PERIODIC_RENDER_S + LISTENER_TICK_S + REFRESH_MAX_S + REFRESH_STUCK_S
+RENDERS_DUE_S = max(PERIODIC_RENDER_S, REFRESH_BUSY_MAX_S) + LISTENER_TICK_S + REFRESH_MAX_S + REFRESH_STUCK_S
 # a render ends within REFRESH_MAX_S, or a minute later by the alarm, and the next starts within PERIODIC_RENDER_S
-# and one tick of the last one's end: past this long since a render last ended, renders have stopped ending
+# (REFRESH_BUSY_MAX_S under load) and one tick of the last one's end: past this long since a render last ended,
+# renders have stopped ending
 
 
 def not_latest(computed_at, now=None):
@@ -3161,6 +3166,15 @@ def page_cache_age(now=None):
             "age_s": None if last is None else round((now or time.time()) - last, 1)}
 
 
+def machine_busy(load=None, cores=None):
+    """The load stands above REFRESH_BUSY_LOAD times the cores: a periodic render waits (_refresh_in_background)."""
+    try:
+        load = os.getloadavg()[0] if load is None else load
+    except OSError:
+        return False
+    return load > REFRESH_BUSY_LOAD * (cores or os.cpu_count() or 1)
+
+
 def _refresh_in_background(viewer=False):
     """Start `of studio --render-cache` once: a lock file names the running refresh and when it started.
     The listener calls this name every 10 minutes (bin/of_listen.py, of_platform): renaming it needs a note to them.
@@ -3174,6 +3188,8 @@ def _refresh_in_background(viewer=False):
         if last is not None and time.time() - last < PERIODIC_RENDER_S and \
                 not registry_moved_since(last_render(started=True)):
             return False
+        if last is not None and time.time() - last < REFRESH_BUSY_MAX_S and machine_busy():
+            return False   # under load it waits, at most REFRESH_BUSY_MAX_S after the last render ended
     lock = os.path.join(_pages_dir(), ".refresh")
     try:
         if time.time() - os.path.getmtime(lock) < REFRESH_LOCK_S:
