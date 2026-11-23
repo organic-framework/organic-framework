@@ -174,12 +174,42 @@ class ServerTest(Base):
     def test_the_screens_send_is_one_short_try(self):
         seen = []
         aid, item = self.card()
-        self.server(lambda body: (404, {}))
-        real = of_decisions.settle
-        with mock.patch.object(of_decisions, "settle",
-                               lambda *a, **k: seen.append(k.get("timeout")) or real(*a, **k)):
-            of_asks_answer.answer(self.conn, item, "yes", POSITIONS, lambda name: "pane-" + name)
+        for p in (mock.patch.object(of_events, "_org_server_url", lambda org: "https://127.0.0.1:1"),
+                  mock.patch.object(of_decisions, "_default_post",
+                                    lambda url, body, timeout=None: seen.append(timeout) or (404, {}))):
+            p.start()
+            self.addCleanup(p.stop)
+        of_asks_answer.answer(self.conn, item, "yes", POSITIONS, lambda name: "pane-" + name)
         self.assertEqual(seen, [of_asks_answer.ONE_TRY_S])
+
+    def test_a_quiet_server_costs_one_try_a_pass_whatever_waits(self):
+        """of_review on PR 615: while a server takes connections and answers none, a pass spent a try on every
+        pending answer, and 56 of them filled the pulse."""
+        self.cut_over()
+        cards = [self.card(f"2026-11-01T10:00:{10 + k:02d}Z") for k in range(12)]
+        tries = []
+        for p in (mock.patch.object(of_events, "_org_server_url", lambda org: "https://127.0.0.1:1"),
+                  mock.patch.object(of_decisions, "_default_post",
+                                    lambda url, body, timeout=None: tries.append(timeout) or (_ for _ in ()).throw(
+                                        TimeoutError("no answer")))):
+            p.start()
+            self.addCleanup(p.stop)
+        for k, (aid, _) in enumerate(cards):
+            of_asks_answer.propose(self.conn, [aid], {"answer": "yes", "via": "asks-ui", "by": "owner"},
+                                   act=f"00000000-0000-4000-8000-{k:012d}")
+        got = of_asks_answer.send(self.conn)
+        self.assertEqual(tries, [of_asks_answer.ONE_TRY_S])  # the first try found it away; the rest wait a pass
+        self.assertEqual({v["state"] for v in got.values()}, {"waiting"})
+        self.assertEqual(len(got), 12)
+        of_asks_answer.send(self.conn)
+        self.assertEqual(len(tries), 2)  # the next pass tries once again
+
+    def test_one_background_sender_at_a_time(self):
+        import fcntl
+        with open(os.path.join(of_events.STATE_DIR, "decisions-send.lock"), "w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            with mock.patch.object(of_asks_answer, "send", lambda *a, **k: self.fail("a second sender ran")):
+                self.assertIsNone(of_asks_answer.send_in_background())  # the running one takes every proposal
 
     def test_a_refusal_from_the_server_names_the_winner(self):
         won = {"proposal": "p-other", "by": "owner", "via": "conductor", "answer": "no, Tuesday",
