@@ -3456,9 +3456,15 @@ def _asks_deliver(position=None, now=None):
     conn = of_store.connect()
     if now is not None:
         _drain_spool_now(conn)  # the screen leaving spools what a busy store would not take at once
+        events = {e for e in now.split(",") if e}
+        if events:  # the screen's proposals, sent before anything is typed: only an accepted answer goes in
+            try:      # (event store step 1; of_asks_answer.decide)
+                import of_decisions
+                of_decisions.send_pending(conn, only=events, log=lambda m: None)
+            except Exception as e:  # noqa: BLE001 - the background child and the pulse send them later
+                print(f"{_now_iso()} deliver now: not sent: {type(e).__name__}: {e}")
         asks = _asks_now(conn, quiet=True)
         positions = _load_quiet()
-        events = {e for e in now.split(",") if e}
         n = of_asks_answer.redeliver_pass(conn, asks, positions, live_agents(), bind, events=events, min_age=0,
                                           wait_s=3, need_idle=False) if events else 0
         _reconcile_ask_tokens(positions)
@@ -3841,14 +3847,19 @@ def cmd_asks(args):
                               "answer: add --prompt <his prompt's event id> (of prompts --mine)")
             cited, ok = _cited_answer(conn, args.prompt, need)
             ids = [i for i in ids if i not in {a["event_id"] for a in need} or i in {a["event_id"] for a in ok}]
-        of_events.emit("agent_question_answered", {"ask_id": ids[0], "ask_ids": ids, "by": by,
-                                                   "note": " ".join(args.reason) or None,
-                                                   **({"prompt": cited} if cited else {})})
-        print(f"answered: {len(ids)} ask(s) from {', '.join(g['who'])}"
-              + (f"; {len(g['ask_ids']) - len(ids)} filed or amended after that prompt stay open"
-                 if len(ids) < len(g["ask_ids"]) else ""))
+        import of_asks_answer  # a proposal per ask, accepted once by its organization's server (event store step 1)
+        done, said = of_asks_answer.close_from_command(
+            ids, {"by": by, "via": "cli" if by == "owner" else "unit", "note": " ".join(args.reason) or None,
+                  **({"prompt": cited} if cited else {})},
+            proposer={"person": "owner"} if by == "owner" else {"position": by})
+        if done:
+            print(f"answered: {len(done)} ask(s) from {', '.join(g['who'])}"
+                  + (f"; {len(g['ask_ids']) - len(ids)} filed or amended after that prompt stay open"
+                     if len(ids) < len(g["ask_ids"]) else ""))
+        if said:
+            print(said, file=sys.stderr if not done else sys.stdout)
         _reconcile_ask_tokens(_load_quiet())
-        return 0
+        return 0 if done or "sending" in said else 1
     if args.action == "withdraw":
         import of_events
         if not args.id:
@@ -6898,10 +6909,14 @@ def cmd_status(args):
                               "of asks show <id>")
             cited, ok = _cited_answer(conn, args.prompt, need)
             ids = [i for i in ids if i not in {a["event_id"] for a in need} or i in {a["event_id"] for a in ok}]
-        of_events.emit("agent_question_answered", {"ask_id": ids[0], "ask_ids": ids, "by": me["name"], "via": "status",
-                                                   "note": note or None, **({"prompt": cited} if cited else {})},
-                       position=me["name"])
-        print(f"{me['name']}: {len(ids)} ask(s) closed as answered")
+        import of_asks_answer  # the asker's closure races an owner's answer too: a proposal (event store step 1)
+        done, said = of_asks_answer.close_from_command(
+            ids, {"by": me["name"], "via": "status", "note": note or None, **({"prompt": cited} if cited else {})},
+            proposer={"position": me["name"]}, position=me["name"])
+        if done:
+            print(f"{me['name']}: {len(done)} ask(s) closed as answered")
+        if said:
+            print(said)
     if getattr(args, "done_task", None) or getattr(args, "reopen_task", None):
         tid = args.done_task or args.reopen_task
         mine = [a for a in _current_asks() if a.get("position") == me["name"] and a["state"] == "open"
@@ -7046,6 +7061,13 @@ def cmd_pulse(args):
         of_events.backfill_refs([a for a in asks if isinstance(a, dict)], log=(lambda m: None) if args.quiet else print)
     except Exception as e:  # noqa: BLE001 - the pulse runs on without them
         print(f"card ids: {e}")
+    try:  # answers proposed while the organization's server could not be reached: sent again every pulse, so an
+        import of_decisions  # answer never waits on the next one to leave (event store step 1; of_asks_answer)
+        sent = of_decisions.send_pending(conn, log=(lambda m: None) if args.quiet else print)
+        if sent and not args.quiet:
+            print(f"decisions: {of_decisions.counts(sent)}")
+    except Exception as e:  # noqa: BLE001 - the pulse runs on without them
+        print(f"decisions: {e}")
     # herdr's agents and those in tmux or screen (of_herdr, 2026-11-11): every pulse path types through
     # of_relay_client.herdr_deliver, which takes tmux: and screen: panes; without herdr the pulse still runs
     agents = live_agents_or_none(warn=False)

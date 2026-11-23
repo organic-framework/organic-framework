@@ -128,7 +128,12 @@ class OnePanelTwoOrganizationsTest(unittest.TestCase):
             self.assertTrue(ok)
             wire = m.wire()
         self.assertEqual(list(wire), [ACME_URL])
-        self.assertEqual([json.loads(d["payload"])["ask_ids"] for d in wire[ACME_URL]], [[ASK_ACME]])
+        # an answer is a proposal per ask now (event store step 1): every record it makes names the acme ask alone
+        named = set()
+        for d in wire[ACME_URL]:
+            p = json.loads(d["payload"])
+            named.update(p.get("ask_ids") or [p.get("ask_id") or (p.get("payload") or {}).get("ask_id")])
+        self.assertEqual(named, {ASK_ACME})
 
     def test_what_the_owner_does_on_a_card_ships_only_to_its_organizations_server(self):
         with tempfile.TemporaryDirectory() as root, Machine(root, "laptop") as m:

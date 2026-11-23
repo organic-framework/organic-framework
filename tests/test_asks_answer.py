@@ -37,6 +37,14 @@ class AnswerTest(unittest.TestCase):
         of_events.STATE_DIR = self.saved
         self.tmp.cleanup()
 
+    def accepted(self):
+        """The accepted answers, one per ask (event store step 1): [(ask id, answer, via, by)], in their order."""
+        out = []
+        for (pl,) in self.conn.execute("SELECT payload FROM event WHERE name = 'of.decision_accepted' ORDER BY rowid"):
+            p = json.loads(pl)
+            out.append((p["stream"].split("@")[0], p.get("answer"), p.get("via"), p.get("by")))
+        return out
+
     def add(self, kind, payload, ts, session="S1", position="of_a"):
         rec = of_events.record(kind, payload, position=position, session=session, org="ofb")
         rec["timestamp"] = ts
@@ -68,9 +76,9 @@ class AnswerTest(unittest.TestCase):
         self.assertEqual(of_asks_answer.unsent_drafts(), [])  # sent: the draft is gone
         asks = of_asks.project(of_asks.load(self.conn))
         self.assertEqual({a["event_id"]: a["state"] for a in asks}, {a1: "answered", a2: "answered"})
-        row = self.conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered'").fetchone()
-        p = json.loads(row[0])
-        self.assertEqual((p["answer"], p["via"], p["ask_ids"]), ("yes, lift", "asks-ui", [a1, a2]))
+        # one accepted answer per ask (event store step 1; ofb has no server here, so this machine accepts)
+        self.assertEqual(sorted(self.accepted()), sorted([(a1, "yes, lift", "asks-ui", "owner"),
+                                                          (a2, "yes, lift", "asks-ui", "owner")]))
         self.assertTrue(of_asks_answer.frame(a1, "x").startswith("Answer from the founder to your question "))
 
     def test_send_from_another_thread(self):
@@ -638,8 +646,8 @@ class RedeliverTest(AnswerTest):
         self.assertTrue(first[0] and again[0])
         self.assertIn("recorded already", again[1])
         self.assertEqual(typed, ["pane-of_a", "pane-of_b"])
-        n = self.conn.execute("SELECT count(*) FROM event WHERE name = 'of.agent_question_answered'").fetchone()[0]
-        self.assertEqual(n, 1)
+        n = self.conn.execute("SELECT count(*) FROM event WHERE name = 'of.decision_proposed'").fetchone()[0]
+        self.assertEqual((n, len(self.accepted())), (2, 2))  # one proposal per ask, once
 
     def test_dialog_keys_and_verdicts_are_not_typed(self):
         a1, a2, _ = self.group()
@@ -800,8 +808,9 @@ class RedeliverTest(AnswerTest):
             a = self.asks()[aid]  # the unit owner closed the founder's card: never read as his answer (of_server, PR 222)
             self.assertEqual((a["settled_by"], a["settled_via"]), ("of_owner", copy))
             self.assertEqual(of_asks.state_label(a), "settled_in_unit by of_owner")
-            row = self.conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered'").fetchone()
-            self.assertEqual((json.loads(row[0])["by"], json.loads(row[0])["note"]), ("of_owner", "routed it myself"))
+            row = self.conn.execute("SELECT payload FROM event WHERE name = 'of.decision_accepted'").fetchone()
+            self.assertEqual((json.loads(row[0])["by"], json.loads(row[0])["via"], json.loads(row[0])["note"]),
+                             ("of_owner", "unit", "routed it myself"))  # a unit owner's closure, accepted once
             with self.assertRaises(of.OfError):
                 of.cmd_asks(args)  # closed: nothing open matches any more
         finally:
@@ -897,9 +906,8 @@ class RedeliverTest(AnswerTest):
             args = types.SimpleNamespace(action="answered", id=aid[-8:], reason=["decided inside the envelope"],
                                          watch=False)
             self.assertEqual(of.cmd_asks(args), 0)
-            row = self.conn.execute("SELECT event_id, payload FROM event WHERE name = 'of.agent_question_answered' "
-                                    "AND event_id != ?", (early,)).fetchone()
-            self.assertEqual((json.loads(row[1])["ask_ids"], json.loads(row[1])["by"]), ([aid], "of_owner"))
+            row = self.conn.execute("SELECT event_id, payload FROM event WHERE name = 'of.decision_accepted'").fetchone()
+            self.assertEqual((json.loads(row[1])["stream"], json.loads(row[1])["by"]), (f"{aid}@v1", "of_owner"))
             a = self.asks()[aid]
             self.assertEqual((a["state"], a.get("settled_via"), a["settled_event"], a["settled_by"]),
                              ("settled_in_unit", None, row[0], "of_owner"))
@@ -1113,14 +1121,16 @@ class LeaveTest(RedeliverTest):
     def test_an_answer_is_recorded_here_and_only_typed_by_the_deliverer(self):
         a1, a2, item = self.group()
         out, typed, spawned = self.leave([{"what": "answer", "text": "yes", "item": item}])
-        answers = self.events("of.agent_question_answered")
-        self.assertEqual([(p["ask_ids"], p["answer"], p["by"]) for _, p in answers], [([a1, a2], "yes", "owner")])
+        props = self.events("of.decision_proposed")      # one proposal per ask (event store step 1), sent by nobody yet
+        self.assertEqual(sorted((p["payload"]["ask_id"], p["payload"]["answer"], p["payload"]["by"]) for _, p in props),
+                         sorted([(a1, "yes", "owner"), (a2, "yes", "owner")]))
         self.assertTrue(out[0][1])
-        self.assertEqual(typed, [])                      # no pane waited on as the screen leaves
-        self.assertEqual(spawned, [[answers[0][0]]])     # the deliverer types exactly that recorded answer
+        self.assertEqual(typed, [])                      # no pane waited on, nothing sent as the screen leaves
+        self.assertEqual(sorted(spawned[0]), sorted(e for e, _ in props))  # the deliverer sends and types these
+        self.assertEqual(self.accepted(), [])
         self.assertEqual(of_asks_answer.unsent_drafts(), [])
         out, typed, spawned = self.leave([{"what": "answer", "text": "yes", "item": item}])  # its thread got there
-        self.assertEqual(len(self.events("of.agent_question_answered")), 1)
+        self.assertEqual(len(self.events("of.decision_proposed")), 2)
         self.assertEqual(spawned, [[]])                  # nothing new to type; the ask tokens still follow
 
     def test_a_mark_is_recorded_here_by_the_owner_and_refused_to_an_agent(self):
@@ -1139,8 +1149,9 @@ class LeaveTest(RedeliverTest):
         self.assertEqual([x[1] for x in out], [True, True])
         (_, w), = self.events("of.ask_withdrawn")
         self.assertEqual((w["ask_id"], w["by"]), (a1, "owner"))
-        (_, c), = self.events("of.agent_question_answered")
-        self.assertEqual((c["ask_ids"], c["by"], c.get("answer")), ([a1, a2], "owner", None))
+        marks = self.events("of.decision_proposed")      # "answered elsewhere": a proposal per ask, no text to type
+        self.assertEqual(sorted((c["payload"]["ask_id"], c["payload"]["by"], c["payload"].get("answer")) for _, c in marks),
+                         sorted([(a1, "owner", None), (a2, "owner", None)]))
         self.assertEqual(spawned, [[]])
 
     def test_an_act_its_thread_recorded_is_one_event_and_never_typed_twice(self):
@@ -1153,12 +1164,15 @@ class LeaveTest(RedeliverTest):
             self.assertTrue(of_asks_answer.owner_mark(self.conn, mark, "answered")[0])  # its thread got there
         out, _, _ = self.leave([{"what": "answered", "item": mark, "started": True, "done": False}])
         self.assertTrue(out[0][1])
-        self.assertEqual(len(self.events("of.agent_question_answered")), 1)
-        self.conn.execute("DELETE FROM event WHERE name = 'of.agent_question_answered'")
+        import of_decisions
+        self.assertEqual(sorted(e for e, _ in self.events("of.decision_proposed")),
+                         sorted(of_decisions.proposal_id(mark["act"], a) for a in (a1, a2)))  # one act, one each
+        self.conn.execute("DELETE FROM event WHERE name LIKE 'of.decision_%'")
         ans = dict(item, act="00000000-0000-4000-8000-00000000000b")
         self.assertTrue(of_asks_answer.answer(self.conn, ans, "yes", self.positions(), lambda name: None)[0])
         out, typed, spawned = self.leave([{"what": "answer", "text": "yes", "item": ans, "started": True}])
-        self.assertEqual([e for e, _ in self.events("of.agent_question_answered")], [ans["act"]])
+        self.assertEqual(sorted(e for e, _ in self.events("of.decision_proposed")),
+                         sorted(of_decisions.proposal_id(ans["act"], a) for a in (a1, a2)))
         self.assertEqual((typed, spawned), ([], [[]]))  # never handed to the deliverer: its thread may be typing it
 
     def test_a_copy_in_the_spool_and_a_second_flush_stay_one_event(self):
@@ -1190,10 +1204,12 @@ class LeaveTest(RedeliverTest):
             writer.close()
         self.assertTrue(out[0][1], out)
         self.assertLess(took, 3.0)                       # the store's own wait is 10 s
-        self.assertEqual(spawned, [[ans["act"]]])
-        self.assertEqual(self.events("of.agent_question_answered"), [])  # in the spool
+        import of_decisions
+        mine = sorted(of_decisions.proposal_id(ans["act"], a) for a in item["ids"])
+        self.assertEqual(sorted(spawned[0]), mine)
+        self.assertEqual(self.events("of.decision_proposed"), [])  # in the spool
         of_store.drain_spool(self.conn)                  # the deliverer drains it first
-        self.assertEqual([e for e, _ in self.events("of.agent_question_answered")], [ans["act"]])
+        self.assertEqual(sorted(e for e, _ in self.events("of.decision_proposed")), mine)
 
     def test_an_answer_nothing_took_keeps_its_draft_and_a_dialog_answer_is_its_threads(self):
         a1, _, item = self.group()

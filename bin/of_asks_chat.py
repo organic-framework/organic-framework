@@ -345,7 +345,12 @@ def _shown_at(conn, ask, version):
 
 
 def recorded(conn, prompt_id, ids):
-    """True when this prompt already answered these asks through the conductor."""
+    """True when this prompt already answered these asks through the conductor: proposed them (event store step 1;
+    the prompt is the act, so its proposals' ids are fixed) or, before that, recorded today's answer."""
+    import of_asks_answer
+    import of_decisions
+    if ids and all(of_asks_answer.has_event(conn, of_decisions.proposal_id(prompt_id, a)) for a in ids):
+        return True
     for (pl,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered' "
                               "AND json_extract(payload, '$.via') = 'conductor' "
                               "AND json_extract(payload, '$.prompt') = ?", (prompt_id,)):
@@ -355,6 +360,27 @@ def recorded(conn, prompt_id, ids):
         except ValueError:
             continue
     return False
+
+
+def fields(c, relayed_by=None):
+    """The answer's fields with the proof that the person gave it: the prompt, its time and words, the conductor, the
+    evidence and the option. They travel whole in the proposal and in the accepted decision (of_platform, message
+    01a2089c-fc69), so the check can be read again after the fact."""
+    import of_hook
+    p = c["prompt"]
+    return {"answer": of_hook.mask(c["answer"]), "via": "conductor", "by": "owner", "prompt": p["event_id"],
+            "prompt_ts": p["ts"], "quote": of_hook.mask(p["text"])[:600], "conductor": c["conductor"],
+            "evidence": c["evidence"], "relayed_by": relayed_by,
+            **({"option": c["option"]} if c["option"] is not None else {})}
+
+
+def propose(conn, c, relayed_by=None):
+    """The answer as one proposal per ask (event store step 1), the prompt as the act: [(ask id, proposal id)], or
+    None where an ask names no organization (record then writes today's answer)."""
+    import of_asks_answer
+    return of_asks_answer.propose(conn, c["ids"], fields(c, relayed_by), act=c["prompt"]["event_id"],
+                                  version=c.get("version") or 1,
+                                  proposer={"person": "owner", "position": c.get("conductor")})
 
 
 def record(c, relayed_by=None):
@@ -376,13 +402,24 @@ def answer(conn, asks, positions, ask_ref, prompt_ref, pane_of, option=None, tex
     c = check(conn, asks, positions, ask_ref, prompt_ref, option=option, text=text, now=now, version=version)
     if recorded(conn, c["prompt"]["event_id"], c["ids"]):
         return [f"recorded already: {len(c['ids'])} ask(s) answered from prompt {c['prompt']['event_id'][-8:]}"]
-    eid = record(c, relayed_by)
+    pairs = propose(conn, c, relayed_by)
+    eid = pairs[0][1] if pairs else record(c, relayed_by)
     if not eid:
         raise ValueError("the answer could not be written to the event store")
-    out = [f"answered: {', '.join(i[-8:] for i in c['ids'])} with {c['answer'][:80]!r} ({c['evidence']})"]
+    # sent now; typed only where the server accepted it (or its organization still takes the old way)
+    results = of_asks_answer.decide(conn, pairs) if pairs else {a: ("off", None) for a in c["ids"]}
+    go = {a for a, (s_, _) in results.items() if s_ in of_asks_answer.DELIVERABLE + ("counted",)}
+    said = of_asks_answer.outcome_line(results)
+    if not go and all(s_ == "refused" for s_, _ in results.values()):
+        return [f"not answered: {said}"]  # the conductor tells the person who answered first
+    out = [f"answered: {', '.join(i[-8:] for i in sorted(go, key=c['ids'].index))} with {c['answer'][:80]!r} "
+           f"({c['evidence']})"] + ([f"  {said}"] if said else [])
     p = {"answer": c["answer"], "via": "conductor", "prompt_ts": c["prompt"]["ts"], "quote": c["prompt"]["text"],
          "version": c.get("version") or 1}
     for position, session, ids in of_asks_answer.recipients(conn, c["ids"], c["position"], c["session"]):
+        ids = [i for i in ids if i in go]
+        if not ids:
+            continue
         pane = pane_of(position)
         session = session or of_asks_answer.live_session(position, positions)
         q = of_asks_answer.answered_question(conn, ids[0], p["version"])  # an amended ask: its version and words

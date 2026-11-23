@@ -408,9 +408,127 @@ def _ship_now():
         conn.close()
     except Exception:  # noqa: BLE001 - the listener drains the spool too
         pass
+    try:  # the proposals not yet settled, this answer's and any left before (event store step 1; of_platform)
+        import of_decisions
+        of_decisions.send_pending(log=lambda m: None)
+    except Exception:  # noqa: BLE001 - the next child or the pulse sends them
+        pass
     with open(os.open(os.path.join(of_events.STATE_DIR, "ship.lock"), os.O_WRONLY | os.O_CREAT, 0o600), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # released when the file closes, before of_ship takes it
     return of_ship.ship(log=lambda m: None)
+
+
+# ------------------------------------------------------------------ answers as decisions (event store step 1)
+# organic-framework-build reports/framework/event-store/04-design.md §2 and step1-accept-contract.md; hand-over
+# b18eea97. A person's answer is a proposal per ask (bin/of_decisions.py, of_platform's), accepted once by its
+# organization's server; only an accepted answer (or one its organization still takes the old way) is typed into a
+# pane, and whoever gave a refused one is told who answered first.
+
+DELIVERABLE = ("accepted", "off")
+
+
+def _org_of(conn, ask_id):
+    r = conn.execute("SELECT org FROM event WHERE event_id = ?", (ask_id,)).fetchone()
+    return r[0] if r and r[0] else None
+
+
+def propose(conn, ask_ids, fields, act=None, version=None, proposer=None):
+    """One proposal per ask of the group, in its order: [(ask id, proposal id)], or None when an ask names no
+    organization (an ask from before organizations were stamped: the caller records today's answer instead). FIELDS:
+    the answer's fields as today (answer, via, by, verdict, note, and the chat's proof), never version or ask_ids. The
+    first ask is answered at VERSION, the one the card showed; the others at their own newest version. ACT: the screen's
+    act id, so the screen and its sending thread make the same ids; a fresh one when None."""
+    import uuid
+    import of_decisions
+    ids = [a for a in ask_ids or [] if a]
+    orgs = [_org_of(conn, a) for a in ids]
+    if not ids or not all(orgs):
+        return None
+    act = act or str(uuid.uuid4())
+    fields = {k: v for k, v in (fields or {}).items() if v is not None}
+    out = []
+    for k, (aid, org) in enumerate(zip(ids, orgs)):
+        v = (version or 1) if k == 0 else (ask_details(conn, aid)[0].get("version") or 1)
+        pid = of_decisions.proposal_id(act, aid)
+        if not has_event(conn, pid):  # the act's thread proposed it already: one act, one proposal per ask
+            of_decisions.propose(org, "answer", of_decisions.answer_stream(aid, v), fields, pid, proposer=proposer)
+        out.append((aid, pid))
+    return out
+
+
+def decide(conn, pairs, log=None):
+    """Send the proposals PAIRS gives ([(ask id, proposal id)]) now and say what each came to: {ask id: (state,
+    record)}. state: accepted, refused, off, waiting (not answered now: the background child sends it again), or
+    counted (waiting, and written as today's answer, since its organization's decisions are not on here yet). record:
+    the accepted decision (its own, or the one that won over it)."""
+    import of_decisions
+    got = of_decisions.send_pending(conn, only=[p for _, p in pairs], log=log or (lambda m: None))
+    out = {}
+    for aid, pid in pairs:
+        g = got.get(pid) or {"state": "waiting", "record": None}
+        state, rec = g.get("state"), g.get("record")
+        if state == "refused" and not rec:
+            rec = _refusal_record(conn, pid)
+        if state == "waiting" and has_event(conn, of_decisions.legacy_id(pid)):
+            state = "counted"
+        out[aid] = (state, rec)
+    return out
+
+
+def _refusal_record(conn, pid):
+    """The accepted decision an of.decision_refused names, as it was kept when the proposal was refused."""
+    import of_decisions
+    r = conn.execute("SELECT payload FROM event WHERE event_id = ?", (of_decisions.refused_id(pid),)).fetchone()
+    try:
+        return (json.loads(r[0] or "{}").get("accepted") or None) if r else None
+    except ValueError:
+        return None
+
+
+def refusal(ask_id, rec):
+    """What the person whose answer lost is told on their own screen: who answered the card first, when, and with
+    what (04-design.md §2: "the second answer is not lost and not silent")."""
+    rec = rec or {}
+    who = rec.get("by") or "someone"
+    who = "the founder" if who in ("owner", "founder") else who
+    where = {"asks-ui": "in the questions screen", "conductor": "in the conductor's chat", "status": "by its asker",
+             "cli": "from a terminal"}.get(rec.get("via"), "")
+    at = str(rec.get("accepted_at") or "")[11:16]
+    said = " ".join(str(rec.get("answer") or "").split())
+    return (f"already answered: {card_id(ask_id)} was answered by {who}{(' ' + where) if where else ''}"
+            f"{(' at ' + at + 'Z') if at else ''}" + (f": «{said[:120]}»" if said else "")
+            + "; your answer was not sent to the asker")
+
+
+def outcome_line(results):
+    """One status line for a group's decisions: the refusals said in full, the rest counted."""
+    refused = [refusal(a, rec) for a, (s, rec) in results.items() if s == "refused"]
+    waiting = [a for a, (s, _) in results.items() if s == "waiting"]
+    parts = refused[:1] + ([f"{len(refused) - 1} more refused"] if len(refused) > 1 else [])
+    if waiting:
+        parts.append(f"sending {len(waiting)}: the server has not accepted it yet; OF types it in once it does")
+    return "; ".join(parts)
+
+
+def close_from_command(ask_ids, fields, proposer=None, position=None):
+    """`of asks answered` and `of status --answered`: the closure as a proposal per ask, sent now (event store step 1),
+    or today's answer where its asks name no organization. Returns (accepted ask ids, the refusal or waiting line or
+    "")."""
+    import of_events
+    import of_store
+    conn = of_store.connect()
+    try:
+        pairs = propose(conn, ask_ids, fields, proposer=proposer)
+        if not pairs:
+            of_events.emit("agent_question_answered", dict({k: v for k, v in fields.items() if k != "via" or v},
+                                                           ask_id=ask_ids[0], ask_ids=list(ask_ids)), position=position)
+            return list(ask_ids), ""
+        results = decide(conn, pairs)
+        if any(s_ == "waiting" for s_, _ in results.values()):
+            ship_soon()  # not answered now: the background child sends it again
+        return [a for a, (s_, _) in results.items() if s_ in DELIVERABLE + ("counted",)], outcome_line(results)
+    finally:
+        conn.close()
 
 
 def record(ask_ids, answer, position=None, session=None, version=None, event_id=None):
@@ -472,7 +590,17 @@ def recorded_already(conn, ids, text, now=None):
             continue
         if p.get("answer") == masked and set(p.get("ask_ids") or [p.get("ask_id")]) == want:
             return True
-    return False
+    # the same answer proposed to every one of these asks (event store step 1: one proposal per ask)
+    got = set()
+    for (payload,) in conn.execute("SELECT payload FROM event WHERE name = 'of.decision_proposed' AND ts >= ? "
+                                   "AND json_extract(payload, '$.payload.via') = 'asks-ui'", (since,)):
+        try:
+            p = (json.loads(payload or "{}").get("payload") or {})
+        except ValueError:
+            continue
+        if p.get("answer") == masked and p.get("ask_id") in want:
+            got.add(p["ask_id"])
+    return bool(want) and got == want
 
 
 def deliver(pane, text, session, wait_s=3, sender="owner", human_channel="asks-ui"):
@@ -630,8 +758,9 @@ def answer(conn, item, text, positions, pane_of):
 
 def record_answer(conn, item, text, positions=()):
     """The owner's answer recorded here and typed nowhere: the screen leaving (of_asks_tui.leave) records it in its own
-    process and leaves the typing to `of asks deliver --now`. Returns (ok, status line, the recorded event's id, or
-    None when nothing new was recorded: refused, recorded already, or a dialog's keys)."""
+    process and leaves the sending and the typing to `of asks deliver --now`. Returns (ok, status line, what was
+    recorded: its proposals' ids, one per ask of the group, or today's answer's event id where its asks name no
+    organization; None when nothing new was recorded: refused, recorded already, or a dialog's keys)."""
     return _kept(conn, item, text, positions, None)
 
 
@@ -662,15 +791,20 @@ def _answer(conn, item, text, positions, pane_of):
     if of_asks.stale(shown, c.get("version")):
         return False, amended_refusal(c, shown), None
     act = item.get("act")  # the screen's act id: its thread and its leaving write one event (INSERT OR IGNORE)
-    if pane_of is None and has_event(conn, act):  # its thread recorded it, and may be typing it now: never typed
-        drop_draft(item)  # twice from here (of_review on PR 398); the pulse or the turn's end types it if it did not
+    if pane_of is None and act and (has_event(conn, act) or has_event(conn, _first_proposal(act, c["ids"]))):
+        drop_draft(item)  # its thread recorded it, and may be typing it now: never typed twice from here (of_review
+        # on PR 398); the pulse or the turn's end types it if it did not
         return True, "answer recorded already; OF types it in when the agent's turn ends", None
     lock = _record_lock(None if pane_of is not None else LEAVE_LOCK_S)  # the check and the record together
-    eid = None
+    eid, pairs = None, None
     try:
         again = recorded_already(conn, c["ids"], text)  # another act's same answer (ask 8ee7f1bc): typed by its own
         if not again:
-            eid = record(c["ids"], text, c["position"], c["session"], version=shown or 1, event_id=act)
+            import of_hook
+            pairs = propose(conn, c["ids"], {"answer": of_hook.mask(text), "via": "asks-ui", "by": "owner"},
+                            act=act, version=shown or 1, proposer={"person": "owner"})
+            eid = pairs[0][1] if pairs else record(c["ids"], text, c["position"], c["session"], version=shown or 1,
+                                                   event_id=act)
     finally:
         if lock:
             lock.close()
@@ -679,11 +813,19 @@ def _answer(conn, item, text, positions, pane_of):
         return True, "answer recorded already; OF types it in when the agent's turn ends", None
     if not eid:  # neither the store nor the spool took it: the draft stays, marked failed, for D
         return False, "not recorded: the store and the spool both refused it", None
-    ship_soon()
+    ship_soon()  # its child sends what is still pending, here and for every other proposal
+    if pane_of is None:  # the screen leaving: the deliverer it starts sends these and types what is accepted
+        drop_draft(item)
+        return True, "answer recorded; OF types it in once it is accepted", [p_ for _, p_ in pairs] if pairs else eid
+    # the screen's sending thread: sent now, typed only where it was accepted (or taken the old way)
+    results = decide(conn, pairs) if pairs else {a: ("off", None) for a in c["ids"]}
+    go = {a for a, (s_, _) in results.items() if s_ in DELIVERABLE + ("counted",)}
+    if not go and all(s_ == "refused" for s_, _ in results.values()):
+        return False, outcome_line(results), eid  # nobody else typed it: the screen says who answered first
     drop_draft(item)
-    if pane_of is None:
-        return True, "answer recorded; OF types it in now", eid
-    rec = recipients(conn, c["ids"], c["position"], c["session"])
+    rec = [(pos, ses, [i for i in ids if i in go]) for pos, ses, ids in
+           recipients(conn, c["ids"], c["position"], c["session"])]
+    rec = [x for x in rec if x[2]]
     out = []
     for position, session, ids in rec:
         pane = pane_of(position)
@@ -693,7 +835,15 @@ def _answer(conn, item, text, positions, pane_of):
                          session) if pane else \
             f"no live pane: OF types it when {position} has one (for {REDELIVER_MAX_AGE_H} h)"
         out.append(f"{position}: {status}" if len(rec) > 1 else status)
-    return True, "answer recorded; " + ("; ".join(out) or "no asker to deliver it to"), eid
+    said = outcome_line(results)
+    typed = "; ".join(out) or ("no asker to deliver it to" if go else "")
+    head = "answer accepted" if pairs and go else "answer recorded"
+    return True, "; ".join(x for x in (head, typed, said) if x), eid
+
+
+def _first_proposal(act, ids):
+    import of_decisions
+    return of_decisions.proposal_id(act, ids[0]) if act and ids else None
 
 
 def owner_mark(conn, item, what):
@@ -710,9 +860,11 @@ def owner_mark(conn, item, what):
     if not ids:
         return False, "no ask on this card"
     act = item.get("act")  # the screen's act id: its thread and its leaving write one event
-    if what == "answered":
-        eid = of_events.emit("agent_question_answered", {"ask_id": ids[0], "ask_ids": ids, "by": "owner", "note": None},
-                             event_id=act)
+    if what == "answered":  # a proposal per ask, as an answer is (event store step 1); the background child sends it
+        pairs = propose(conn, ids, {"by": "owner", "via": "asks-ui", "note": "answered elsewhere"}, act=act,
+                        version=item.get("version"), proposer={"person": "owner"})
+        eid = pairs[0][1] if pairs else of_events.emit(
+            "agent_question_answered", {"ask_id": ids[0], "ask_ids": ids, "by": "owner", "note": None}, event_id=act)
         status = f"answered: {len(ids)} ask(s) from {', '.join(item.get('who') or []) or '?'}"
     elif what == "withdraw":
         _, session, position, _ = ask_details(conn, ids[0])
@@ -784,6 +936,35 @@ def _late(ts, now, what, busy=False):
     return f"\n(OF: {what} at {ts[11:16]}Z; delivered late, the first attempt did not reach your pane.)"
 
 
+def _answers_to_type(conn, since):
+    """[(event id, ts, payload)] of the answers since SINCE that may be typed into a pane, oldest first: today's
+    of.agent_question_answered, and the accepted decisions (event store step 1), each read as an answer to its one ask
+    at its stream's version. Never one written from a proposal that was refused, nor one written only because the
+    server could not be reached once its organization's decisions are on (it may yet be refused: of_decisions)."""
+    import of_decisions
+    out = []
+    for eid, ts, pl in conn.execute(
+            "SELECT event_id, ts, payload FROM event WHERE name IN ('of.agent_question_answered', "
+            "'of.decision_accepted') AND ts >= ? ORDER BY ts, rowid", (since,)).fetchall():
+        try:
+            p = json.loads(pl or "{}")
+        except ValueError:
+            continue
+        if p.get("stream"):  # an accepted decision
+            aid, v = of_decisions.parse_stream(p.get("stream"))
+            if not aid or p.get("kind", "answer") != "answer":
+                continue
+            p = dict(p, ask_id=aid, ask_ids=[aid], version=v)
+        elif p.get("proposal"):  # today's answer written from a proposal
+            if has_event(conn, of_decisions.refused_id(p["proposal"])):
+                continue
+            cut = of_decisions.cutover_of_ask(conn, p.get("ask_id"))
+            if cut and ts >= cut and not p.get("decisions_off"):
+                continue
+        out.append((eid, ts, p))
+    return out
+
+
 def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=None):
     """What should be in a pane and has no record there, younger than REDELIVER_MAX_AGE_H and older than `min_age`
     seconds: the founder's answers from the popup (every asker in the group) and the open questions routed to a unit
@@ -792,13 +973,8 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
     now = now or time.time()
     since = _iso(now - REDELIVER_MAX_AGE_H * 3600)
     out, seen = [], set()
-    for eid, ts, payload in conn.execute(
-            "SELECT event_id, ts, payload FROM event WHERE name = 'of.agent_question_answered' AND ts >= ? "
-            "ORDER BY ts", (since,)).fetchall():
-        try:
-            p = json.loads(payload or "{}")
-        except ValueError:
-            continue
+    for eid, ts, payload in _answers_to_type(conn, since):
+        p = payload
         if p.get("via") not in TYPED_VIAS or not p.get("answer") or p.get("keys") or p.get("verdict"):
             continue  # a dialog's keys, a not-a-question verdict: nothing to type
         if (of_asks.seconds_since(ts, now) or 0) < min_age:
@@ -977,7 +1153,9 @@ def redeliver_pass(conn, asks, positions, agents, bind, now=None, deliver_fn=Non
     import of_relay_client
     now = now or time.time()
     todo = pending(conn, asks, positions, now, min_age=min_age, only=only)
-    if events is not None:
+    if events is not None:  # a proposal's id names its accepted decision and today's answer written from it too
+        import of_decisions
+        events = set(events) | {f(e) for e in events for f in (of_decisions.accepted_id, of_decisions.legacy_id)}
         todo = [d for d in todo if d["key"].startswith("answer:") and d["key"][7:].rsplit(":", 1)[0] in events]
     if not todo:
         return 0
@@ -1017,6 +1195,25 @@ def redeliver_pass(conn, asks, positions, agents, bind, now=None, deliver_fn=Non
     return sent
 
 
+def _propose_or_record(ids, fields, act=None, position=None, session=None, ship=True):
+    """A mark of the owner's screen as a proposal per ask, which the background child sends (ship_soon), or today's
+    answer where its asks name no organization."""
+    import of_events
+    import of_store
+    conn = of_store.connect()
+    try:
+        pairs = propose(conn, ids, fields, act=act, proposer={"person": "owner"})
+        if pairs:
+            decide(conn, pairs)  # sent now from the screen's thread, so the card closes at once where it is accepted
+    finally:
+        conn.close()
+    if not pairs:
+        of_events.emit("agent_question_answered", dict(fields, ask_id=ids[0], ask_ids=list(ids)), position=position,
+                       session=session)
+    if ship:
+        ship_soon()
+
+
 def not_a_question(item, kind=None):
     """The owner's verdict in the popup (key n): this was not a question. It closes the ask (and its
     group) and stores a label for calibrating the heuristic (the classifier's version goes up after a
@@ -1028,8 +1225,8 @@ def not_a_question(item, kind=None):
     ids = item.get("ids") or []
     if not ids:
         return "nothing to mark"
-    of_events.emit("agent_question_answered", {"ask_id": ids[0], "ask_ids": ids, "via": "asks-ui",
-                                               "verdict": "not_a_question", "by": "owner"})
+    _propose_or_record(ids, {"via": "asks-ui", "verdict": "not_a_question", "by": "owner"}, act=item.get("act"),
+                       ship=False)  # its label below goes with it: one shipper
     of_events.emit("question_labelled", {"ask_id": ids[0], "ask_ids": ids, "label": "not_a_question",
                                          "kind": kind or item.get("kind"), "text": (item.get("text") or "")[:600],
                                          "by": "owner"})
@@ -1058,10 +1255,10 @@ def answer_blocked(c, text):
         return False, f"keys not sent: {(s.stderr or s.stdout).strip()[:120]}"
     import of_events
     import of_hook
-    of_events.emit("agent_question_answered", {"ask_id": c["ids"][0], "ask_ids": c["ids"], "answer": of_hook.mask(text),
-                                               "via": "asks-ui", "keys": keys, "by": "owner"},
-                   position=c.get("position"), session=c.get("session"))
-    ship_soon()
+    # the keys are pressed: the record says so, as a proposal like any answer (event store step 1), so it closes the
+    # card after its organization's cutover too; the background child sends it
+    _propose_or_record(c["ids"], {"answer": of_hook.mask(text), "via": "asks-ui", "keys": keys, "by": "owner"},
+                       position=c.get("position"), session=c.get("session"))
     return True, f"pressed {' '.join(keys)} in {c.get('position') or b['pane']}"
 
 

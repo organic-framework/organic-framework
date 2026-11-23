@@ -188,6 +188,7 @@
  "not saved: the event store did not take it": "не сохранено: хранилище событий не приняло запись",
  "not saved: {why}": "не сохранено: {why}",
  "Already answered · u takes it back": "Уже отвечено · u — отменить",
+ "sending": "отправляется",
  "back in the queue": "снова в очереди",
  "Hand over to (a position):": "Передать позиции:",
  "no single position matches «{t}»": "под «{t}» подходит не одна позиция",

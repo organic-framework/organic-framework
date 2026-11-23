@@ -671,6 +671,20 @@ def queue(conn, positions=(), now=None, sending=()):
     return out, behind
 
 
+def _sending(conn, data):
+    """The asks on the list with an answer proposed on this machine that its organization's server has not answered
+    yet (bin/of_decisions.py, its view; event store step 1): the screen marks them sending until accepted or refused."""
+    ids = [i for _, g in data for x in g for i in x.get("ids") or ()]
+    if not ids:
+        return set()
+    try:
+        import of_decisions
+        rows = of_decisions.states(ids, conn=conn)
+    except Exception:  # noqa: BLE001 - no mark rather than no list
+        return set()
+    return {a for a, rs in rows.items() if any(r.get("state") == "sending" for r in rs)}
+
+
 def screen_list(conn, positions=(), failed=(), now=None):
     """What the screen's loader hands to its thread: (data, overlay, extra), extra with behind, the drafts archived
     and the unsent ones for D; everything read from disk here, never on the screen's thread."""
@@ -949,6 +963,7 @@ class Inbox:
         self.chat, self.archive = chat, archive
         self.out = Outgoing(answer, act, handoff)
         self.items, self.over = (initial or ([], {}))
+        self.sending = set()  # asks answered here whose decision the server has not answered yet
         self.bg = {"data": None, "busy": False, "error": None, "good_at": None}
         self.cards, self.loading = {}, set()
         self.cur, self.sel, self.row, self.ctop = "holds", {}, {}, 0
@@ -998,6 +1013,7 @@ class Inbox:
             self.pending_drafts = extra["drafts"]
             self.take_amended([d for d in extra["drafts"] if str(d.get("why") or "").startswith(AMENDED)])
         self.items = [x for _, g in data for x in g]
+        self.sending = set(extra.get("sending") or ())
         self.over = over
         open_ids = {i for x in self.items for i in x.get("ids") or []}
         gone = list(extra.get("archived") or []) or (self.archive(open_ids) if self.archive else [])
@@ -1203,6 +1219,8 @@ class Inbox:
                     st[1]["what"], "")), curses.A_DIM
             elif st and st[0] == "failed":
                 tail, a = f"  ✗ {st[1]}", self.attr.get("red", 0)
+            elif any(i in self.sending for i in x.get("ids") or ()):  # answered here, not yet accepted by the
+                tail, a = "  ⇢ " + tr("sending"), curses.A_DIM  # server: typed into the pane once it is
             elif x.get("claimed_at"):
                 tail = "  ✓"
             elif k in self.reply_drafts:
@@ -1937,6 +1955,7 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
         try:
             data, over, extra = screen_list(own, T._positions(positions) if registry.is_set() else [],
                                             failed=set(boxes[0].out.errors) if boxes else ())
+            extra = dict(extra, sending=_sending(own, data))
         finally:
             own.close()
         T.write_cache(data)

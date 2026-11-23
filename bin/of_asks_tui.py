@@ -919,8 +919,8 @@ def leave(pendings, positions, of_path):
                     raise RuntimeError(why)
                 if p["what"] == "answer":
                     ok, status, eid = of_asks_answer.record_answer(own, item, p["text"])
-                    if eid:
-                        typed.append(eid)
+                    if eid:  # one proposal per ask of the group (event store step 1), or today's one answer
+                        typed.extend(eid if isinstance(eid, list) else [eid])
                 else:
                     ok, status = of_asks_answer.owner_mark(own, item, p["what"])
             except Exception as e:  # noqa: BLE001 - one failure never stops the others
