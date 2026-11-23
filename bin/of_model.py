@@ -1176,8 +1176,11 @@ def snapshot_path(repo, model):
 # ------------------------------------------------------------------ events from the local store
 
 def load_events(conn, since=None, until=None, names=None, stats=None):
-    """STATS: a dict the caller passes to learn, per event name, [rows, payload bytes as stored]."""
-    sql = "SELECT event_id, ts, name, session_id, position, org, cwd, source, harness_name, payload FROM event WHERE 1=1"
+    """STATS: a dict the caller passes to learn, per event name, [rows, payload bytes as stored]: SQLite's length of the
+    payload as a blob, since a text's length counts characters, and the store keeps text outside ASCII in more bytes
+    than characters (ensure_ascii=False; of_review on organic-framework PR 606: of.turn_end 1.5 bytes a character)."""
+    sql = ("SELECT event_id, ts, name, session_id, position, org, cwd, source, harness_name, payload, "
+           + ("length(CAST(payload AS BLOB))" if stats is not None else "0") + " FROM event WHERE 1=1")
     args = []
     if since:
         sql += " AND ts >= ?"; args.append(since)
@@ -1192,11 +1195,11 @@ def load_events(conn, since=None, until=None, names=None, stats=None):
     keep = {}
     one = keep.setdefault
     pairs = lambda items: {one(k, k): v for k, v in items}
-    for e, ts, n, s, pos, org, cwd, src, harness, pl in conn.execute(sql + " ORDER BY ts, rowid", args):
+    for e, ts, n, s, pos, org, cwd, src, harness, pl, size in conn.execute(sql + " ORDER BY ts, rowid", args):
         if stats is not None:
             st = stats.setdefault(n, [0, 0])
             st[0] += 1
-            st[1] += len(pl or "")
+            st[1] += size or 0
         try:
             payload = json.loads(pl, object_pairs_hook=pairs) if pl else {}
         except ValueError:

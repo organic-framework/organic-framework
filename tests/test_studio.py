@@ -1422,6 +1422,17 @@ class PromptOriginTest(unittest.TestCase):
                                         names=("of.human_prompt",))
             self.assertEqual([r["payload"]["origin"] for r in rows], ["human", "scheduled"])
             self.assertEqual([r["_t"] for r in rows], [of_model.epoch(r["ts"]) for r in rows])   # parsed once
+            # the stats count bytes as stored, not characters: the store keeps text outside ASCII as itself
+            # (ensure_ascii=False), in more bytes than characters (of_review on PR 606)
+            text = json.dumps({"text": "done \u2014 next \u2026"}, ensure_ascii=False)   # a dash and an ellipsis
+            conn.execute("INSERT INTO event (event_id, ts, name, session_id, source, payload, record) VALUES (?,?,?,?,?,?,?)",
+                         ("u1", "2026-11-06T10:30:00Z", "of.turn_end", "s-op", "hook", text, "{}"))
+            stats = {}
+            got = of_model.load_events(conn, since="2026-11-06T09:00:00Z", until="2026-11-06T11:00:00Z",
+                                       names=("of.turn_end",), stats=stats)
+            self.assertEqual(got[0]["payload"], {"text": "done \u2014 next \u2026"})
+            self.assertEqual(stats["of.turn_end"], [1, len(text.encode("utf-8"))])
+            self.assertGreater(len(text.encode("utf-8")), len(text))
             conn.close()
 
     def test_a_row_time_is_parsed_once(self):
