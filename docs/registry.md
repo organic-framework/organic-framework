@@ -450,6 +450,18 @@ card by its id in chat, cards and summaries; records a program reads keep the fu
 refuses a prefix that is not 2 to 5 capital letters, and a prefix that two organizations listed on the machine share,
 whether set or by default.
 
+## Labels in herdr (2026-11-23, `of_herdr`; the founder, prompt `01a2052f-9cc2`)
+
+A top-level `label:` is the organization's name in herdr when the machine's `orgs.yaml` entry gives no `workspace:`:
+the workspace label (and the prefix of unit workspaces, when there is no `short:`). One value in the registry reads the
+same on every machine; a `workspace:` the owner set in `orgs.yaml` still wins on his machine (`of org set <org>
+workspace <label>|none` changes it there). A system's `label:` (`systems.<id>.label`) is what herdr shows for that
+system: the pane token `system`, the tabs `of apply` lays out by system and the tab `of spawn` opens a new pane in. Ids
+stay as they are everywhere else (`of who`, records, the guard). The OF team's registry sets both to `of` (the founder:
+"make the naming of the organic_framework agents in herdr be of, please"). `of registry check` refuses a `label:` that is `desk`, another
+organization's name or workspace label, or not one word of at most 32 letters, digits, `.`, `_`, `·` and `-`; herdr then shows the
+name (of_review on PR 570).
+
 ## Goals (2026-11-07, `of_architect`; the goal tree 2026-11-12)
 
 A top-level `goals:` map: the few outcomes the organization's owner wants, above the works. A goal may be broken into sub-goals, and those into sub-goals again, so the owner sees what the organization works toward, what matters first, and which agents work on each part, not a flat list of works. Goals are the owner's: an agent proposes them, and they enter the registry only with a yes whose ask id each goal records.
