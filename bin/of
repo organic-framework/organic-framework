@@ -2883,11 +2883,9 @@ def cmd_org(args):
             folder = os.path.realpath(os.path.expanduser(args.value))
             if not os.path.isdir(folder):
                 raise OfError(f"{args.value}: no such folder")
-            if os.path.lexists(os.path.join(folder, ".git")):
-                raise OfError(f"{args.value}: a git repository; a work_root holds the positions' folders, each with "
-                              "its clones")
             import of_spawn
-            why = of_spawn.clone_refused(folder, entries, os.path.dirname(os.path.abspath(path)))
+            own = next((o for o in entries if o.get("name") == args.org), None)
+            why = of_spawn.work_root_refused(folder, entries, os.path.dirname(os.path.abspath(path)), own)
             if why:
                 raise OfError(f"{args.value}: not a work_root: {why}")
             home = os.path.realpath(os.path.expanduser("~"))

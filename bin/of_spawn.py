@@ -231,15 +231,11 @@ CLONE_CONTROL = (".git/config", ".git/config.worktree", ".git/commondir", ".git/
 
 
 def clone_ready(clone):
-    """Does CLONE hold .git/commondir, a regular file that is no link, holding "."? Only then is it writable."""
-    p = os.path.join(clone, ".git", "commondir")
-    try:
-        if os.path.islink(p) or not os.path.isfile(p):
-            return False
-        with open(p) as fh:
-            return fh.read().strip() == "."
-    except OSError:
-        return False
+    """Does CLONE hold .git/commondir, a regular file reached through no link, holding exactly "."? Only then is it
+    writable. Read without waiting and bounded, since this runs outside the sandbox on clones sessions write; " . " is
+    another path to git (of_secrets-review on PR 608)."""
+    import of_context
+    return of_context.read_in(clone, os.path.join(".git", "commondir"), limit=16) in (".", ".\n")
 
 
 def _orgs_file():
@@ -336,10 +332,43 @@ def work_roots(orgs_file=None):
         if not o.get("work_root"):
             continue
         root = os.path.realpath(os.path.join(base, os.path.expanduser(str(o["work_root"]))))
-        if not clone_refused(root, entries, base):
+        if not work_root_refused(root, entries, base, o):
             name = o.get("name") or os.path.basename(os.path.realpath(os.path.expanduser(str(o.get("path") or ""))))
             out[name] = root
     return out
+
+
+def work_root_refused(root, entries, base=None, own=None):
+    """Why ROOT may not be a work_root, or None: what clone_refused refuses; the root folder; a git repository, a bare
+    one, or a folder inside a repository (git's discovery from a position's folder would climb into it); a folder a
+    session's sandbox writes (sandbox_write_folders), or one holding one; another organization's work_root, the same,
+    above or below (its rules would be removed as shared). OWN: the organization's own entry, left out of that last
+    test (of_secrets-review on PR 608)."""
+    if root == os.sep:
+        return "the root folder"
+    why = clone_refused(root, entries, base)
+    if why:
+        return why
+    d = root
+    while True:
+        if os.path.lexists(os.path.join(d, ".git")):
+            return f"{d} is a git repository" if d == root else f"it lies in the git repository {d}"
+        up = os.path.dirname(d)
+        if up == d:
+            break
+        d = up
+    if all(os.path.lexists(os.path.join(root, x)) for x in ("HEAD", "objects", "refs")):
+        return "a bare git repository"
+    for w in sandbox_write_folders():
+        if root == w or root.startswith(w.rstrip(os.sep) + os.sep) or w.startswith(root + os.sep):
+            return f"it is, holds or lies in {w}, which a session's sandbox writes"
+    for o in entries:
+        if o is own or not o.get("work_root"):
+            continue
+        other = os.path.realpath(os.path.join(base or "", os.path.expanduser(str(o["work_root"]))))
+        if other == root or other.startswith(root + os.sep) or root.startswith(other + os.sep):
+            return f"it is, holds or lies in {o.get('name')}'s work_root {other}"
+    return None
 
 
 def position_folder(p, orgs_file=None):
@@ -374,18 +403,48 @@ def in_position_folder(cwd, org, orgs_file=None):
     return bool(root and cwd and os.path.dirname(os.path.realpath(cwd)) == root)
 
 
-def prepare_folder(cwd, org, orgs_file=None):
-    """Before a session starts in a position's folder: its CLAUDE.md, importing the AGENTS.md of each clone below it,
-    since Claude Code loads instructions at the start only from the start folder and above (condition 6). Written
-    from outside the sandbox without following a link (of_context.write_in). Returns its path, or None."""
+REPO_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
+AGENTS_MAX = 200_000   # characters of one clone's AGENTS.md copied into the folder's CLAUDE.md
+
+
+def repo_names(p, org_paths=None):
+    """The repository names a position's folder may hold clones of: the organization's checkouts in orgs.yaml (`path`,
+    `paths`, the owner's) and the repositories its systems name. A clone under any other name is not read."""
+    names = {os.path.basename(os.path.normpath(os.path.expanduser(str(x)))) for x in org_paths or [] if x}
+    for s in (p.get("_systems") or {}).values():
+        if isinstance(s, dict):
+            names |= {os.path.basename(os.path.normpath(os.path.expanduser(str(r)))) for r in s.get("repos") or []}
+    return {n for n in names if REPO_NAME.fullmatch(n)}
+
+
+def _no_imports(text):
+    """TEXT with no `@path` import Claude Code would follow: a zero-width space after each at sign that precedes a
+    character, so the copied text names a path without loading it."""
+    return re.sub(r"@(?=\S)", "@\u200b", text)
+
+
+def prepare_folder(cwd, org, names=(), orgs_file=None):
+    """Before a session starts or resumes in a position's folder: its CLAUDE.md, holding a copy of the AGENTS.md of each
+    clone below it, since Claude Code loads instructions at the start only from the start folder and above
+    (condition 6). A copy, taken at this start, never an import: an import is a live path the session writes, links
+    or adds a clone under, read again at every resume outside the sandbox (of_secrets-review on PR 608). Only a clone
+    whose name is one of NAMES (repo_names) and a plain name, ready (clone_ready); its AGENTS.md only as a regular
+    file reached through no link, bounded, with its at signs made inert. Written without following a link
+    (of_context.write_in). A session can still edit a clone's AGENTS.md, as in any checkout it works in; the next
+    start copies that text. Returns its path, or None."""
     if not in_position_folder(cwd, org, orgs_file):
         return None
     import of_context
-    lines = ["# Written by OF (of spawn) before this session started: the instructions of the repositories below.",
-             "# Edit their AGENTS.md, not this file; of spawn writes it again.", ""]
-    lines += [f"@{os.path.basename(c)}/AGENTS.md" for c in position_clones(cwd)
-              if os.path.isfile(os.path.join(c, "AGENTS.md"))]
-    of_context.write_in(cwd, "CLAUDE.md", "\n".join(lines) + "\n")
+    parts = ["# Written by OF before this session started: a copy of the instructions of the repositories below,",
+             "# taken at this start. Edit their AGENTS.md, not this file; OF writes it again at the next start.", ""]
+    for c in position_clones(cwd):
+        name = os.path.basename(c)
+        if name not in set(names or ()) or not REPO_NAME.fullmatch(name) or not clone_ready(c):
+            continue
+        text = of_context.read_in(c, "AGENTS.md", limit=AGENTS_MAX)
+        if text:
+            parts += [f"## {name}/AGENTS.md", "", _no_imports(text).rstrip("\n"), ""]
+    of_context.write_in(cwd, "CLAUDE.md", "\n".join(parts) + "\n")
     return os.path.join(cwd, "CLAUDE.md")
 
 
@@ -642,6 +701,14 @@ def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=
         # scratchpad is not (tried by of_server on Claude Code 2.1.330)
         if box["filesystem"]["allowRead"]:
             perms["additionalDirectories"] = list(box["filesystem"]["allowRead"])
+        # the position's folder for the file tools too: its top and its clones' control files, as the sandbox keeps
+        # them from Bash; each name and its tree, there or not (of_secrets-review on PR 608)
+        cwd = (scratch or (None, None))[0]
+        if cwd and in_position_folder(cwd, org):
+            top = os.path.realpath(cwd)
+            names = [os.path.join(top, x) for x in POSITION_TOP]
+            names += [os.path.join(c, x) for c in position_clones(top) for x in CLONE_CONTROL]
+            rules += [r for n in names for r in (f"Edit(/{n})", f"Edit(/{n}/**)") if r not in rules]
         # the work clone for the file tools too, and its control files and the services' copy denied to them
         writable = [c for o, c, _ in work_clones() if o == org and org and os.path.isdir(c) and clone_ready(c)]
         if writable:
@@ -784,6 +851,7 @@ def plan(p, positions, agents, bind, systems, org_paths, org_root, want_workspac
     sid = sid or str(uuid.uuid4())
     ws, tab = place(p, want_workspace)
     return {"position": p["name"], "org": p.get("_org"), "cwd": cwd, "config_dir": config_dir, "session": sid,
+            "repo_names": sorted(repo_names(p, org_paths)),
             "workspace": ws, "tab": tab, "brief": brief_text(p, org_root, subagents),
             "trusted": trusted(config_dir, cwd) if trusted else None,
             "bypass_ok": (not bypass) or bool(accepted(config_dir)) if accepted else True,
@@ -934,7 +1002,7 @@ def run(pl, herdr, deliver, rename, wait_session, log=print, of_bin=None, timeou
     wait_session(sid, timeout) -> agent or None; held(pane) -> submit_held's result, after the brief is typed.
     Returns the pane id."""
     import of_capacity
-    made = prepare_folder(pl["cwd"], pl.get("org"))   # a position's own folder: its CLAUDE.md before the start
+    made = prepare_folder(pl["cwd"], pl.get("org"), pl.get("repo_names") or ())   # a position's own folder
     if made:
         log(f"  wrote {made}")
     ws = herdr("workspace", "list")["workspaces"]

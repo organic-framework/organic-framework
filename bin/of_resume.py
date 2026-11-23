@@ -51,6 +51,18 @@ def planned(sid, root=None):
     return {}
 
 
+def _org_paths(org):
+    """ORG's checkouts in this machine's orgs.yaml (`path`, `paths`), or []."""
+    import yaml
+    try:
+        with open(of_spawn._orgs_file()) as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, ValueError, yaml.YAMLError):
+        return []
+    o = next((x for x in (doc.get("orgs") or []) if isinstance(x, dict) and x.get("name") == org), None) or {}
+    return [x for x in [o.get("path")] + list(o.get("paths") or []) if x]
+
+
 def command(sid, dirs=None, memory_dir=None, plan_root=None, deny=None, state_dir=None, tools=None, defaults=None,
             org=None, cwd=None, position=None):
     """The shell line that resumes `sid` as it ran, or None when no account holds it (the caller runs the bare one).
@@ -70,6 +82,12 @@ def command(sid, dirs=None, memory_dir=None, plan_root=None, deny=None, state_di
     argv = env + ["claude", "--resume", sid]
     tool_argv, tool_settings = tools or ([], {})
     cwd = cwd or os.getcwd()
+    if org and of_spawn.in_position_folder(cwd, org):
+        # a position's own folder: the same checks and the same fresh copy of its instructions as of spawn's start
+        # (of_secrets-review on PR 608); a clone not ready gives no line, so the session does not start
+        if any(not of_spawn.clone_ready(c) for c in of_spawn.position_clones(cwd)):
+            return None
+        of_spawn.prepare_folder(cwd, org, of_spawn.repo_names(position or {}, _org_paths(org)))
     try:
         started = of_capacity.started_folder(t, cwd, position)
     except Exception:  # noqa: BLE001 - the folder it runs in is still covered
