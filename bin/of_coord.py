@@ -44,6 +44,7 @@ PREFIXES = ("of.handover_", "of.diff_")
 LOCAL_ONLY = frozenset({
     "of.human_prompt", "of.prompt_origin", "of.injected_prompt", "of.context_injected", "of.paste_sourced",
     "of.agent_message_in", "of.agent_message_out",  # the relay's own copies are on the server already
+    "of.decision_proposed",  # a machine's proposal: the server's accept is what other machines get (event store step 1)
     "of.turn_end", "of.turn_error", "of.session_start", "of.session_end", "of.compaction", "of.continuation",
     "of.permission_request", "of.permission_denied", "of.permission_resolved",  # a dialog in a pane: answered there
     "of.mandate_check", "of.pulse", "of.capacity_snapshot", "of.artifact_read",
