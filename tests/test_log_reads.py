@@ -33,8 +33,13 @@ MERGE = ("the host move's store merge (B3, bin/of_merge_delta.py): offline, on t
 STUDIO = "of_studio's readers: its fold views (its steps 2 and 3, on the shared contract)"
 CAPACITY = "of_capacity's readers: cursor views like a021f2f, or small names by the index"
 GITHUB = "the GitHub import, a timer every 30 minutes: by organization and name (kind D)"
+PRIORS = ("the priors tally (bin/of_priors.py, docs/diagnose.md 5.2), an offline command run on demand: one rare "
+          "name, the owners' labels (30 on this organization's agent host on 2026-11-23), by the name index; "
+          "the latest label of each issue counts however old it is, so no time bound holds (of_field-analyst, "
+          "on organic-framework PR 581)")
 
 ALLOWED = {
+    ('of_priors.py', 'main', "of_model.load_events(conn, names=['of.issue_labelled'])"): PRIORS,
     ('of_merge_delta.py', 'org_scope', 'SELECT DISTINCT session_id, position FROM event WHERE sessio'): MERGE,
     ('of_merge_delta.py', 'merge', 'SELECT event_id, position, session_id, org, payload FROM eve'): MERGE,
     ('of', '_diff_answer', "SELECT payload FROM event WHERE name = 'of.agent_question_an"): FALLBACK,
