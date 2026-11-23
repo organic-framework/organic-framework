@@ -2087,7 +2087,7 @@ class SendHeaderAcrossServersTest(unittest.TestCase):
            {"name": "k8s_keeper", "_org": "beta", "holder": {"session": "S-B"}},
            {"name": "k8s_keeper", "_org": "zeta", "holder": {"session": "S-Z"}}]
 
-    def send(self, to, header_error=None):
+    def send(self, to, header_error=None, answer=None):
         import contextlib
         import io
         import types
@@ -2095,6 +2095,7 @@ class SendHeaderAcrossServersTest(unittest.TestCase):
         import of_events
         import of_ship
         calls = []
+        answer = answer or {}
 
         class Fake:
             def __init__(self, url):
@@ -2106,9 +2107,9 @@ class SendHeaderAcrossServersTest(unittest.TestCase):
 
             def send_message(self, *a, **k):
                 calls.append(("message", self.url))
-                return {"state": "delivered", "msg_id": "m-1", "authority": "verified"}
+                return dict({"state": "delivered", "msg_id": "m-1", "authority": "verified"}, **answer)
 
-            def sent_header(self, msg_id, to, sender):
+            def sent_header(self, msg_id, to, sender, reply_to=None, grant_id=None, grants=None):
                 if header_error:
                     raise header_error
                 calls.append(("header", self.url, msg_id, to, sender))
@@ -2157,6 +2158,13 @@ class SendHeaderAcrossServersTest(unittest.TestCase):
         rc, _, err = self.send("zeta:k8s_keeper", header_error=of_client.ServerError(404, "/v1/messages/sent"))
         self.assertEqual(rc, 0)
         self.assertIn("that server is older than headers", err)     # 2026-11-23: a server not yet updated
+        rc, _, err = self.send("zeta:k8s_keeper", header_error=of_client.ServerError(
+            404, '{"type": "unknown_org", "title": "organization acme is not served here", "status": 404}'))
+        self.assertIn("that server does not serve acme", err)       # of_secrets-review on PR 593
+
+    def test_the_header_names_the_receiver_as_its_server_stored_it(self):
+        rc, calls, _ = self.send("zeta:k8s_keeper", answer={"to": "zeta:k8s_owner"})   # an alias resolved there
+        self.assertIn(("header", "http://192.0.2.10:18200", "m-1", "zeta:k8s_owner", "acme:sec_keeper"), calls)
 
 
 class SendPresenceTest(unittest.TestCase):

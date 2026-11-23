@@ -569,10 +569,16 @@ class Client:
             body["grants"] = grants
         return self._authed("POST", "/v1/messages", body=body)[1]
 
-    def sent_header(self, msg_id, to, sender):
+    def sent_header(self, msg_id, to, sender, reply_to=None, grant_id=None, grants=None):
         """Keep the header of a message posted to another server on this one, the sender's organization's, so that a
-        reply to it is taken here (docs/server.md, `POST /v1/messages/sent`)."""
-        return self._authed("POST", "/v1/messages/sent", body={"msg_id": msg_id, "to": to, "from": sender})[1]
+        reply to it is taken here (docs/server.md, `POST /v1/messages/sent`). It carries the message's standing, its
+        grant or the message it answers, which this server checks again."""
+        body = {"msg_id": msg_id, "to": to, "from": sender, "reply_to": reply_to}
+        if grant_id:
+            body["grant_id"] = grant_id
+        if grants:
+            body["grants"] = grants
+        return self._authed("POST", "/v1/messages/sent", body=body)[1]
 
     def coord(self, org, after=0, wait=0):
         """The organization's coordination feed after `after` (docs/server-several-machines.md §4.2)."""

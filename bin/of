@@ -4612,13 +4612,20 @@ def cmd_send(args):
         try:
             hc = of_client.Client(home)
             present(hc, home)
-            hc.sent_header(r["msg_id"], to, sender)
+            hc.sent_header(r["msg_id"], r.get("to") or to, sender, args.reply_to, args.grant, grants)
         except Exception as e:  # noqa: BLE001
-            older = getattr(e, "status", None) == 404  # a server from before headers (of_capacity, 2026-11-23)
-            print(f"warning: the message was sent, but {from_org}'s server did not keep its header ("
-                  + ("that server is older than headers" if older else f"{type(e).__name__}: {str(e)[:200]}")
-                  + f"), so a reply from {to} to it goes through there only under a grant of its own",
-                  file=sys.stderr)
+            try:
+                typ = json.loads(getattr(e, "body", None) or "{}").get("type")
+            except (ValueError, AttributeError):
+                typ = None
+            if getattr(e, "status", None) == 404 and typ == "unknown_org":
+                why = f"that server does not serve {from_org}"
+            elif getattr(e, "status", None) == 404:  # a server from before headers (of_capacity, 2026-11-23)
+                why = "that server is older than headers"
+            else:
+                why = f"{type(e).__name__}: {str(e)[:200]}"
+            print(f"warning: the message was sent, but {from_org}'s server did not keep its header ({why}), so a "
+                  f"reply from {to} to it goes through there only under a grant of its own", file=sys.stderr)
     of_events.emit("agent_message_out", {"to": to, "to_position": to.split(":", 1)[1], "delivery": r.get("state"),
                                          "authority": r.get("authority"), "msg_id": r.get("msg_id"), "via": "relay",
                                          "chars": len(args.text)},
