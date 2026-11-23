@@ -1326,11 +1326,16 @@ def started_folder(transcript, ran_in, p=None):
 
 
 def spawn_folder(p):
-    """The folder `of spawn` starts position `p` in: its system's first repository under its organization's paths
-    (of_spawn.work_dir), from the registry and orgs.yaml; None when there is none."""
+    """The folder `of spawn` starts position `p` in: a folder of its own, <work_root>/<position>, when its organization
+    names a work_root (of_spawn.position_folder; hand-over 4c70deab, of_platform's message 01a2051a-dadb), else its
+    system's first repository under its organization's paths (of_spawn.work_dir), from the registry and orgs.yaml;
+    None when there is none."""
     try:
         import yaml
         import of_spawn
+        own = of_spawn.position_folder(p)
+        if own:
+            return own
         with open(of_events.config_path("orgs.yaml")) as fh:
             doc = yaml.safe_load(fh) or {}
         paths = next((list(o.get("paths") or []) for o in doc.get("orgs") or [] if o.get("name") == p.get("_org")), [])
@@ -1364,6 +1369,32 @@ def folder_orgs(path):
                 elif len(d) == depth:
                     out.add(name)
     return out
+
+
+def ready_position_folder(name, folder, org, log=print, dry_run=False):
+    """Before a session resumes in a position's own folder (of_spawn.in_position_folder), as of spawn does it: refuse
+    when a clone below is not ready (of_spawn.clone_ready: its .git/commondir a file holding '.'; the sandbox would
+    cover an absent name with a file git dies on). Called before anything irreversible, so a refusal leaves the session
+    running where it was; a dry run makes the same check (of_platform on 1fd3337c). The folder's CLAUDE.md is written
+    at the launch itself (launch_command), as of spawn and of resume-command write it at each start."""
+    import of_spawn
+    if not org or not of_spawn.in_position_folder(folder, org):
+        return None
+    unready = [c for c in of_spawn.position_clones(folder) if not of_spawn.clone_ready(c)]
+    if unready:
+        raise MoveError(f"{name}: {', '.join(unready)}: .git/commondir must be a file holding '.' before a session "
+                        f"starts above it; the owner's setup writes it")
+    log(f"  {folder}: a position's own folder; its CLAUDE.md is written at the launch")
+    return folder
+
+
+def _org_checkouts(org):
+    """ORG's checkouts in this machine's orgs.yaml (`path`, `paths`), as of resume-command reads them."""
+    try:
+        import of_resume
+        return of_resume._org_paths(org)
+    except Exception:  # noqa: BLE001  no names: prepare_folder copies no clone's instructions
+        return []
 
 
 def _not_another_orgs(name, cur, want, p):
@@ -2129,7 +2160,8 @@ def launch_prompt(note_path, resumed=False, model=None, restarted=False):
 
 
 def launch_command(cwd, target, sid, name, note_path, model=None, effort=None, bypass=True, resumed=False,
-                   memory_dir=None, prompt=None, deny=None, state_dir=None, tools=None, write=True, org=None):
+                   memory_dir=None, prompt=None, deny=None, state_dir=None, tools=None, write=True, org=None,
+                   position=None):
     """memory_dir: the position's own memory (RFC 0006), the same on every account; deny: its credential deny rules
     (deny_for), so a moved or resumed session keeps what of spawn gave it. Both go into one settings file, as of spawn
     writes it (of_spawn.settings_file): a fresh pane's shell takes at most 1,024 bytes a line, and the deny rules
@@ -2137,6 +2169,10 @@ def launch_command(cwd, target, sid, name, note_path, model=None, effort=None, b
     (tools_for; docs/tools.md §4): its --mcp-config and its allowedMcpServers / enabledPlugins, in the same file.
     org: the position's organization, whose work clone the Linux sandbox lets it write, as of spawn passes it (card
     OF-265, hand-over ab9ed07b; of_platform, message 01a204ac-af90).
+    In a position's own folder (of_spawn.in_position_folder), write=True also does what of spawn and of
+    resume-command do at each start: it refuses while a clone below is not ready, and writes the folder's CLAUDE.md as
+    a fresh copy of the AGENTS.md of each clone named for one of the organization's repositories (of_spawn.repo_names
+    of `position`; of_secrets-review on organic-framework PR 608, of_platform's message 01a207f5-c430).
     write=False: name the file and leave it as it is. A move, a resume and a restore build the line that way for
     their log and their dry run, and build it again with write=True right before record_launch, after the last step
     that can stop the launch. Until then the live session's file is the one its launch recorded, and a move that
@@ -2145,6 +2181,15 @@ def launch_command(cwd, target, sid, name, note_path, model=None, effort=None, b
     env = ["env", "-u", "CLAUDE_CONFIG_DIR"] if is_default(target) else [f"CLAUDE_CONFIG_DIR={_q(target)}"]
     parts = ["cd", _q(cwd), "&&", *env, "claude", "--resume", sid, "-n", name]
     import of_spawn
+    if write and org and of_spawn.in_position_folder(cwd, org):
+        unready = [c for c in of_spawn.position_clones(cwd) if not of_spawn.clone_ready(c)]
+        if unready:
+            raise MoveError(f"{name}: {', '.join(unready)}: .git/commondir must be a file holding '.' before a session "
+                            f"starts above it; the owner's setup writes it")
+        try:
+            of_spawn.prepare_folder(cwd, org, of_spawn.repo_names(position or {}, _org_checkouts(org)))
+        except Exception as e:  # noqa: BLE001 - its instructions would not load: no start there
+            raise MoveError(f"{name}: the CLAUDE.md of {cwd} was not written ({type(e).__name__}: {e})")
     t_argv, t_settings = tools or ([], {})
     # the agents' settings as at spawn: feedback drafts off (PR 185), env GIT_CEILING_DIRECTORIES (of_platform,
     # PR 216), a tool profile's env joined to it
@@ -3438,6 +3483,7 @@ def _move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, 
         raise MoveError(f"{name}: session {sid[:8]} has no start folder it did not choose: neither the registry nor its "
                         f"transcript names one outside the folders sessions write")
     run_cwd = resume_folder(name, started, src, target, cwd, log=log, p=p)
+    ready_position_folder(name, run_cwd, p.get("_org"), log, dry_run=dry_run)
     if run_cwd != s["cwd"]:
         why = ("your position's start folder" if run_cwd != started else "the folder this session started in: a "
                "session resumes there, never in a folder it moved to; enter your worktree again if you worked in one")
@@ -3574,7 +3620,7 @@ def _move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, 
     mem_dir = of_memory.directory(p) if on_own or load_policy().get("position_memory") else None
     prompt = launch_prompt(note_path, model=model if switch else None, restarted=restarted)
     launch = dict(model=model, effort=effort, bypass=bypass, memory_dir=mem_dir, prompt=prompt, deny=deny_for(p, log),
-                  tools=tools_for(p, sid, target, log), org=p.get("_org"))
+                  tools=tools_for(p, sid, target, log), org=p.get("_org"), position=p)
     cmd = launch_command(run_cwd, target, sid, name, note_path, write=False, **launch)  # written right before the start
     key = project_key(src, sid)
     mem_src, mem_dst = os.path.join(src, "projects", key, "memory"), os.path.join(target, "projects", key, "memory")
@@ -3828,6 +3874,7 @@ def resume(name, sid, target, pane, extra_note=None, log=print, of_bin=None, dry
     if not trusted_key(target, cwd):
         raise MoveError(f"{name}: folder {cwd} is not trusted in {short(target)}; the owner decides (of ask)",
                         untrusted=cwd)
+    ready_position_folder(name, cwd, (position or {}).get("_org"), log, dry_run=dry_run)
 
     def claude_fg():
         info = _herdr("pane", "process-info", "--pane", pane)["process_info"]
@@ -3847,7 +3894,8 @@ def resume(name, sid, target, pane, extra_note=None, log=print, of_bin=None, dry
     import of_memory
     mem_dir = of_memory.directory(position) if position and load_policy().get("position_memory") else None
     launch = dict(model=model, effort=effort, bypass=bypass, resumed=True, memory_dir=mem_dir,
-                  deny=deny_for(position, log), tools=tools_for(position, sid, target, log), org=org)
+                  deny=deny_for(position, log), tools=tools_for(position, sid, target, log), org=org,
+                  position=position)
     cmd = launch_command(cwd, target, sid, name, note_path, write=False, **launch)  # written right before the start
     log(f"{name}: resume session {sid} on {short(target)} ({account_of(target)}) in herdr pane {pane}")
     log(f"  context model {model}, effort {effort}, permission mode {'bypass' if bypass else 'default'}")
@@ -4367,6 +4415,7 @@ def _restore_one(e, p, plan, ts, log=print, dry_run=False, home=None, claimed=No
         raise MoveError(f"no working directory for session {sid[:8]}: {run_cwd} does not exist here")
     if run_cwd == cwd and not trusted_key(target, cwd):
         raise MoveError(f"folder {cwd} is not trusted in {short(target)}; the owner decides (of ask)", untrusted=cwd)
+    ready_position_folder(name, run_cwd, (p or {}).get("_org"), log, dry_run=dry_run)
     try:  # a start folder no account trusts: it resumes where it ran, and the note and the summary say so
         wanted = start_folder(name, cwd, p=p)
     except MoveError:
@@ -4396,7 +4445,7 @@ def _restore_one(e, p, plan, ts, log=print, dry_run=False, home=None, claimed=No
     prompt = (f"of_capacity carried this session to another machine. Read {note_path} and follow it." if carried else
               f"The Mac restarted, and of_capacity resumed this session. Read {note_path} and follow it.")
     launch = dict(model=model, effort=effort, bypass=bypass, resumed=True, memory_dir=mem, prompt=prompt,
-                  deny=deny_for(p, log), tools=tools_for(p, sid, target, log), org=(p or {}).get("_org"))
+                  deny=deny_for(p, log), tools=tools_for(p, sid, target, log), org=(p or {}).get("_org"), position=p)
     cmd = launch_command(run_cwd, target, sid, name, note_path, write=False, **launch)  # written right before the start
     if home:  # its own workspace; the tab it had there, if it was there (not on the desk)
         ws_label, tab_label = home[0], saved[1] if saved[0] == home[0] and saved[1] else home[1]
