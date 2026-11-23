@@ -193,12 +193,12 @@ class ScratchTest(unittest.TestCase):
         of_scratch.check(positions, agents, bind, mem, **args)
         notes = [t for p, t in typed if p == "p-keeper"]
         self.assertEqual(len(notes), 1)
-        self.assertIn("Your organization's worktrees inside its checkouts together hold 16.0 GiB", notes[0])
+        self.assertIn("Your organization's checkouts have worktrees that together hold 16.0 GiB", notes[0])
         self.assertIn("repo/.worktrees/repo-wt-c 3.0 GiB", notes[0])
         self.assertIn("repo/.claude/worktrees/wt-a 8.0 GiB", notes[0])
         self.assertNotIn("wt-u", notes[0])                                       # another organization's
         q = [e for e in self.events("of.agent_question") if e.get("source") == "disk_check"][0]["questions"][0]
-        self.assertIn("worktrees inside the checkouts 18.0 GiB", q["question"])
+        self.assertIn("the checkouts' worktrees 18.0 GiB", q["question"])
         u = self.events("of.disk_usage")[-1]
         self.assertEqual(sorted(w["bytes"] for w in u["worktrees"]), [2 * GiB, 16 * GiB])
         of_scratch.check(positions, agents, bind, mem, **dict(args, now=2))
@@ -208,6 +208,57 @@ class ScratchTest(unittest.TestCase):
         self.assertNotIn("t", mem["worktrees_told"])
         self.assertEqual(sorted(os.path.basename(w) for w in mem["worktrees"]), ["repo-wt-c", "wt-b", "wt-u"])
         self.assertEqual(of_scratch.home_label(os.path.expanduser("~/acme/repo")), "~/acme/repo")
+
+    def test_linked_worktrees_are_found_wherever_they_lie(self):
+        """2026-11-23, of_capacity: a user organization's sessions kept most of their worktrees beside the checkout
+        and in scratch folders, which the layouts inside the checkout did not see; the checkout's git names them."""
+        orgs = os.path.join(self.tmp.name, "orgs")
+        repo = os.path.join(orgs, "t-code")
+        admin_root = os.path.join(repo, ".git", "worktrees")
+
+        def linked(name, folder, relative=False, back=True):
+            admin = os.path.join(admin_root, name)
+            os.makedirs(admin)
+            os.makedirs(folder, exist_ok=True)
+            dot_git = os.path.join(folder, ".git")
+            with open(os.path.join(admin, "gitdir"), "w") as fh:
+                fh.write((os.path.relpath(dot_git, admin) if relative else dot_git) + "\n")
+            if back:
+                with open(dot_git, "w") as fh:
+                    fh.write("gitdir: " + (os.path.relpath(admin, folder) if relative else admin) + "\n")
+
+        linked("beside", os.path.join(orgs, "t-code-wt-beside"))                     # <repo>-wt-*
+        linked("rel", os.path.join(orgs, "worktrees", "wt-rel"), relative=True)      # git's relative form
+        linked("dead", os.path.join(self.base, "-Users-x-repo", "S-gone", "wt-dead"))  # an ended session's
+        linked("live", os.path.join(self.base, "-Users-x-repo", "S-big", "wt-live"))   # counted in S-big's folder
+        linked("stale", os.path.join(orgs, "elsewhere"), back=False)                 # names nothing back
+        linked("home", os.path.expanduser("~"), back=False)
+        os.makedirs(os.path.join(admin_root, "planted"))
+        with open(os.path.join(admin_root, "planted", "gitdir"), "w") as fh:
+            fh.write(os.path.join(orgs, ".git") + "\n")                                 # the folder above the checkout
+        os.makedirs(os.path.join(repo, ".claude", "worktrees", "wt-in"))
+        linked("in", os.path.join(repo, ".claude", "worktrees", "wt-in"))             # both ways: once
+        self.sizes.update({"t-code-wt-beside": 7 * GiB, "wt-rel": 2 * GiB, "wt-dead": 4 * GiB, "wt-in": GiB,
+                           "S-k": 0})
+        org_paths = {"t": [repo]}
+        found = {os.path.basename(w): rel for _, _, w, rel in of_scratch.worktree_dirs(org_paths)}
+        self.assertEqual(sorted(found), ["t-code-wt-beside", "wt-dead", "wt-in", "wt-live", "wt-rel"])
+        self.assertEqual(found["wt-in"], os.path.join(".claude", "worktrees", "wt-in"))
+        self.assertTrue(found["t-code-wt-beside"].endswith(os.path.join("orgs", "t-code-wt-beside")))
+        positions = POS + [{"name": "keeper", "_org": "t"}]
+        os.makedirs(os.path.join(self.base, "-Users-x-repo", "S-k"))
+        agents = [agent("big", "S-big", "busy"), agent("keeper", "S-k")]
+        typed, mem = [], {}
+        of_scratch.check(positions, agents, bind, mem, now=1, free=60 * GiB, size=self.size, base=self.base,
+                         log=lambda m: None, swap=lambda: None, store=lambda: None, org_paths=org_paths,
+                         keeper=lambda ps, org: "keeper", prompt=lambda pane, text, who: typed.append((pane, text)))
+        self.assertEqual(sorted(os.path.basename(w) for w in mem["worktrees"]),
+                         ["t-code-wt-beside", "wt-dead", "wt-in", "wt-rel"])          # wt-live: in S-big's folder
+        notes = [t for p, t in typed if p == "p-keeper"]
+        self.assertEqual(len(notes), 1)
+        self.assertIn("checkouts have worktrees that together hold 14.0 GiB", notes[0])
+        self.assertIn("t-code-wt-beside 7.0 GiB", notes[0])
+        self.assertIn("t-code/.claude/worktrees/wt-in 1.0 GiB", notes[0])
 
     def test_a_project_is_named_without_the_home_folder(self):
         from unittest import mock
