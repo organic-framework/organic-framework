@@ -192,6 +192,16 @@ class OrgPathActByPosition(unittest.TestCase):
                       ["org", "set", "ofb", "--", "path", "/r"], ["org", "set", "ofb", "path", "--", "/r"]):
             self.assertTrue(of_guard._org_path_act(words), words)     # a double dash is no positional (of_review)
         self.assertFalse(of_guard._org_path_act(["org", "set", "--", "path", "hold", "on"]))
+        # of org folder, the owner's act that makes a position's folder and clones into it (of_platform, PR 608)
+        self.assertTrue(of_guard._org_path_act(["org", "folder", "ofb", "of_bench", "--clone", "https://h/r"]))
+        self.assertTrue(of_guard._org_path_act(["org", "--", "folder", "ofb", "of_bench"]))
+        self.assertFalse(of_guard._org_path_act(["org", "show", "folder"]))           # an organization named folder
+        # options before the action, whole or abbreviated as argparse takes them, never hide it
+        for words in (["org", "--clone", "x", "set", "ofb", "path", "/r"], ["org", "--cl", "x", "folder", "ofb", "p"],
+                      ["org", "--clone=x", "set", "ofb", "work_root", "/w"],
+                      ["org", "--c=x", "set", "ofb", "work_clone", "/r"]):
+            self.assertTrue(of_guard._org_path_act(words), words)
+        self.assertFalse(of_guard._org_path_act(["org", "--clone", "x", "set", "ofb", "hold", "on"]))
 
 
 class ServerRouteAct(unittest.TestCase):
