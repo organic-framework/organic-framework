@@ -274,13 +274,33 @@ def _env_file(q):
     return False
 
 
+# The default kubeconfig warns first (G1.15): it holds the clusters' credentials, and kubectl and helm read it as
+# themselves, but agents' cat, grep and cp of it print or copy them. A 21-day replay (2026-11-23) found 12 new denies of
+# 3,003 calls naming .kube or KUBECONFIG, live flows among them (KUBECONFIG= for kubectl, test -e, copies). It denies
+# once those have moved, and once kubectl's and helm's own --kubeconfig and KUBECONFIG are told apart from a read.
+KUBE_CONFIG_MODE = "warn"
+_KUBE_CONFIG = re.compile(r"(?:^|/)\.kube/config$")
+KUBE_CONFIG_NOTE = ("~/.kube/config holds the clusters' credentials: let kubectl read it (kubectl config view redacts "
+                    "them), never print or copy the file; it will be a secret path once these flows have moved "
+                    "(docs/guard.md G1.15)")
+
+
+def _kube_config(q):
+    if not _KUBE_CONFIG.search(q):
+        return False
+    if KUBE_CONFIG_MODE == "deny":
+        return True
+    _WARNINGS.append(("a command that reads the default kubeconfig (.kube/config)", q, KUBE_CONFIG_NOTE))
+    return False
+
+
 def _secret_path(p):
     if not p:
         return False
     q = p.strip().strip("'\"")
     n = os.path.normpath(q) if q and q != os.path.normpath(q) else None  # `~/.aws//sso`, `sso/../sso` (PR 178)
     return (of_classify.secret_path(p) or bool(_EXTRA_SECRET.search(q)) or _org_config_secret(q)
-            or _env_file(q) or (n is not None and _secret_path(n)))
+            or _env_file(q) or _kube_config(q) or (n is not None and _secret_path(n)))
 
 
 def _in_folder(here, fn, *a):
