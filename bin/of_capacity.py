@@ -2593,14 +2593,25 @@ def git_top(cwd):
     return None
 
 
-def _plain_file(path):
-    """A regular file reached through no link: the folder above it is its real path and the file itself no link."""
+def _read_plain(path, size=4096):
+    """The text of a regular file reached through no link, or None: the folder above it is its real path, and the
+    file is opened without following a link and without waiting (a name swapped for a pipe between a check and the
+    open would hold a move or a spawn; of_server on PR 573, as of_context's readers open), then checked by fstat."""
     import stat
     try:
-        return (os.path.realpath(os.path.dirname(path)) == os.path.dirname(path)
-                and stat.S_ISREG(os.lstat(path).st_mode))
+        if os.path.realpath(os.path.dirname(path)) != os.path.dirname(path):
+            return None
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     except OSError:
-        return False
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        return os.read(fd, size).decode()
+    except (OSError, UnicodeDecodeError):
+        return None
+    finally:
+        os.close(fd)
 
 
 def worktree_main(top):
@@ -2613,29 +2624,26 @@ def worktree_main(top):
     try:
         top = os.path.realpath(top)
         dotgit = os.path.join(top, ".git")
-        if not _plain_file(dotgit):
-            return None
-        with open(dotgit) as fh:
-            first = fh.read(4096).strip()
+        first = (_read_plain(dotgit) or "").strip()
         if not first.startswith("gitdir:"):
             return None
         admin = os.path.normpath(os.path.join(top, first[7:].strip()))
-        if os.path.realpath(admin) != admin or not _plain_file(os.path.join(admin, "commondir")) \
-                or not _plain_file(os.path.join(admin, "gitdir")):
+        if os.path.realpath(admin) != admin:
             return None
-        with open(os.path.join(admin, "commondir")) as fh:
-            common = os.path.normpath(os.path.join(admin, fh.read(4096).strip()))
+        common, back = _read_plain(os.path.join(admin, "commondir")), _read_plain(os.path.join(admin, "gitdir"))
+        if common is None or back is None:
+            return None
+        common = os.path.normpath(os.path.join(admin, common.strip()))
         if os.path.realpath(common) != common or os.path.dirname(admin) != os.path.join(common, "worktrees"):
             return None
-        with open(os.path.join(admin, "gitdir")) as fh:
-            back = os.path.normpath(os.path.join(admin, fh.read(4096).strip()))
+        back = os.path.normpath(os.path.join(admin, back.strip()))
         if back != dotgit or os.path.basename(common) != ".git":
             return None
         main, home = os.path.dirname(common), os.path.realpath(os.path.expanduser("~"))
         if main == home or home.startswith(main.rstrip(os.sep) + os.sep) or main == top:
             return None
         return main
-    except (OSError, ValueError, UnicodeDecodeError):
+    except (OSError, ValueError):
         return None
 
 
