@@ -5896,9 +5896,22 @@ def _diff_answer(conn, ask_id):
     yes = re.compile(r"^\s*(?:" + "|".join(re.escape(w) for w in words) + r")(?!\w)", re.I)
     # a trust decision reads the log, never a view: any process of this user may write a view's rows without an event,
     # and a row made or edited there would approve a diff (of_server on PR 154). One name, by the event_name_ts index.
+    # Once the organization's server accepts decisions, the one answer it accepted for the card's newest answered
+    # version decides, the same on every machine; plain answers recorded after the cutover decide nothing (event store
+    # step 1, 04-design.md §2: this read took the last answer while a card took the first)
+    import of_decisions
+    won = of_decisions.newest_accepted(conn, ask_id)
+    if won is not None:
+        if won.get("by") == "owner" and won.get("via") == "asks-ui":
+            return bool(yes.match(str(won.get("answer") or "")))
+        return None
+    since = of_decisions.cutover_of_ask(conn, ask_id)
     last = None
-    for (pl,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered' ORDER BY ts, rowid"):
+    for ts, pl in conn.execute("SELECT ts, payload FROM event WHERE name = 'of.agent_question_answered' "
+                               "ORDER BY ts, rowid"):
         p = json.loads(pl or "{}")
+        if since and (ts or "") >= since and p.get("via") != "reconcile" and not p.get("decision"):
+            continue
         if ask_id in (p.get("ask_ids") or [p.get("ask_id")]) and p.get("by") == "owner" and p.get("via") == "asks-ui":
             last = bool(yes.match(str(p.get("answer") or "")))
     return last
