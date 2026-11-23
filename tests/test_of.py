@@ -2150,8 +2150,13 @@ class SendHeaderAcrossServersTest(unittest.TestCase):
         rc, calls, err = self.send("zeta:k8s_keeper", header_error=OSError("refused"))
         self.assertEqual(rc, 0)
         self.assertIn(("message", "http://192.0.2.20:18200/"), calls)
-        self.assertIn("a reply from zeta:k8s_keeper to it will be refused there", err)
-        self.assertIn("the message itself was sent", err)
+        self.assertIn("the message was sent", err)
+        self.assertIn("OSError: refused", err)
+        self.assertIn("a reply from zeta:k8s_keeper to it goes through there only under a grant of its own", err)
+        import of_client
+        rc, _, err = self.send("zeta:k8s_keeper", header_error=of_client.ServerError(404, "/v1/messages/sent"))
+        self.assertEqual(rc, 0)
+        self.assertIn("that server is older than headers", err)     # 2026-11-23: a server not yet updated
 
 
 class SendPresenceTest(unittest.TestCase):
