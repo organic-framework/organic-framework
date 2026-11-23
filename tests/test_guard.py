@@ -1060,7 +1060,17 @@ class ParserSlipTest(unittest.TestCase):
         with mock.patch.object(of_guard, "_bash_deny", side_effect=ValueError("No closing quotation")):
             self.assertIsNone(of_guard.critical_deny("Bash", {"command": 'echo "one line'}, "/tmp"))
             got = of_guard.critical_deny("Bash", {"command": 'echo x > ~/.config/of/orgs.yaml\necho "'}, "/tmp")
-            self.assertTrue(got and "could not read whole" in got[0], got)       # the text match still names it
+            self.assertTrue(got and "quote never closes" in got[0], got)          # named as the quote it is
+
+    def test_an_unclosed_quote_over_several_lines_is_named(self):
+        """A user organization's structure keeper, message 01a2096b-dc11: an apostrophe inside a single-quoted
+        python3 -c body closed it, the rest never balanced, and the deny said only ValueError. bash -n refuses such a
+        text too, after the lines before it."""
+        cmd = ("printf '%s\\n' x | python3 -c '\nimport sys\n"
+               "print(\"it's plain\")\n' > /tmp/out.txt\necho done\n")
+        got = of_guard.critical_deny("Bash", {"command": cmd}, "/tmp")
+        self.assertTrue(got and "quote never closes" in got[0] and "apostrophe" in got[0], got)
+        self.assertNotIn("ValueError", got[0])
 
     def test_a_bench_value_that_is_no_path_is_unreadable(self):
         """of_review on PR 575: a value that raised in the Bench reader dropped the shell's write rules for that call;

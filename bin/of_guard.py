@@ -6486,6 +6486,13 @@ def escape_deny(cmd):
 
 UNREAD_COMMAND = ("a command the guard could not read whole ({kind}), so it cannot tell what the command writes; "
                   "write it more simply, one command at a time, and report it to of_server if it is plain")
+# a quote that never closes, over several lines: bash too stops at it, after running every line before it, so the
+# reason says where to look (a user organization's structure keeper, message 01a2096b-dc11: an apostrophe inside a
+# single-quoted python3 -c body)
+UNCLOSED_QUOTE = ("a command whose quote never closes, so the guard cannot tell what it writes, and bash would stop "
+                  "there too, after running the lines before it: an apostrophe inside a single-quoted text ends that "
+                  "text (write it as '\\'' or put the text in a file first); write it more simply, one command at "
+                  "a time")
 
 
 def critical_deny(tool, tool_input, cwd=None):
@@ -6516,7 +6523,8 @@ def critical_deny(tool, tool_input, cwd=None):
             # form here
             if not hit and not (isinstance(e, ValueError) and str(e) == "No closing quotation"
                                 and "\n" not in cmd and "\r" not in cmd):
-                hit = (UNREAD_COMMAND.format(kind=type(e).__name__),)
+                hit = ((UNCLOSED_QUOTE,) if isinstance(e, ValueError) and str(e) == "No closing quotation"
+                       else (UNREAD_COMMAND.format(kind=type(e).__name__),))
         if not hit:
             hit = targets_deny(cmd, cwd)  # G26, G27
         if not hit:
