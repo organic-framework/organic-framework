@@ -2227,6 +2227,32 @@ class Resume(unittest.TestCase):
             with self.assertRaisesRegex(of_capacity.MoveError, "start folder it did not choose"):
                 self.resume()
 
+    def test_a_move_and_a_restore_refuse_with_no_start_folder_the_session_did_not_choose(self):
+        """of_server, message 01a207bd-2c40: the resume's refusal was tested, the move's and the restore's not. With
+        the transcript's only start folder inside a folder sessions write, both refuse before anything is done."""
+        from unittest import mock
+        writes = mock.patch("of_spawn.sandbox_write_folders", lambda: [os.path.realpath(self.home.name)])
+        live = {"session": "s1", "cwd": self.cwd, "pid": 9, "status": "idle"}
+        target = os.path.join(self.home.name, ".claude-b")
+        os.makedirs(target)
+        shutil.copy2(os.path.join(self.cfg, ".claude.json"), target)
+        with writes, mock.patch.multiple(of_capacity, live_sessions=lambda d: [live] if d == self.cfg else [],
+                                         _continuation=lambda _: {}, missing_signins=lambda *_: []):
+            with self.assertRaisesRegex(of_capacity.MoveError, "start folder it did not choose"):
+                of_capacity.move({"name": "runners_keeper", "holder": {"session": "s1"}}, target,
+                                 assume_empty_input=True, log=lambda *_: None)
+        e = {"name": "runners_keeper", "position": "runners_keeper", "session": "s1", "config_dir": self.cfg,
+             "cwd": self.cwd, "model": "claude-opus-5-5"}
+        with writes, mock.patch.multiple(of_capacity, _herdr=mock.Mock(return_value={
+                "panes": [], "workspaces": [], "tabs": [], "pane_id": "w6:p18"}),
+                load_policy=lambda: {}, deny_for=lambda *_: None, tools_for=lambda *_: None,
+                rename_agent=mock.Mock(), start_session=mock.Mock(return_value={"pid": 9, "session": "s1"})):
+            with self.assertRaisesRegex(of_capacity.MoveError, "start folder it did not choose"):
+                of_capacity._restore_one(dict(e), {"name": "runners_keeper", "_org": "team"},
+                                         {"kind": "carry", "prepared_at": "2026-11-23T01:00:00Z", "home": "/Users/alex"},
+                                         "2026-11-23T01:02:00Z", log=lambda *_: None)
+        self.assertFalse(any(c[:2] == ("pane", "run") for c in self.calls))     # nothing was started
+
     def test_a_resume_starts_at_the_effort_the_session_last_ran_at(self):
         """A closed session has no process to read its effort from: its last recorded start gives it, and the
         account's setting only when none is recorded (2026-11-23: one would have resumed at xhigh, not its high)."""
