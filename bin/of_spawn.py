@@ -346,10 +346,11 @@ def _server_keys(path=None):
 
 
 # the files and folders Claude Code runs or reads as configuration outside the sandbox, in any folder: settings (and the
-# hooks in them), hook scripts, skills, agents, commands, workflows and MCP servers
+# hooks in them), hook scripts, skills, agents, commands, workflows and MCP servers; and OF's own rules files, which the
+# exclude line hides from git, never an organization's own rules beside them (of_review on PR 601)
 PROTECTED_EDITS = ("**/.claude/settings.json", "**/.claude/settings.local.json", "**/.claude/hooks/**",
                    "**/.claude/skills/**", "**/.claude/agents/**", "**/.claude/commands/**", "**/.claude/workflows/**",
-                   "**/.mcp.json", "**/.claude/rules/**")
+                   "**/.mcp.json", "**/.claude/rules/of-*.md")
 
 
 def _is_checkout(d):
@@ -403,6 +404,16 @@ def sandbox_write_folders(orgs_file=None):
     except Exception:  # noqa: BLE001  no orgs.yaml or a broken one: the fixed folders still count
         pass
     return sorted({os.path.realpath(x) for x in out})
+
+
+def rules_files(folder):
+    """OF's rules files (`of-*.md`) in FOLDER's `.claude/rules`, as regular files reached through no link."""
+    d = os.path.join(os.path.realpath(folder), ".claude", "rules")
+    if os.path.islink(os.path.join(os.path.realpath(folder), ".claude")) or os.path.islink(d) or not os.path.isdir(d):
+        return []
+    return sorted(os.path.join(d, n) for n in os.listdir(d)
+                  if n.startswith("of-") and n.endswith(".md") and os.path.isfile(os.path.join(d, n))
+                  and not os.path.islink(os.path.join(d, n)))
 
 
 def sandbox_settings(deny=None, platform=None, scratch=None, org=None):
@@ -465,9 +476,11 @@ def sandbox_settings(deny=None, platform=None, scratch=None, org=None):
         [os.path.join(c, x) for c in writable for x in CLONE_CONTROL]
     cwd = (scratch or (None, None))[0]
     if cwd:
-        # the rules a session there loads are OF's to write: a file a session leaves there would load as rules in
-        # every session of that folder, hidden from git by the exclude line (of_server, 2026-11-22, on the rules writer's first fix)
-        guarded.append(os.path.join(os.path.realpath(cwd), ".claude", "rules"))
+        # OF's rules files there are OF's to write: one a session changed would load as rules in every session of that
+        # folder, hidden from git by the exclude line. Only those: an organization's own rules beside them stay its
+        # sessions' to edit (of_review on PR 601). The ones there at the start; a sandbox cannot deny a name by a
+        # pattern, so a new file under OF's name lasts until write_rules removes it at its next pass.
+        guarded += rules_files(cwd)
     return {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
             "autoAllowBashIfSandboxed": True,
             "filesystem": {"denyRead": denied,
