@@ -3171,9 +3171,53 @@ def hold_after_move(session, now=None):
         pass
 
 
-def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, registry_file=None, place=None,
-         extra_note=None, in_place=False, assume_empty_input=False, model=None, why=None, allow_unsigned=False,
-         ask=None, restart=False, positions=None, cwd=None):
+MIN_PANE_ROWS = 12  # fewer, and Claude Code's limit dialog or its input box does not fit on the pane's screen
+
+
+def _give_room(pane, log=print):
+    """Zoom herdr pane `pane` when it has fewer than MIN_PANE_ROWS rows, so a move can read its dialogs and its input
+    box; return the undo, which turns the zoom off, or gives it back to the pane its tab had zoomed. 2026-11-23: on the
+    agent host nine panes shared one tab, halved split by split, and of_tools, two rows high, stood on its limit while
+    its rescue failed run after run with "no input box visible"."""
+    try:
+        got = _herdr("pane", "get", pane)
+        rows = (((got.get("pane") or got).get("scroll") or {}).get("viewport_rows")) if isinstance(got, dict) else None
+        if rows is None or rows >= MIN_PANE_ROWS:
+            return lambda: None
+        lay = _herdr("pane", "layout", "--pane", pane)
+        lay = (lay.get("layout") or lay) if isinstance(lay, dict) else {}
+        before = lay.get("focused_pane_id") if lay.get("zoomed") else None
+        _herdr("pane", "zoom", pane, "--on")
+        time.sleep(1)
+        log(f"  {pane} shows {rows} rows: zoomed for the move")
+    except Exception as e:  # noqa: BLE001  the move reads the pane as it is, and says so if it cannot
+        log(f"  {pane}: not zoomed ({e})")
+        return lambda: None
+
+    def undo():
+        try:
+            if before and before != pane:
+                _herdr("pane", "zoom", before, "--on")
+            elif not before:
+                _herdr("pane", "zoom", pane, "--off")
+        except Exception as e:  # noqa: BLE001
+            log(f"  {pane}: zoom not turned back ({e})")
+    return undo
+
+
+def move(*args, **kwargs):
+    """_move, with any pane it zoomed to read (_give_room) given back however the move ends."""
+    room = []
+    try:
+        return _move(*args, _room=room, **kwargs)
+    finally:
+        for undo in room:
+            undo()
+
+
+def _move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, registry_file=None, place=None,
+          extra_note=None, in_place=False, assume_empty_input=False, model=None, why=None, allow_unsigned=False,
+          ask=None, restart=False, positions=None, cwd=None, _room=None):
     """Move one position's live session to the config dir `target`. Raises MoveError before anything
     irreversible when a precondition fails; the old session then keeps running untouched.
     The session may run in a herdr pane (it resumes in the same pane) or in a Zellij pane (it resumes
@@ -3239,6 +3283,8 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
         if src == target and not switch and not restart:
             raise MoveError(f"{name}: already on {short(target)} in herdr pane {pane}"
                             + (f", on {ctx_model}" if model else ""))
+        if not dry_run and _room is not None:  # a pane too small to show the dialogs is zoomed for the move
+            _room.append(_give_room(pane, log))
         lines = _pane_lines(pane)
         if a.get("agent_status") not in ("idle", "done") and not limit_cursor(lines) and _exit_dialog(lines) is None:
             # a session stopped on its account's limit is "blocked" in herdr: that is the case a move is for
