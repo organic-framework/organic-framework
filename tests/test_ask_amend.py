@@ -196,8 +196,15 @@ class AnswerTest(Store):
                 "kind": "question (declared)", **({"version": version} if version else {})}
 
     def answers(self):
-        return [json.loads(p) for (p,) in self.conn.execute(
-            "SELECT payload FROM event WHERE name = 'of.agent_question_answered'")]
+        """The recorded answers: today's, and the accepted decisions (event store step 1) with their stream's version."""
+        out = []
+        for n, p in self.conn.execute("SELECT name, payload FROM event WHERE name IN ('of.agent_question_answered', "
+                                      "'of.decision_accepted') ORDER BY rowid"):
+            p = json.loads(p)
+            if n == "of.decision_accepted":
+                p = dict(p, version=int(p["stream"].rsplit("@v", 1)[1]))
+            out.append(p)
+        return out
 
     def test_the_card_is_the_newest_version_marked_amended(self):
         aid = self.ask()

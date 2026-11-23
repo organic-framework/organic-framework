@@ -86,9 +86,11 @@ class AnswerTest(ChatTest):
         self.assertIn("quotes option 2", out[0])
         state = {x["event_id"]: x for x in self.asks()}[a]
         self.assertEqual(state["state"], "answered")
-        pl = json.loads(self.conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered'")
+        # the accepted decision carries the proof that the person answered (event store step 1)
+        pl = json.loads(self.conn.execute("SELECT payload FROM event WHERE name = 'of.decision_accepted'")
                         .fetchone()[0])
-        self.assertEqual((pl["via"], pl["by"], pl["prompt"], pl["conductor"]), ("conductor", "owner", p, "of_conductor"))
+        self.assertEqual((pl["via"], pl["by"], pl["prompt"], pl["conductor"], pl["relayed_by"], pl["option"]),
+                         ("conductor", "owner", p, "of_conductor", "of_conductor", 2))
         self.assertEqual(self.typed[0][0], "pane-of_a")
         self.assertTrue(self.typed[0][1].startswith(of_asks_answer.frame(a, "run it today (recommended: the window is open)")))
         self.assertIn("in these words: «ok, run it today»", self.typed[0][1])
