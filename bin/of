@@ -3770,7 +3770,14 @@ def cmd_server(args):
         pub = open(os.path.expanduser(args.pubkey)).read() if args.pubkey else of_client.ensure_key()
         store = of_server.Store(of_server.load_config()["state_dir"])
         with store.conn() as c:  # the tenant's machine stays the tenant's unless --no-tenant says otherwise
-            row = c.execute("SELECT tenant FROM machines WHERE machine_id = ? AND revoked_at IS NULL", (mid,)).fetchone()
+            row = c.execute("SELECT tenant, pubkey FROM machines WHERE machine_id = ? AND revoked_at IS NULL",
+                            (mid,)).fetchone()
+        if row and (row[1] or "").split()[:2] != pub.split()[:2] and not args.replace_key:
+            # a new key for an enrolled machine is a new identity: never by a re-enrolment that meant something else
+            # (2026-11-23: a lab test re-keyed this machine on its live server; the invite path refuses it too, 409)
+            print(f"{mid} is enrolled on {store.dir} with another key: revoke it first, or pass --replace-key",
+                  file=sys.stderr)
+            return 1
         if row and row[0] and not args.tenant and not getattr(args, "no_tenant", False):
             print(f"{mid} is the tenant's machine and stays it (pass --no-tenant to make it a plain machine)")
             args.tenant = True  # of_lab's walkthrough, 2026-11-19: enroll-machine had made it a plain machine silently
@@ -8840,6 +8847,8 @@ def main(argv=None):
     sv.add_argument("--raw-org", action="append", help="an organization whose raw tier the person consented to")
     sv.add_argument("--tenant", action="store_true", help="the tenant's own machine: all organizations, raw included")
     sv.add_argument("--no-tenant", action="store_true", help="enroll-machine: make the tenant's machine a plain one")
+    sv.add_argument("--replace-key", action="store_true",
+                    help="enroll-machine: give an enrolled machine a new public key (refused without it)")
     sv.set_defaults(fn=cmd_server)
     sh = sub.add_parser("ship", help="send new local rows to the central ClickHouse")
     sh.set_defaults(fn=lambda a: __import__("of_ship").ship())

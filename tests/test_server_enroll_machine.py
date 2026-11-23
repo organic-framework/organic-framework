@@ -50,6 +50,43 @@ class EnrollMachineTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.tenant(), 0)
 
+    def key(self, store=None):
+        with (store or self.store).conn() as c:
+            row = c.execute("SELECT pubkey FROM machines WHERE machine_id = 'm1'").fetchone()
+        return row and row[0]
+
+    def test_a_new_key_for_an_enrolled_machine_needs_replace_key(self):
+        # 2026-11-23: a lab test's re-enrolment with a scratch key took this machine's place on its live server
+        with open(self.pub, "w") as fh:
+            fh.write("ssh-ed25519 AAAAother m1\n")
+        r = self.of("--org", "acme")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("another key", r.stderr)
+        self.assertEqual(self.key(), "ssh-ed25519 AAAAexample m1")
+        r = self.of("--org", "acme", "--replace-key")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.key(), "ssh-ed25519 AAAAother m1")
+
+    def test_the_same_key_with_another_comment_is_no_new_key(self):
+        with open(self.pub, "w") as fh:
+            fh.write("ssh-ed25519 AAAAexample renamed\n")
+        r = self.of("--org", "acme")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_of_server_config_names_the_server_it_writes(self):
+        other = os.path.join(self.tmp.name, "scratch-server")
+        cfg = os.path.join(self.tmp.name, "scratch.yaml")
+        with open(cfg, "w") as fh:
+            fh.write(f"state_dir: {other}\n")
+        with open(self.pub, "w") as fh:
+            fh.write("ssh-ed25519 AAAAscratch m1\n")
+        r = subprocess.run([sys.executable, OF, "server", "enroll-machine", "--machine-id", "m1", "--pubkey", self.pub,
+                            "--org", "lab"], env=dict(self.env, OF_SERVER_CONFIG=cfg), capture_output=True, text=True,
+                           timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.key(of_server.Store(other)), "ssh-ed25519 AAAAscratch m1")
+        self.assertEqual(self.key(), "ssh-ed25519 AAAAexample m1")  # the server of ~/.config/of is left as it was
+
 
 if __name__ == "__main__":
     unittest.main()
