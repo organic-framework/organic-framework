@@ -294,12 +294,37 @@ def plugin_path(config_dir, plugin_id):
     return None
 
 
+def _run_hook(command, cwd, env, timeout):
+    """A hook's stdout, or None when it could not run or passed `timeout`: then its whole process group, the shell
+    and every child it left, is killed."""
+    import signal
+    try:
+        proc = subprocess.Popen(["sh", "-c", command], cwd=cwd, env=env, stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+    except OSError:
+        return None
+    try:
+        out, _ = proc.communicate(json.dumps({"hook_event_name": "SessionStart", "source": "startup"}),
+                                  timeout=timeout)
+        return out or ""
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        proc.communicate()
+        return None
+
+
 def start_text_size(config_dir, plugin_id, timeout=10):
     """Bytes of the text a plugin's SessionStart hooks add to every session's context, measured by running them as
     Claude Code does at a start (their JSON's hookSpecificOutput.additionalContext, else their whole output), or
     None when the plugin is not installed there or has no such hook. A session re-reads that text on every call, so
     its size is a cost of_capacity weighs (of_architect, msg 01a20606-072f). It runs the plugin's own hook code, the
-    same that runs at each of its sessions' starts, with a minimal environment and no input beyond the event."""
+    same that runs at each of its sessions' starts, with a minimal environment and no input beyond the event, and so
+    with whatever side effects that code has (files it writes, programs it starts). ${CLAUDE_PLUGIN_ROOT} is left for
+    sh to expand from the environment, as Claude Code passes it, never pasted into the command; a hook past its
+    timeout is killed with every process it started (of_secrets-review, PR 584)."""
     root = plugin_path(config_dir, plugin_id)
     if not root:
         return None
@@ -318,14 +343,9 @@ def start_text_size(config_dir, plugin_id, timeout=10):
             if h.get("type") != "command" or not h.get("command"):
                 continue
             ran = True
-            try:
-                r = subprocess.run(["sh", "-c", h["command"].replace("${CLAUDE_PLUGIN_ROOT}", shlex.quote(root))],
-                                   cwd=root, env=env, input=json.dumps({"hook_event_name": "SessionStart",
-                                                                         "source": "startup"}),
-                                   capture_output=True, text=True, timeout=timeout)
-            except (OSError, subprocess.TimeoutExpired):
+            out = _run_hook(h["command"], root, env, timeout)
+            if out is None:
                 continue
-            out = r.stdout or ""
             try:
                 doc = json.loads(out)
                 ctx = ((doc.get("hookSpecificOutput") or {}).get("additionalContext")
