@@ -409,8 +409,7 @@ def _ship_now():
     except Exception:  # noqa: BLE001 - the listener drains the spool too
         pass
     try:  # the proposals not yet settled, this answer's and any left before (event store step 1; of_platform)
-        import of_decisions
-        of_decisions.send_pending(log=lambda m: None)
+        send_in_background()
     except Exception:  # noqa: BLE001 - the next child or the pulse sends them
         pass
     with open(os.open(os.path.join(of_events.STATE_DIR, "ship.lock"), os.O_WRONLY | os.O_CREAT, 0o600), "w") as lock:
@@ -427,6 +426,43 @@ def _ship_now():
 DELIVERABLE = ("accepted", "off")
 ONE_TRY_S = 5  # a send from a screen's thread, the chat or a command: one try; the background child retries
 # (of_server on PR 613: without a timeout the client retries for up to 30 s while the server is down)
+
+
+def send(conn=None, only=None, log=None):
+    """Send pending proposals (ONLY: these) with one ONE_TRY_S try each, and give up on a server for the rest of this
+    pass at its first try that brings no answer: a server that takes connections and answers none costs one try a
+    pass, never one per pending answer (of_review on PR 615: 56 owner answers filled the pulse's 280 s). What it skips
+    stays pending for the next pass. Returns of_decisions.send_pending's result."""
+    import of_decisions
+    away = set()
+
+    def post(url, body):
+        if url in away:
+            raise ConnectionError(f"{url} gave no answer earlier in this pass")
+        try:
+            status, out = of_decisions._default_post(url, body, ONE_TRY_S)
+        except Exception:
+            away.add(url)
+            raise
+        if status == 0 or status >= 500:  # no answer that settles anything: unreachable, moving, failing
+            away.add(url)
+        return status, out
+    return of_decisions.send_pending(conn, post=post, only=only, log=log or (lambda m: None))
+
+
+def send_in_background():
+    """The background child's send (ship_soon): one child sends at a time, and one that finds another sending leaves
+    it to that one, whose pass takes every pending proposal (of_review on PR 615: K answers during an outage started K
+    children, each trying all of them)."""
+    import fcntl
+    import of_events
+    with open(os.open(os.path.join(of_events.STATE_DIR, "decisions-send.lock"), os.O_WRONLY | os.O_CREAT, 0o600),
+              "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return None
+        return send()
 
 
 def _org_of(conn, ask_id):
@@ -464,7 +500,7 @@ def decide(conn, pairs, log=None):
     counted (waiting, and written as today's answer, since its organization's decisions are not on here yet). record:
     the accepted decision (its own, or the one that won over it)."""
     import of_decisions
-    got = of_decisions.send_pending(conn, only=[p for _, p in pairs], log=log or (lambda m: None), timeout=ONE_TRY_S)
+    got = send(conn, only=[p for _, p in pairs], log=log)
     out = {}
     for aid, pid in pairs:
         g = got.get(pid) or {"state": "waiting", "record": None}
