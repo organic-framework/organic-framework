@@ -704,6 +704,31 @@ class StartTextTest(unittest.TestCase):
             self.assertEqual(of_tools.start_text_size(d, "sp@m"), 400)
             self.assertIsNone(of_tools.start_text_size(d, "other@m"))  # not installed there
 
+    def test_the_plugin_root_is_expanded_by_sh_never_pasted(self):
+        """of_secrets-review, PR 584: a root with a space read wrong, and one with $(…) ran."""
+        for name in ("with space", "$(touch PWNED)"):
+            with tempfile.TemporaryDirectory() as base:
+                d = os.path.join(base, name)
+                os.makedirs(os.path.join(d, "plugins"))
+                self.make(d, "hello")
+                self.assertEqual(of_tools.start_text_size(d, "sp@m"), 5, name)
+                found = [f for _, _, fs in os.walk(base) for f in fs if f == "PWNED"]
+                self.assertEqual(found, [], name)
+
+    def test_a_hook_past_its_timeout_is_killed_with_its_children(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            self.make(d, "x")
+            root = of_tools.plugin_path(d, "sp@m")
+            mark = os.path.join(d, "late")
+            with open(os.path.join(root, "hooks", "say.sh"), "w") as fh:
+                fh.write(f"(sleep 2; touch {shlex.quote(mark)}) & sleep 30\n")
+            t0 = time.time()
+            self.assertEqual(of_tools.start_text_size(d, "sp@m", timeout=0.5), 0)  # ran, measured nothing
+            self.assertLess(time.time() - t0, 5)
+            time.sleep(2.5)
+            self.assertFalse(os.path.exists(mark))   # the child it left was killed too
+
     def test_plain_output_counts_whole_and_a_matcher_that_skips_startup_runs_nothing(self):
         with tempfile.TemporaryDirectory() as d:
             self.make(d, "hello")
