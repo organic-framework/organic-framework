@@ -16,6 +16,7 @@ import collections
 import html
 import os
 import re
+import sys
 import time
 import urllib.parse
 
@@ -2987,6 +2988,16 @@ def render_cache(orgs_file=None, log=None):
         lock.close()
 
 
+def peak_mib():
+    """The process's peak resident memory in MiB (ru_maxrss: bytes on macOS, KiB on Linux), or None."""
+    try:
+        import resource
+        r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except (ImportError, OSError, ValueError):
+        return None
+    return round(r / (1 << 20) if sys.platform == "darwin" else r / 1024)
+
+
 def _render_cache(orgs_file=None, log=None):
     t0, c0 = time.time(), time.process_time()
     parts, written = [], 0
@@ -2996,7 +3007,13 @@ def _render_cache(orgs_file=None, log=None):
         shared = of_model.load_events(of_store.connect(), since=of_model.iso(now - 9 * DAY), names=kinds())
     except Exception:  # noqa: BLE001 — each page reads for itself then
         shared = None
+    # where the memory goes, per step, read where the render runs (2026-11-23: 2.0 GiB on the founder's laptop under
+    # memory pressure, of_capacity msg 01a20791-99fd): the peak only grows, so each step's rise is its own
+    if log:
+        log(f"window: {len(shared) if shared is not None else 'not'} rows read in {time.time() - t0:.0f} s, "
+            f"peak {peak_mib()} MiB")
     for o in orgs(orgs_file):
+        t1 = time.time()
         try:
             d = Data(o["name"], now=now, orgs_file=orgs_file, all_rows=shared)
         except (KeyError, OSError) as exc:
@@ -3026,13 +3043,17 @@ def _render_cache(orgs_file=None, log=None):
             written += 1
         _write_page(_page_path(d.org, "coverage", True), render("coverage", d, {"org": d.org, "all": "1"}))
         written += 1
+        if log:
+            log(f"{d.org}: {len(getattr(d, 'rows', None) or [])} rows, pages in {time.time() - t1:.0f} s, "
+                f"peak {peak_mib()} MiB")
     if parts:
         whole = AllData(parts) if len(parts) > 1 else parts[0]
         _write_page(_page_path(ALL, "inbox"), render("inbox", whole, {}))
         written += 1
     cpu = time.process_time() - c0
     _write_page(os.path.join(_pages_dir(), ".rendered"), f"{time.time():.0f} {time.time() - t0:.1f} {cpu:.1f}\n")
-    return f"{written} pages for {len(parts)} organizations in {time.time() - t0:.1f} s ({cpu:.1f} s of CPU)"
+    return (f"{written} pages for {len(parts)} organizations in {time.time() - t0:.1f} s ({cpu:.1f} s of CPU, "
+            f"peak {peak_mib()} MiB)")
 
 
 LISTENER_TICK_S = 600   # the listener asks for a render every 10 minutes (bin/of_listen.py, StudioCacheProcessor)

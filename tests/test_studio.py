@@ -1736,6 +1736,9 @@ class PageCacheTest(unittest.TestCase):
         with mock.patch.object(of_studio, "orgs", return_value=[{"name": "acme"}, {"name": "beta"}]):
             out = of_studio.render_cache(orgs_file="/nonexistent", log=logged.append)
         self.assertIn("0 pages for 0 organizations", out)
+        self.assertRegex(out, r"peak \d+ MiB\)$")                              # where the memory goes (2026-11-23)
+        self.assertRegex(logged[0], r"^window: (\d+|not) rows read in \d+ s, peak \d+ MiB$")
+        logged = logged[1:]
         self.assertEqual([m.split(":")[0] for m in logged], ["acme", "beta"])
         self.assertIn("AttributeError: module 'of_events'", logged[0])          # its traceback, for the reader of the log
 
