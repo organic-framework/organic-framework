@@ -1140,11 +1140,12 @@ def _issue_rows(d, items):
     return "".join(out)
 
 
-RULE_RANK = {"fired": 0, "quiet": 1, "not_built": 2, "blocked": 3}
+RULE_RANK = {"fired": 0, "quiet": 1, "not_built": 2, "blocked": 3, "failed": 4}
 
 
 def _rules_status(d):
-    """One line per status; a rule counted once, at its best status across organizations (fired > quiet > not built > blocked)."""
+    """One line per status; a rule counted once, at its best status across organizations (fired > quiet > not built >
+    blocked > failed: it raised, and the run says what)."""
     best = {}
     for r in d.diagnosis.get("rules") or []:
         cur = best.get(r["rule"])
@@ -1167,6 +1168,9 @@ def _rules_status(d):
     for r in sorted(r for r, x in best.items() if x["status"] == "blocked"):
         parts.append(f'<div><span class="rs blocked">blocked</span> {e(r[3:])} <span class="src">— missing: '
                      f'{e(", ".join(best[r]["missing"]))}</span></div>')
+    for r in sorted(r for r, x in best.items() if x["status"] == "failed"):
+        parts.append(f'<div><span class="rs blocked">failed</span> {e(r[3:])} <span class="src">— '
+                     f'{e(best[r].get("error") or "")}</span></div>')
     return f'<div class="rules">{"".join(parts)}</div>'
 
 
@@ -1918,7 +1922,7 @@ def _loop_card(d, w):
                     f'{"" if x["declared"] else " · <span class=na>not on the ladder</span>"}</td>'
                     f'<td>{e(x["cost"] or "–")}</td><td>{e(x["latency"] or "–")}</td><td class="why">{e(x["accept"] or "–")}</td>'
                     f'<td>{x["runs_week"]} <span class="sub">({x["runs"]} in all)</span></td><td>{h(x["cycle_time_h"])}</td>'
-                    f'<td>{"–" if x["wait_share"] is None else str(round(100 * x["wait_share"])) + "%"}</td>'
+                    f'<td>{_wait_cell(x)}</td>'
                     f'<td class="why">{_last_result(x)}'
                     f'<div class="src">{e(st(x["last_at"])) if x["last_at"] else ""}</div></td></tr>')
     ck = c["checkpoint"]
@@ -1950,7 +1954,7 @@ def _loop_card(d, w):
 <th>Wait share</th><th>Last result</th></tr></thead><tbody>{"".join(rows) or '<tr><td colspan="8" class="quiet">No ladder and no runs.</td></tr>'}</tbody></table></div>
 <p class="legend">{ck_line} Time to first money: {"not yet" if ttfm is None else f"{ttfm:g} d"}. Hit rate {e(rate)}.
 Gain per cycle {h(c["gain_per_cycle"])}, per kept cycle {h(c["gain_per_kept_cycle"])} (target units).
-WIP: {c["wip"]["testing"]} in test, limit {c["wip"]["limit"]}{" (over)" if c["wip"]["over"] else ""}.</p>
+WIP: {e(_wip_line(c["wip"]))}.</p>
 {_checkpoints_html(c) if w.get("standing") else ""}<h3>The target per cycle</h3>{_loop_curve(c)}{_not_observed(c)}
 <h3>Register <span class="sub">in test, then open hypotheses by value of information per runner-hour</span></h3>
 {f'<div class="scroll"><table><thead><tr><th>Id</th><th>Change</th><th>Predicted</th><th>Cost</th><th>VoI</th><th>Status</th></tr></thead><tbody>{reg_rows}</tbody></table></div>' if reg_rows else '<p class="quiet">No open hypothesis.</p>'}
@@ -2167,6 +2171,29 @@ def _checkpoints_html(c):
             f'{c["checkpoint_days"]:g}-day period ({better} is better)</span></h3>'
             f'<table><thead><tr><th>Period (UTC)</th><th>Best</th><th>Runs</th></tr></thead><tbody>{rows}</tbody></table>'
             f'<p class="legend">{e(ch.strip()) if ch else "Fewer than two measured checkpoints yet."}</p>')
+
+
+def _wip_line(wip):
+    """The hypotheses in test against wip_arms: the work's count against its number, or each cell's and rung's against
+    its own limit when the loop counts per cell or per rung (of_loops._wip_now)."""
+    groups = [g for g in wip.get("groups") or [] if g.get("cell") is not None or g.get("rung") is not None]
+    if not groups:
+        lim = wip.get("limit")
+        return f'{wip.get("testing", 0)} in test, limit {lim}{" (over)" if wip.get("over") else ""}'
+    name = lambda g: " / ".join(f"{k} {g[k]}" for k in ("cell", "rung") if g.get(k) is not None)
+    part = lambda g: (f'{name(g)}: {g["testing"]} of {"no limit" if g["limit"] is None else g["limit"]}'
+                      f'{" (over)" if g["over"] else ""}')
+    return f'{wip.get("testing", 0)} in test; ' + "; ".join(part(g) for g in groups)
+
+
+def _wait_cell(x):
+    """A rung's wait share, read only from runs with a queue time; "not observed (n runs without a queue time)" when
+    none has one, and the count left out beside a share read from some."""
+    if x.get("wait_share") is None:
+        return f'<span class="na">{e(x["wait_note"])}</span>' if x.get("wait_note") else "–"
+    left = x.get("wait_unobserved") or 0
+    return (f'{round(100 * x["wait_share"])}%' + (f' <span class="sub">({x["wait_runs"]} with a queue time, {left} '
+                                                   f'without)</span>' if left else ""))
 
 
 def _loop_curve(c, w=560, hgt=120):

@@ -45,6 +45,7 @@ Pure functions over typed rows; no herdr, no network. docs/studio.md §5.6.
 
 import statistics
 
+import of_loop
 from of_model import epoch, iso, t_of
 
 UNREAD = ("unread", None)   # of_loop.UNREAD: a resolver's answer when this machine's log cannot be read
@@ -257,8 +258,15 @@ def spec_of(raw, resolve=None):
             "measures": [dict(m, to_money=m.get("to_money"), to_target=m.get("to_target"))
                          for m in raw.get("measures") or [] if isinstance(m, dict) and m.get("name")],
             "ladder": ladder, "rungs": names, "production": prod,
-            "checkpoint_days": _num(raw.get("checkpoint_days")) or 3, "wip_arms": int(_num(raw.get("wip_arms")) or 2),
-            "babysit_model": raw.get("babysit_model") or "sonnet"}
+            "checkpoint_days": _num(raw.get("checkpoint_days")) or 3, "wip_arms": _wip_arms(raw.get("wip_arms")),
+            "cells": of_loop.cells(raw), "babysit_model": raw.get("babysit_model") or "sonnet"}
+
+
+def _wip_arms(v):
+    """wip_arms as declared: a whole number (2 when missing), or a map of rung to one (docs/registry.md, Works)."""
+    if isinstance(v, dict):
+        return {str(k): int(_num(n)) for k, n in v.items() if _num(n) is not None}
+    return int(_num(v) or 2)
 
 
 def proxy_of(raw, decl=None):
@@ -332,7 +340,7 @@ def _hypotheses(evs):
             cost = pl.get("cost") if isinstance(pl.get("cost"), dict) else {}
             if pl.get("status") and pl["status"] != h.get("status"):
                 h["status_at"] = t
-            for k in ("change", "predict", "voi", "status", "evidence"):
+            for k in ("change", "predict", "voi", "status", "evidence", "cell"):
                 if pl.get(k) is not None:
                     h[k] = pl[k]
             h.setdefault("status_at", t)
@@ -442,6 +450,67 @@ def _priority(h):
     return VOI.get(str(h.get("voi") or "med").lower(), 1) / max(1.0 if rh is None else rh, 0.05)
 
 
+def _group_of(h, rung, spec):
+    """A hypothesis's group against wip_arms, as of_loop.wip groups it: (its cell when the loop has cells, its rung when
+    wip_arms is a map: RUNG, its latest run's, else the one its cost names, else the ladder's first)."""
+    first = spec["rungs"][0] if spec["rungs"] else None
+    return (h.get("cell") if spec["cells"] else None,
+            (rung or h.get("cost_rung") or first) if isinstance(spec["wip_arms"], dict) else None)
+
+
+def _limit(spec, rung):
+    w = spec["wip_arms"]
+    return w.get(rung) if isinstance(w, dict) else w
+
+
+def _wip_now(hyp, runs, spec):
+    """The hypotheses in test against wip_arms now (of_loop.wip, of_platform's): {testing, limit, over, groups}, over
+    when any group is past its limit; limit is wip_arms as declared, a number or a map by rung."""
+    last = {}
+    for r in sorted(runs, key=lambda r: r["ended"] or 0):
+        if r["hypothesis"]:
+            last[r["hypothesis"]] = r["rung"]
+    hs = [dict(h, last_run={"rung": last[h["id"]]} if h["id"] in last else None) for h in hyp.values()]
+    groups = of_loop.wip({"ladder": spec["ladder"], "wip_arms": spec["wip_arms"], "cells": spec["cells"]}, hs)
+    return {"testing": sum(g["testing"] for g in groups), "limit": spec["wip_arms"],
+            "over": any(g["over"] for g in groups), "groups": groups}
+
+
+def _wip_groups(hyp, evs, spec):
+    """The hypotheses in test over time per group against wip_arms (_group_of):
+    [{cell, rung, limit, series: [(ts, n)]}], for the WIP rule (docs/diagnose.md 2.19), which reads one limit per group,
+    not the work's total against one number (of_architect's hand-over 0985ab73: six hypotheses over four cells, none
+    above its limit of three, read as over)."""
+    state, rung, where, n, series = {}, {}, {}, {}, {}
+    for r in evs:
+        pl, t = r.get("payload") or {}, t_of(r) or 0
+        hid = str((pl.get("id") or pl.get("hypothesis")) if r["name"] == "of.loop_hypothesis"
+                  else pl.get("hypothesis") or "")
+        if not hid:
+            continue
+        old = state.get(hid, "open")
+        new = old
+        if r["name"] == "of.loop_run":
+            rung[hid] = str(pl.get("rung") or "?")
+            new = "testing" if old == "open" else old
+        elif r["name"] == "of.loop_decision" and pl.get("decision") in STATUS_OF:
+            new = STATUS_OF[pl["decision"]]
+        elif r["name"] == "of.loop_hypothesis" and pl.get("status"):
+            new = pl["status"]
+        state[hid] = new
+        before = where.get(hid) if old == "testing" else None
+        after = _group_of(hyp.get(hid) or {}, rung.get(hid), spec) if new == "testing" else None
+        if before != after:
+            for g, d in ((before, -1), (after, 1)):
+                if g is not None:
+                    n[g] = n.get(g, 0) + d
+                    series.setdefault(g, []).append((t, n[g]))
+        where[hid] = after
+    by_rung = isinstance(spec["wip_arms"], dict)
+    return [{"cell": c, "rung": g, "limit": None if by_rung and g is None else _limit(spec, g), "series": pts}
+            for (c, g), pts in sorted(series.items(), key=lambda x: (str(x[0][0]), str(x[0][1])))]
+
+
 def _wip_series(hyp, evs):
     """Hypotheses in test over time, [(ts, n)]: +1 when a run starts an open one, -1 when it is decided or parked."""
     steps, state = [], {}
@@ -502,14 +571,22 @@ def project(work_id, spec, rows, now, days=7, work=None, resolve=None, asks=None
         rr = [r for r in runs if r["rung"] == n]
         wk = [r for r in rr if r["ended"] >= week]
         cyc = [(r["ended"] - r["entered"]) / 3600 for r in rr if r["ended"] >= r["entered"]]
-        waited = [(r["started"] - r["entered"], r["ended"] - r["entered"]) for r in rr
-                  if r["started"] and r["ended"] > r["entered"] and r["started"] >= r["entered"]]
+        # the wait is read only where it is recorded: from a run's queued_at to its start. Entering the rung at the
+        # previous run's end, or at the hypothesis's filing, counted analysis, review and pull requests between runs
+        # as waiting (a user organization's structure keeper, msg 01a205be-824a: 82 to 94% with no queued_at at all;
+        # of_architect's hand-over 0985ab73; docs/registry.md, Works, "Where a reading is taken")
+        waited = [(r["started"] - r["queued_at"], r["ended"] - r["queued_at"]) for r in rr
+                  if r["queued_at"] and r["started"] and r["ended"] > r["queued_at"] and r["started"] >= r["queued_at"]]
+        unqueued = sum(1 for r in rr if not r["queued_at"])
         decl = next((x for x in spec["ladder"] if str(x["rung"]) == n), {})
         ladder.append({"rung": n, "cost": decl.get("cost"), "latency": decl.get("latency"), "accept": decl.get("accept"),
                        "declared": bool(decl), "production": n in spec["production"], "runs": len(rr), "runs_week": len(wk),
                        "cycles_per_day": round(len(wk) / days, 2),
                        "cycle_time_h": round(statistics.median(cyc), 2) if cyc else None,
                        "wait_share": round(sum(w for w, _ in waited) / sum(t for _, t in waited), 3) if waited else None,
+                       "wait_runs": len(waited), "wait_unobserved": unqueued,
+                       "wait_note": None if waited or not unqueued else
+                       f"not observed ({unqueued} run{'' if unqueued == 1 else 's'} without a queue time)",
                        "last_result": rr[-1]["result"] if rr else None, "last_at": rr[-1]["ended"] if rr else None,
                        "last_run": {k: rr[-1][k] for k in ("metric", "value", "observed_at", "proxy", "direct")} if rr else None})
     rank = {n: i for i, n in enumerate(spec["rungs"])}   # only the ladder orders rungs: one it does not name ranks lowest
@@ -584,9 +661,10 @@ def project(work_id, spec, rows, now, days=7, work=None, resolve=None, asks=None
                            "to_money": x.get("to_money") or x.get("money"), "decided": x["decided"],
                            **{k: x[k] for k in ("decided_unresolved", "decided_unresolved_why") if x.get(k)}}
                           for x in sorted(decisions, key=lambda x: x["ts"] or 0)],
-        "metrics": {"rungs": {x["rung"]: {"runs": x["runs"], "cycle_time": x["cycle_time_h"], "wait_share": x["wait_share"]}
-                              for x in ladder},
-                    "wip": _wip_series(hyp, evs),
+        "metrics": {"rungs": {x["rung"]: {"runs": x["runs"], "cycle_time": x["cycle_time_h"],
+                                          "wait_share": x["wait_share"], "wait_runs": x["wait_runs"],
+                                          "wait_unobserved": x["wait_unobserved"]} for x in ladder},
+                    "wip": _wip_series(hyp, evs), "wip_groups": _wip_groups(hyp, evs, spec),
                     "production": {"last_at": last_prod, "days_since": checkpoint["days_since"] if last_prod else None},
                     "babysit": babysit(rows, set(doers), week, now)},
         "events": len(evs), "start": start, "ladder": ladder, "highest": highest, "checkpoint": checkpoint,
@@ -602,7 +680,7 @@ def project(work_id, spec, rows, now, days=7, work=None, resolve=None, asks=None
                       "runs_without_usd": sum(1 for r in wk_runs if r["usd"] is None),   # pending (an hour) or no start
                       "usd_per_kept_cycle": round(sum(usd) / len(kept_week), 2) if usd and kept_week else None,
                       "runner_h_per_kept_cycle": round(runner_h / len(kept_week), 2) if kept_week else None},
-        "wip": {"testing": len(testing), "limit": spec["wip_arms"], "over": len(testing) > spec["wip_arms"]},
+        "wip": _wip_now(hyp, runs, spec),
         "register": {"open": sorted((h for h in hyp.values() if h.get("status") == "open"), key=_priority, reverse=True),
                      "testing": by_time(testing, "updated_at"),
                      "last_kept": by_time(kept, "decided_at")[:3],
