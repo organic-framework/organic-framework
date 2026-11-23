@@ -1175,14 +1175,55 @@ def _deny_failed(kind):
     sys.stdout.flush()
 
 
+GUARD_STALL_S = 20   # below the PreToolUse hook's limit (of_init.DECIDING_TIMEOUT, 30 seconds)
+
+
+class GuardStalled(BaseException):
+    """The guard did not decide within GUARD_STALL_S seconds. Not an Exception, so no `except Exception` in the guard's
+    work takes it; and the flag stands even if a broader handler does (of_secrets-review, 2026-11-23)."""
+
+
+class GuardUnreadable(Exception):
+    """A file the guard read for the call is there and not a regular file it could read (of_guard.UNREADABLE)."""
+
+
+_STALLED = [False]
+
+
+def _stalled(signum, frame):
+    _STALLED[0] = True
+    raise GuardStalled()
+
+
 def _guard(hook, sess):
     """The guard fails closed: an error of its own denies the call. Claude Code and Codex both run a call whose
     PreToolUse hook raised (2026-11-11: a NameError in _scratch_guard let every call through unguarded;
-    of_secrets-review's W3 review of Codex positions, msg 01a1f8e4-d06c). SystemExit included (its review of PR 469)."""
+    of_secrets-review's W3 review of Codex positions, msg 01a1f8e4-d06c). SystemExit included (its review of PR 469).
+    So does a guard that has not decided within GUARD_STALL_S seconds, or one that met a file it could not read
+    (of_server and of_secrets-review, 2026-11-23)."""
     global OUTPUT, GUARD_DECIDED
+    import signal
+    import threading
+    _STALLED[0] = False
+    del of_guard.UNREADABLE[:]
+    armed = hasattr(signal, "SIGALRM") and threading.current_thread() is threading.main_thread()
+    old = signal.signal(signal.SIGALRM, _stalled) if armed else None
+
+    def disarm():
+        if armed:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old)
+    if armed:
+        signal.alarm(GUARD_STALL_S)
     try:
         _guard_checked(hook, sess)
-    except (SystemExit, Exception) as e:  # noqa: BLE001 - every error of the guard's own is a deny
+        disarm()
+        if _STALLED[0]:   # the stall was taken by a handler in the guard's work: still no decision
+            raise GuardStalled()
+        if of_guard.UNREADABLE:
+            raise GuardUnreadable()
+    except (SystemExit, Exception, GuardStalled) as e:  # noqa: BLE001 - every error of the guard's own is a deny
+        disarm()
         OUTPUT = None
         _deny_failed(type(e).__name__)
         _log_error("PreToolUse guard", e)
