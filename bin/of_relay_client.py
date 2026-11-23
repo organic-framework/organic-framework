@@ -1577,6 +1577,7 @@ def run(load, client_for, servers, default, log=print, stop=None, deliverer=herd
             ticks[f"coord {key}"] = time.time()
             cursor = read_coord_cursor()
             before = cursor.get(key)
+            began = time.monotonic()
             try:
                 got = pull_coord(c, url, org, own, cursor, me, wait=COORD_WAIT)
             except Exception as e:  # noqa: BLE001 - 403 (not joined there), a busy store, a restart
@@ -1588,7 +1589,9 @@ def run(load, client_for, servers, default, log=print, stop=None, deliverer=herd
                 continue
             if cursor.get(key) != before:
                 update_coord_cursor(key, cursor.get(key))
-            stop.wait(0.2 if got else 0)   # the long-poll itself waited for something to come
+            # the long-poll itself waited for something to come; a server that answered empty at once (a cursor
+            # ahead of its feed, an older server) is read again a second later, not in a busy loop
+            stop.wait(0.2 if got else (1 if time.monotonic() - began < 1 else 0))
 
     try:
         drained = {u for us in org_drains(default).values() for u in us}
