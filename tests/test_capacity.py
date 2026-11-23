@@ -2108,6 +2108,23 @@ class Resume(unittest.TestCase):
         run = next(c for c in self.calls if c[:2] == ("pane", "run"))
         self.assertIn(self.cfg, run[3])
 
+    def test_a_resume_starts_at_the_effort_the_session_last_ran_at(self):
+        """A closed session has no process to read its effort from: its last recorded start gives it, and the
+        account's setting only when none is recorded (2026-11-23: one would have resumed at xhigh, not its high)."""
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE event (name TEXT, session_id TEXT, payload TEXT)")
+        for p in ({"effort": "xhigh", "model": "claude-opus-5-5"}, {"effort": "high", "model": "claude-opus-5-5"},
+                  {"evidence": "closure"}, {"effort": "low", "model": "claude-sonnet-5-5"}):
+            conn.execute("INSERT INTO event VALUES ('of.holder_changed', 's1', ?)", (json.dumps(p),))
+        self.assertEqual(of_capacity.last_effort("s1", "claude-opus-5-5", conn), "high")
+        self.assertIsNone(of_capacity.last_effort("s2", "claude-opus-5-5", conn))
+        from unittest import mock
+        with mock.patch.object(of_capacity, "last_effort", lambda sid, model: "high"):
+            self.resume()
+        run = next(c for c in self.calls if c[:2] == ("pane", "run"))
+        self.assertIn("--effort high", run[3])
+
     def test_a_resume_refuses_a_newer_copy_elsewhere_that_is_another_history(self):
         """A copy on the target and a newer one elsewhere that does not hold its last record: neither is taken (as
         a restore refuses it, of_review on PR 538). A newer one that continues it is carried."""

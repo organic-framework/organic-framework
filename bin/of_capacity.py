@@ -2919,6 +2919,24 @@ def _pane_lines(pane, n=40):
     return (text or "").splitlines()
 
 
+def last_effort(sid, model, conn=None):
+    """The effort session `sid` last ran at on `model`, from its newest recorded start (of.holder_changed), or None.
+    A closed session has no process to read it from, and the account's own setting may be another: on 2026-11-23 a
+    session its organization ran at high would have resumed at the account's xhigh."""
+    try:
+        if conn is None:
+            import of_store
+            conn = of_store.connect()
+        for (payload,) in conn.execute("SELECT payload FROM event WHERE name='of.holder_changed' AND session_id=? "
+                                       "ORDER BY rowid DESC LIMIT 50", (sid,)):
+            d = json.loads(payload or "{}")
+            if d.get("effort") and d.get("model") in (None, model):
+                return d["effort"]
+    except Exception:  # noqa: BLE001  the account's setting stands in
+        return None
+    return None
+
+
 def _continuation(sid):
     try:
         import of_store
@@ -3662,7 +3680,7 @@ def resume(name, sid, target, pane, extra_note=None, log=print, of_bin=None, dry
             raise MoveError(f"{name}: a claude process runs in {pane}; resume needs the pane at its shell")
         stale = True
     model = last_model(transcript)
-    effort = effort_of(target, model) if model else None
+    effort = (last_effort(sid, model) or effort_of(target, model)) if model else None
     bypass = ran_in_bypass(transcript)  # not its last mode: a session that slipped to auto goes back to bypass
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     work = os.path.join(STATE_DIR, "capacity", "moves", f"{name}-{stamp}-resume")
