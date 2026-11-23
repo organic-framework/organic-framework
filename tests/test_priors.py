@@ -1,0 +1,92 @@
+"""The priors tally (bin/of_priors.py, docs/diagnose.md §5.2): latest label, the current version's issues only,
+distinct judgements, p; and a table that carries no issue id, note or case. Pure logic: no store, no replay."""
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "bin"))
+import of_priors  # noqa: E402
+
+CAT = {"rules": {"chatty": {"version": 4, "labels_carry_from": [3], "p": 0.6},
+                 "off-map-work": {"version": 1, "p": {"default": 0.5}},
+                 "lingering": {"version": 0, "p": 0.5}}}
+TS = "2026-11-16T10:20:00Z"
+
+
+def lab(rule, v, label, note=None, ts=TS):
+    return {"rule": f"ap.{rule}", "rule_version": f"ap.{rule}@{v}", "label": label, "note": note, "ts": ts}
+
+
+class TallyTest(unittest.TestCase):
+    def run_tally(self, labels, raised=None, blocked=()):
+        seen = []
+
+        def r(b):
+            seen.append(b)
+            return {"ids": set(labels) if raised is None else raised, "blocked": blocked}
+        out, meta = of_priors.tally(labels, CAT, r)
+        return out, meta, seen
+
+    def test_distinct_judgements_and_p(self):
+        # 12 issues on one cause, one note: one judgement; then four more notes and one false positive
+        labels = {f"c{i}": lab("chatty", 4, "true_positive", "a booking per pull request") for i in range(12)}
+        labels.update({f"d{i}": lab("chatty", 4, "true_but_not_now", f"cause {i}") for i in range(4)})
+        labels["e"] = lab("chatty", 4, "false_positive", "each nudged once")
+        out, meta, _ = self.run_tally(labels)
+        r = out["ap.chatty@4"]
+        self.assertEqual((r["labels"], r["counted"], r["distinct"], r["false_positive"]), (17, 17, 6, 1))
+        self.assertEqual(r["p"], 0.83)
+        self.assertEqual(r["p_now"], 0.6)
+        self.assertEqual(meta, {"labels": 17, "gone": 0})
+
+    def test_floor_and_cap(self):
+        few = {f"l{i}": lab("lingering", 0, "true_positive", f"n{i}") for i in range(4)}
+        self.assertIsNone(self.run_tally(few)[0]["ap.lingering@0"]["p"])            # 4 judgements: too few
+        five = {f"l{i}": lab("lingering", 0, "true_positive", f"n{i}") for i in range(5)}
+        self.assertEqual(self.run_tally(five)[0]["ap.lingering@0"]["p"], 0.95)      # 1.0 held at 0.95
+
+    def test_current_version_only(self):
+        labels = {"old": lab("chatty", 2, "false_positive", "x"),      # @2 is not carried by @4
+                  "carried": lab("chatty", 3, "true_positive", "y"),   # @3 is
+                  "bare": dict(lab("chatty", 4, "true_positive", "z"), rule_version=None),
+                  "gone": lab("broker", 0, "true_positive", "w"),
+                  "quiet": lab("chatty", 4, "false_positive", "fixed by @4")}
+        out, meta, _ = self.run_tally(labels, raised={"carried", "bare", "old"})
+        r = out["ap.chatty@4"]
+        self.assertEqual((r["labels"], r["older_version"], r["not_raised"], r["counted"], r["false_positive"]),
+                         (4, 1, 1, 2, 0))
+        self.assertEqual(meta["gone"], 1)
+        # a rule blocked in the replay judges nothing: its labels count apart, never as no longer raised
+        out, _, _ = self.run_tally(labels, raised=set(), blocked={"ap.chatty"})
+        r = out["ap.chatty@4"]
+        self.assertEqual((r["older_version"], r["replay_blocked"], r["not_raised"], r["counted"]), (1, 3, 0, 0))
+
+    def test_replay_per_hour_after_the_label(self):
+        labels = {"a": lab("lingering", 0, "true_positive", ts="2026-11-16T10:20:00Z"),
+                  "b": lab("lingering", 0, "true_positive", ts="2026-11-16T10:59:59Z")}
+        _, _, seen = self.run_tally(labels)
+        self.assertEqual(set(seen), {of_priors.of_model.epoch("2026-11-16T11:00:00Z")})
+
+    def test_merged_issue_counts_as_raised(self):
+        d = {"issues": [{"issue_id": "host", "affected": ["p1"],
+                         "evidence": {"merged": {"ap.inbound-backlog@3": {}}}}]}
+        d["rules"] = [{"rule": "ap.bottleneck-broker", "status": "fired"}, {"rule": "ap.chatty", "status": "blocked"},
+                      {"rule": "ap.lingering", "status": "quiet"}, {"rule": "ap.loop-wip", "status": "failed"}]
+        self.assertEqual(of_priors.replayed(d), {"ids": {"host", of_priors.of_model.issue_id("inbound-backlog", ["p1"])},
+                                                 "blocked": {"ap.chatty", "ap.loop-wip"}})
+
+    def test_table_carries_no_id_note_or_case(self):
+        labels = {"9f3c2a1b7e44": lab("off-map-work", 1, "false_positive", "obs_keeper covers the alert rules"),
+                  "1a2b3c4d5e6f": lab("off-map-work", 1, "true_positive", "a card id spanned the popup")}
+        out, meta, _ = self.run_tally(labels)
+        meta.update(org="acme", replays=1, at="2026-11-23T00:00:00Z")
+        text = of_priors.table(out, meta)
+        for secret in list(labels) + ["obs_keeper", "alert", "card id", "popup"]:
+            self.assertNotIn(secret, text)
+        self.assertIn("ap.off-map-work@1", text)
+        self.assertIn('{"default":0.5}', text)
+        self.assertIn("too few", text)
+
+
+if __name__ == "__main__":
+    unittest.main()
