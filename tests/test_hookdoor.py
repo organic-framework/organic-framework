@@ -168,5 +168,30 @@ class SocketTest(unittest.TestCase):
             self.assertEqual((gone["decision"], "cannot be reached" in gone["reason"]), ("stop", True))
 
 
+
+class OrgFolderTest(unittest.TestCase):
+    """of_review on PR 607: a relative orgs.yaml path is orgs.yaml's, as the registry loader reads it, never the
+    listener's working folder's (/ under launchd, the home under a systemd user unit)."""
+
+    def test_a_relative_path_is_read_against_orgs_yaml(self):
+        import of_listen
+        import types
+        with tempfile.TemporaryDirectory() as d:
+            d = os.path.realpath(d)
+            conf = os.path.join(d, "home", ".config", "of")
+            os.makedirs(conf)
+            entries = {"acme": {"path": "../../orgx"}, "globex": {"path": os.path.join(d, "abs")}, "none": {}}
+            cli = types.SimpleNamespace(ORGS_FILE=os.path.join(conf, "orgs.yaml"),
+                                        _org_paths_entry=lambda org: entries.get(org))
+            cwd = os.getcwd()
+            try:
+                os.chdir("/")
+                self.assertEqual(of_listen.org_folder(cli, "acme"), os.path.join(d, "home", "orgx"))
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(of_listen.org_folder(cli, "globex"), os.path.join(d, "abs"))
+            self.assertIsNone(of_listen.org_folder(cli, "none"))
+            self.assertIsNone(of_listen.org_folder(cli, "absent"))
+
 if __name__ == "__main__":
     unittest.main()

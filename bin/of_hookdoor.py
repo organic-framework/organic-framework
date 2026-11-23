@@ -1,14 +1,13 @@
 """The hooks door: where a Claude Code session asks the listener for its organization's hook decision (of_server's
 ruling, message 01a20566-e23c, relayed by of_bench, message 01a20569-9699).
 
-An organization's Lua (its hooks and settings) is evaluated only outside agent sessions, inside Bench's operating-
-system sandbox, which cannot start inside a session's sandbox. So `of ask`'s hook before the module "file", when it runs
-in a session, sends this request instead. The request is data only: the organization, the package and module names
-and the card's fields, each on an allowlist with its type, as the door (bin/of_door.py) reads its allowlist. The
-listener takes the caller's organization from the process on the other end of the socket (its Claude Code session,
-mapped to its position by the registry), the organization's folder from its own orgs.yaml, never from the request,
-and the hook's code from that folder; it answers with the decision alone. A Codex session's `of ask` already runs in
-the listener through its door, so it needs none of this.
+An organization's Lua (its hooks and settings) is evaluated only inside Bench's operating-system sandbox, which cannot
+start inside a session's sandbox (docs/bench.md says where that happens on each system). So `of ask`'s hook before the
+module "file", when it runs in a Claude Code session, sends this request instead. The request is data only: the
+organization, the package and module names and the card's fields, each on an allowlist with its type. The listener
+takes the caller's organization from the process on the other end of the socket (its Claude Code session, mapped to
+its position by the hook's session index), the organization's folder from its own orgs.yaml, never from the request,
+and the hook's code from that folder; it answers with the decision alone.
 """
 
 import json
@@ -31,7 +30,7 @@ CARD = {"question": ("text", True), "options": ("texts", False), "tags": ("tags"
 ANSWER = ("decision", "by", "reason", "to", "until")
 
 
-# ---- the peer process (as bin/of_door.py reads it for Codex's door; kept here so this door stands on its own) ----
+# ---- the peer process (read here, so this door stands on its own) ----
 
 def _ancestors(pid):
     """PID and its ancestors, nearest first (Linux /proc, else ps)."""
@@ -185,7 +184,7 @@ def caller_session(pid, ancestors=None, cmdline=None, uid=None):
     for p in ancestors(pid):
         cl = cmdline(p)
         if cl and os.path.basename(cl[0]).startswith("codex"):
-            return None   # a Codex session's of ask runs in the listener through its own door
+            return None   # a Codex session is not a Claude Code session: no caller here
         if not cl or not any(os.path.basename(a) == "claude" or a.endswith("/claude") for a in cl[:2]):
             continue
         if (uid or _uid)(p) != os.getuid():

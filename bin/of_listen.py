@@ -1748,9 +1748,7 @@ def hookdoor_thread(stop=None, log=print):
     org_of_session = of_hookdoor.org_of_session   # the hook's session index, never the request
 
     def project_of(org):
-        e = cli()._org_paths_entry(org) if hasattr(cli(), "_org_paths_entry") else None
-        path = (e or {}).get("path")
-        return os.path.realpath(os.path.expanduser(str(path))) if path else None
+        return org_folder(cli(), org)
 
     def evaluate(project, package, module, card):
         import of_method
@@ -1764,6 +1762,18 @@ def hookdoor_thread(stop=None, log=print):
     t = threading.Thread(target=loop, daemon=True, name="of-hookdoor")
     t.start()
     return t
+
+
+def org_folder(cli, org):
+    """The organization's folder from orgs.yaml's `path`, a relative one read against orgs.yaml's own folder, as the
+    registry loader and `of bench --org` read it, never against the listener's working folder (of_review on PR 607:
+    under launchd that is /, under a systemd user unit the home). None when orgs.yaml names no path for it."""
+    e = cli._org_paths_entry(org) if hasattr(cli, "_org_paths_entry") else None
+    path = (e or {}).get("path")
+    if not path:
+        return None
+    base = os.path.dirname(os.path.abspath(cli.ORGS_FILE))
+    return os.path.realpath(os.path.join(base, os.path.expanduser(str(path))))
 
 
 def stuck_timers(ticks, processors, now, slack=None):
