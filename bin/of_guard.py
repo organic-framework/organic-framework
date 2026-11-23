@@ -3761,10 +3761,34 @@ def _org_path_act(words):
     # 0159efd: `of org -- set ofb path`, `of org set -- ofb path`, `of org set ofb -- path` ran the act)
     words = [w for w in words if w != "--"]
     # and `work_clone`, which makes a folder writable from every sandbox of its organization (of_review on PR 542),
-    # and `work_root`, under which every position of the organization gets a folder it writes (of_platform, 2026-11-23)
+    # and `work_root`, under which every position of the organization gets a folder it writes (of_platform, 2026-11-23),
+    # and `of org folder <org> <position>`, which makes a position's folder there and clones into it (of_platform, PR
+    # 608); read past the org command's options, which argparse takes before the action too and by any abbreviation
+    # (`of org --cl x set ofb path /r`)
+    if words[:1] == ["org"]:
+        p = _org_positionals(words)
+        return (p[1:2] == ["set"] and p[3:4] in (["path"], ["work_clone"], ["work_root"])) or p[1:2] == ["folder"]
     # and `of owner set bench`, the folder OF imports Bench from outside any sandbox (of_secrets-review on PR 575)
-    return (words[:2] == ["org", "set"] and words[3:4] in (["path"], ["work_clone"], ["work_root"])) or \
-        (words[:3] == ["owner", "set", "bench"])
+    return words[:3] == ["owner", "set", "bench"]
+
+
+_ORG_OPTIONS = ("--clone",)   # `of org`'s options that take a value (bin/of's parser)
+
+
+def _org_positionals(words):
+    """WORDS without `of org`'s options and their values: an option given whole or by an abbreviation argparse takes,
+    its value after `=` or as the next word."""
+    out, skip = [], False
+    for w in words:
+        if skip:
+            skip = False
+            continue
+        name = w.split("=", 1)[0]
+        if len(name) > 2 and name.startswith("--") and any(o.startswith(name) for o in _ORG_OPTIONS):
+            skip = "=" not in w
+            continue
+        out.append(w)
+    return out
 
 
 def _actor_deny(head, args, stext, env):
