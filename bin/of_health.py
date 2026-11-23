@@ -33,7 +33,8 @@ LIMITS = {
     "hooks.errors": (0.01, 0.10, "above", "of_platform"),
     "hooks.spooled": (0.10, 0.50, "above", "of_platform"),   # of_architect, 2026-11-17 (message 01a1ea91-7683)
     "hooks.latency": (1.0, 5.0, "above", "of_platform"),
-    "machine.memory": (0.80, 0.95, "above", "of_platform"),
+    "machine.memory": (0.80, 0.95, "above", "of_platform"),   # Linux: swap used out of swap
+    "machine.memory.pressure": (1, 2, "above", "of_platform"),  # macOS: the kernel's pressure level, 1, 2 or 4
     "machine.disk": (25.0, 20.0, "below", "of_platform"),
 }
 LISTENER_LAG = (120.0, 600.0)  # seconds, docs/health.md §2
@@ -263,6 +264,31 @@ def swap_share(run=subprocess.run):
         return None
 
 
+def memory_pressure(run=subprocess.run):
+    """macOS's memory pressure level as its kernel reports it (kern.memorystatus_vm_pressure_level: 1 normal, 2 warn,
+    4 critical), or None. Swap used out of swap is no reading of it there: macOS adds a swap file only when the others
+    are nearly full, so the share sits at 90 to 96% under any swapping (2026-11-23, of_capacity: 0.94 on the laptop,
+    next to failed, at pressure level 1 with no swap-outs over 30 s, and a user organization held starts back on it)."""
+    try:
+        out = run(["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"], capture_output=True, text=True,
+                  timeout=10).stdout
+        return int(out.strip())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def memory_reading(platform=None, pressure=memory_pressure, share=None):
+    """(the check's value, its LIMITS key, a detail) for machine.memory: on macOS the pressure level, with the swap
+    share as its detail; elsewhere the swap share. None as the value when the machine's tools gave no reading."""
+    platform = platform or sys.platform
+    sw = swap_share() if share is None else share
+    if platform == "darwin":
+        level = pressure()
+        detail = (f"pressure level {level} (1 normal, 2 warn, 4 critical)" if level is not None else "no pressure level")
+        return level, "machine.memory.pressure", detail + (f"; swap {round(sw * 100)}% used" if sw is not None else "")
+    return sw, "machine.memory", None
+
+
 HOME_GIT_DETAIL = ("a git repository in the home folder: every git call under home outside a repository of its own "
                    "(an agent's session in a folder of repositories, Claude Code's periodic git ls-files) resolves to "
                    "it and walks the whole home folder, with macOS privacy prompts for Desktop and Documents; move it "
@@ -303,9 +329,9 @@ def measure(now=None, server=None, lags=None, hooks=None, swap=None, disk=None, 
     put("hooks.spooled", rest[0] if rest else 0.0, *LIMITS["hooks.spooled"], detail=f"{calls} calls in 10 min")
     put("hooks.latency", worst, *LIMITS["hooks.latency"],
         detail=", ".join(f"{k} {v:.2f}s" for k, v in sorted(p99.items(), key=lambda x: -x[1])[:4]))
-    sw = swap_share() if swap is None else swap
-    if sw is not None:  # no reading is no finding: the machine's own tools failed, not its memory
-        put("machine.memory", sw, *LIMITS["machine.memory"])
+    value, key, detail = memory_reading() if swap is None else (swap, "machine.memory", None)
+    if value is not None:  # no reading is no finding: the machine's own tools failed, not its memory
+        put("machine.memory", value, *LIMITS[key], detail=detail)
     put("machine.disk", free_disk_gib() if disk is None else disk, *LIMITS["machine.disk"])
     hg = home_git() if homegit is False else homegit  # a path, or None
     out["machine.home_git"] = {"value": hg or "none", "limit": None, "state": "failed" if hg else "ok",
