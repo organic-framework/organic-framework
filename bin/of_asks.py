@@ -314,7 +314,13 @@ def project(rows, state=None):
                 if ask and ask["state"] == "open" and ask.get("task"):
                     # a task is work for the owner, not a question: an answer is his claim that it is done; it
                     # stays open until the asker checks the result (of status --done-task) or withdraws it
-                    if st == "answered" and p_.get("by") in ("owner", "founder") and owners_own:
+                    # a task routed to a unit owner is that position's work: its own answer is the claim (of_platform,
+                    # message 01a20927-8d45: a user organization's routed task recorded nothing when its unit owner
+                    # said done), only for an answer whose asks all went to it
+                    by = p_.get("by")
+                    unit_owns = by not in (None, "owner", "founder") and \
+                        all(x is None or bare_to(x.get("to"), x.get("org")) == by for x in named)
+                    if st == "answered" and ((by in ("owner", "founder") and owners_own) or unit_owns):
                         ask.update(claimed_at=r["ts"], claim=(p_.get("answer") or "done")[:200])
                     continue
                 if ask and ask["state"] in ("open", "candidate"):  # a candidate too: the popup's n, of asks answered
