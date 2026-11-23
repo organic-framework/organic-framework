@@ -87,8 +87,9 @@ def _text_from_head(transcript, head):
     return best
 
 
-def case_input(conn, event_id):
-    """What the judge read (or would have read) for this closing message: text, position, origin, peer, filed."""
+def case_input(conn, event_id, full=True):
+    """What the judge read (or would have read) for this closing message: text, position, origin, peer, filed.
+    full=False: the text and position alone, all the detectors read (no queue is projected for them)."""
     row = conn.execute("SELECT name, ts, session_id, position, transcript, payload FROM event WHERE event_id = ?",
                        (event_id,)).fetchone()
     if not row:
@@ -101,6 +102,8 @@ def case_input(conn, event_id):
     else:
         head = p.get("last_message") or ""
         text = of_judge._mask(_text_from_head(tr, head)) or head
+    if not full:
+        return {"event_id": event_id, "ts": ts, "position": pos, "text": text}
     origin, peer, start = of_judge.turn_of(conn, sid, ts)
     asks = asks_at(conn, ts)
     filed = [a for a in asks if a.get("position") == pos and a["state"] == "open"
@@ -118,12 +121,33 @@ _ASKS = {}
 
 
 def asks_at(conn, ts):
-    """The asks projection as it stood at ts."""
+    """The asks projection as it stood at ts: the asks' events of the 7 days before it, projected. The events are read
+    from the store once for every case (preload) and sliced per case: reading them again for each of 147 cases from
+    a store of tens of GB held one core for over half an hour before the first case was scored (of_lab, message
+    01a20898-8293, on the Mac). The slice is the same rows the per-case read gave."""
     if ts not in _ASKS:
+        import bisect
         import of_asks
-        rows = [r for r in of_asks.load(conn, since_iso=_days_before(ts, 7)) if r["ts"] <= ts]
-        _ASKS[ts] = of_asks.project(rows)
+        since = _days_before(ts, 7)
+        if _ROWS["since"] is None or since < _ROWS["since"]:
+            rows = of_asks.load(conn, since_iso=since)
+            _ROWS.update(since=since, rows=rows, ts=[r["ts"] or "" for r in rows])
+        lo, hi = bisect.bisect_left(_ROWS["ts"], since), bisect.bisect_right(_ROWS["ts"], ts)
+        _ASKS[ts] = of_asks.project([dict(r) for r in _ROWS["rows"][lo:hi]])
     return _ASKS[ts]
+
+
+_ROWS = {"since": None, "rows": [], "ts": []}
+
+
+def preload(conn, cases):
+    """Read the asks' events once from 7 days before the earliest case on, so asks_at only slices them."""
+    ids = [c["event_id"] for c in cases]
+    if ids:
+        (first,) = conn.execute(f"SELECT min(ts) FROM event WHERE event_id IN ({','.join('?' * len(ids))})",
+                                ids).fetchone()
+        if first:
+            asks_at(conn, first)
 
 
 def rule_at(conn, text, ts, asks, filed, turn_start, declared=None, to=None):
@@ -174,7 +198,7 @@ def cmd_detectors(args):
     cases = load_cases()
     rows = []
     for c in cases:
-        ci = case_input(conn, c["event_id"])
+        ci = case_input(conn, c["event_id"], full=False)
         if ci:
             rows.append((c, of_classify.questions(ci["text"])))
     print(f"lab-asks-v0 detectors: {len(rows)} cases, {sum(c['label'] == 'owner_question' for c, _ in rows)} positive")
@@ -192,6 +216,7 @@ def cmd_detectors(args):
 def cmd_judge(args):
     conn = connect()
     cases = load_cases()
+    preload(conn, cases)
     inputs = [(c, case_input(conn, c["event_id"])) for c in cases]
     inputs = [(c, i) for c, i in inputs if i]
     cfg = dict(of_judge.config(), model=args.model, command=None)
@@ -254,6 +279,7 @@ def cmd_silver(args):
     if os.path.exists(out):
         done = {json.loads(x)["event_id"] for x in open(out) if x.strip()}
     todo = [i for i in ids if i not in done]
+    preload(conn, [{"event_id": e} for e in todo])
     inputs = {eid: case_input(conn, eid) for eid in todo}  # the store in this thread; the calls in parallel
     account = of_judge.accounts()[0]
 
@@ -280,6 +306,7 @@ def cmd_pipeline(args):
     conn = connect()
     want = set(args.ids.split(",")) if args.ids else None
     cases = [c for c in load_cases() if want is None or c["id"] in want]
+    preload(conn, cases)
     inputs = [(c, case_input(conn, c["event_id"])) for c in cases]
     inputs = [(c, i) for c, i in inputs if i]
     cfg = dict(of_judge.config(), model=args.model, command=None)
