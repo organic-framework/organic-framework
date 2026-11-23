@@ -670,7 +670,7 @@ class CorrectionRulesTest(unittest.TestCase):
                 self.fix(4, "2026-11-02T15:00Z", "bot_search", "fact")]              # four hours after the last one
         got, st = self.found("context-overload", self.calm() + self.compactions("bot_search") + lost)
         self.assertEqual([(i["affected"], i["rule_version"], i["decider"]) for i in got],
-                         [(["bot_search"], "ap.context-overload@0", "structure_keeper")])
+                         [(["bot_search"], "ap.context-overload@1", "structure_keeper")])
         e = got[0]["evidence"]
         self.assertEqual((e["compactions"], e["active_days"], e["per_active_day"], e["org_median"], e["floor"]),
                          (12, 2, 6.0, 0.5, 4))
