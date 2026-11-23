@@ -192,6 +192,24 @@ class ChecksTest(StateDir):
                               smoke={"head": "x", "ok": True}, served={})
         self.assertIn("machine.memory", r) if sys.platform == "darwin" else None
 
+    def test_macos_memory_is_its_pressure_level_not_the_swap_share(self):
+        """2026-11-23, of_capacity: swap 94% used read next to failed while the kernel reported normal pressure."""
+        value, key, detail = of_health.memory_reading("darwin", pressure=lambda: 1, share=0.94)
+        self.assertEqual((value, key), (1, "machine.memory.pressure"))
+        self.assertIn("swap 94% used", detail)
+        self.assertEqual(of_health.grade(value, *of_health.LIMITS[key][:3]), "ok")
+        self.assertEqual(of_health.grade(2, *of_health.LIMITS[key][:3]), "degraded")
+        self.assertEqual(of_health.grade(4, *of_health.LIMITS[key][:3]), "failed")
+        self.assertEqual(of_health.memory_reading("darwin", pressure=lambda: None, share=0.5)[0], None)
+        self.assertEqual(of_health.memory_reading("linux", share=0.96)[:2], (0.96, "machine.memory"))
+        run = lambda argv, **k: type("R", (), {"stdout": "2\n"})()  # noqa: E731
+        self.assertEqual(of_health.memory_pressure(run), 2)
+        import of_studio_health   # Studio's health page shows the level as a level, never as a share
+        self.assertEqual(of_studio_health.value_text("machine.memory", 1), "pressure level 1")
+        self.assertEqual(of_studio_health.value_text("machine.memory", 0.94), "94.0%")
+        self.assertEqual(of_studio_health.limit_text("machine.memory", {"limit": [1, 2]}),
+                         "over pressure level 1 / over pressure level 2")
+
     def test_the_servers_checks_are_carried_and_the_cards_called(self):
         """of_studio (hand-over f06e0eb7): of-server's own checks on this machine's page, as it serves them, with no
         event or fyi from here (the server records its own); and the person's cards from the state."""

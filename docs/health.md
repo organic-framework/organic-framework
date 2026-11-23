@@ -28,7 +28,7 @@ The checks never run on the listener's loop, because the listener is one of the 
 | `hooks.errors` | hook calls that failed (an `ERROR` line in hook-errors.log), out of all calls, in the last 10 min | over 1% | over 10% | `of health run` | `of_platform` |
 | `hooks.spooled` | hook calls that found the store busy past their wait and went to the spool, out of all calls, in the last 10 min: nothing is lost (the listener moves the spool in every 10 s), but the store is contended (2026-11-17, `of_architect`, message `01a1ea91-7683`: counted with the errors, they hid any real failure) | over 10% | over 50% | `of health run` | `of_platform` |
 | `hooks.latency` | the hooks' p99 time per event kind, in the last 10 min | over 1 s | over 5 s | `of health run` | `of_platform` |
-| `machine.memory` | swap used, out of swap | over 80% | over 95% | `of health run` | `of_platform` |
+| `machine.memory` | on macOS the kernel's memory pressure level (`kern.memorystatus_vm_pressure_level`: 1 normal, 2 warn, 4 critical), with the swap share as its detail; elsewhere swap used, out of swap | macOS: level 2; elsewhere over 80% | macOS: level 4; elsewhere over 95% | `of health run` | `of_platform` |
 | `machine.disk` | free disk | under 25 GiB | under 20 GiB (the pulse's card) | `of health run` | `of_platform` |
 | `machine.home_git` | a `.git` in the home folder itself | – | present (every git call under home outside a repository of its own walks the whole home folder; 2026-11-15) | `of health run` | `of_platform` |
 | `commit.smoke` | the working copy's newest commit passes the smoke check (§4) | — | it does not | the commit's hook, and `of health run` for the newest commit | `of_platform` |

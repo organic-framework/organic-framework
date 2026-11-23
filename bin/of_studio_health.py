@@ -95,6 +95,8 @@ def value_text(check, v):
         return "no reading"
     if isinstance(v, str):
         return v
+    if check == "machine.memory" and isinstance(v, int) and not isinstance(v, bool):
+        return f"pressure level {v}"   # macOS's kernel level, 1 normal, 2 warn, 4 critical (of_health.memory_reading)
     if check in PERCENT:
         return f"{100 * v:.1f}%"
     if check == "machine.disk":
