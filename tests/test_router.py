@@ -136,6 +136,40 @@ class GitdirWorktreeTest(unittest.TestCase):
             self.assertTrue(of_router.VERSION >= "rt-v4")
 
 
+class CloneTest(unittest.TestCase):
+    """A user organization's structure keeper, 2026-11-23: four orphan-work issues were full clones of kept
+    repositories under their own folder names; the router knew a worktree's repository, a clone only by its name."""
+
+    def test_a_clone_resolves_by_its_origin(self):
+        with tempfile.TemporaryDirectory() as root:
+            r = os.path.realpath(root)
+            systems = {"k8s": {"keeper": "k8s_keeper", "repos": ["devops-k8s"]},
+                       "net": {"keeper": "net_keeper", "paths": ["ansible-creek/**"]}}
+            idx = of_router.build_index([{"name": "x", "_org": "acme", "_systems": systems}], {"acme": [root]})
+
+            def repo(folder, url, section="origin"):
+                os.makedirs(f"{r}/{folder}/.git")
+                with open(f"{r}/{folder}/.git/config", "w") as fh:
+                    fh.write(f'[core]\n\tbare = false\n[remote "{section}"]\n\turl = {url}\n')
+            repo("devops-k8s", "git@github.com:acme/devops-k8s.git")
+            repo("ansible-creek", "https://github.com/acme/ansible-creek")
+            repo("devops-k8s-wfk", "https://github.com/acme/devops-k8s.git")        # https and scp forms agree
+            repo("ansible-creek-ipfix", "ssh://git@github.com/acme/ansible-creek.git")
+            repo("other-tool", "git@github.com:acme/other-tool.git")
+            repo("forked", "git@github.com:acme/devops-k8s.git", section="upstream")  # only origin counts
+            of_router._WT_CACHE.clear()
+            of_router._ORIGIN_CACHE.clear()
+            self.assertEqual(of_router.resolve(f"{r}/devops-k8s-wfk/k8s/a.yaml", idx)[1], "k8s")
+            self.assertEqual(of_router.resolve(f"{r}/ansible-creek-ipfix/roles/x.yml", idx)[1], "net")
+            self.assertEqual(of_router.resolve(f"{r}/devops-k8s/k8s/a.yaml", idx)[1], "k8s")
+            self.assertIsNone(of_router.resolve(f"{r}/other-tool/a.py", idx)[1])      # its own repository: unowned
+            self.assertIsNone(of_router.resolve(f"{r}/forked/a.py", idx)[1])
+            os.makedirs(f"{r}/linked")
+            os.symlink(f"{r}/devops-k8s-wfk/.git", f"{r}/linked/.git")             # a link is never read
+            self.assertIsNone(of_router.resolve(f"{r}/linked/k8s/a.yaml", idx)[1])
+            self.assertEqual(of_router.VERSION, "rt-v8")
+
+
 class LifecycleTest(unittest.TestCase):
     def test_a_keeperless_system_that_is_not_live_is_shown_not_flagged(self):
         """docs/registry.md (5523cb6): only a live system asks for a keeper."""

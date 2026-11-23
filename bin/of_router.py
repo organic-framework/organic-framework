@@ -15,14 +15,17 @@ The systems index (compiled globs per organization root) is cached with the regi
 
 import os
 import re
+import stat
 
-VERSION = "rt-v7"  # rt-v1: the first observe router; rt-v2: worktrees as their repository, Bash cwd unscoped;
+VERSION = "rt-v8"  # rt-v1: the first observe router; rt-v2: worktrees as their repository, Bash cwd unscoped;
 #                    rt-v3: a path outside every organization (scratchpads, harness memory) is outside;
 #                    rt-v4: a worktree resolves by its .git file (gitdir), whatever its folder is called;
 #                    rt-v5: a keeper-less system that is not live (unsupported, retired) is non_live:<lifecycle>;
 #                    rt-v6: a character class in a paths pattern ([a-f], [!x]) matches as in bin/of, not literally;
 #                    rt-v7: a root that is itself a repository matches patterns written with its name first
-#                    ("organic-framework/bin/..."; of_field-analyst, 2026-11-15: 536 verdicts all unowned)
+#                    ("organic-framework/bin/..."; of_field-analyst, 2026-11-15: 536 verdicts all unowned);
+#                    rt-v8: a full clone of a kept repository under another folder name is that repository's, by its
+#                    origin (a user organization's structure keeper, 2026-11-23: four orphan-work issues were clones)
 
 PATH_TOOLS = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_path", "NotebookEdit": "notebook_path",
               "Read": "file_path", "Grep": "path", "Glob": "path"}
@@ -107,6 +110,78 @@ def worktree_main(path):
     return res
 
 
+def _small_text(path, limit=65536):
+    """A small regular file's text, never through a link and never waiting on a pipe, or None."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    try:
+        return os.read(fd, limit).decode("utf-8", "replace") if stat.S_ISREG(os.fstat(fd).st_mode) else None
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+_ORIGIN_CACHE = {}
+
+
+def origin_of(checkout):
+    """<host>/<owner>/<name> of a checkout's origin URL as its `.git/config` writes it (https, ssh or scp form, .git
+    dropped, as of_subagent.repo_origin), or None. Read as text, never by running git in a folder an agent writes."""
+    if checkout in _ORIGIN_CACHE:
+        return _ORIGIN_CACHE[checkout]
+    g = os.path.join(checkout, ".git")
+    text = None if os.path.islink(g) or not os.path.isdir(g) else _small_text(os.path.join(g, "config"))
+    url, section = None, None
+    for line in (text or "").splitlines():
+        t = line.strip()
+        if t.startswith("["):
+            m = re.match(r'^\[\s*remote\s+"([^"]*)"\s*\]', t)
+            section = m.group(1) if m else ""
+        elif section == "origin":
+            m = re.match(r"^url\s*=\s*(.+?)\s*$", t, re.I)
+            if m:
+                url = m.group(1).strip('"')
+                break
+    out = None
+    if url:
+        m = (re.match(r"^[a-z+]+://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.+?)(?:\.git)?/?$", url, re.I)
+             or re.match(r"^(?:[^@/]+@)?([^/:]+):(.+?)(?:\.git)?/?$", url))
+        if m and m.group(2).count("/") == 1:
+            out = f"{m.group(1).lower()}/{m.group(2)}"
+    _ORIGIN_CACHE[checkout] = out
+    return out
+
+
+def clone_main(full, roots, repos):
+    """(clone root, kept checkout root) when FULL lies in a full clone, under an organization's root, of a repository
+    the systems map claims by name (REPOS), kept there under that name, but cloned under another folder name
+    (`devops-k8s-wfk` for `devops-k8s`): the two checkouts' origins are the same. Else None. A checkout named as a
+    claimed repository, a root itself, and a linked worktree (worktree_main's) are never one (a user organization's
+    structure keeper, 2026-11-23: the router knew a worktree's repository but a clone only by its folder name)."""
+    for root in roots:
+        if not full.startswith(root + os.sep):
+            continue
+        d, co = full if os.path.isdir(full) else os.path.dirname(full), None
+        while d.startswith(root + os.sep):
+            g = os.path.join(d, ".git")
+            if os.path.lexists(g):
+                co = d if os.path.isdir(g) and not os.path.islink(g) else None
+                break
+            d = os.path.dirname(d)
+        if not co or os.path.basename(co) in repos:
+            continue
+        o = origin_of(co)
+        if not o:
+            continue
+        for cand in [root] + [os.path.join(root, r) for r in sorted(repos)]:
+            if cand != co and origin_of(cand) == o:
+                return co, cand
+    return None
+
+
 def unworktree(rel, repos=()):
     """A git worktree's path as its repository's: `storefront/.claude/worktrees/x/crates/a.rs` ->
     `storefront/crates/a.rs`; `.worktrees/devops-k8s-wazuh/k8s/a` -> `devops-k8s/k8s/a` (the longest
@@ -139,6 +214,9 @@ def resolve(path, index):
         full = wt[1] + full[len(wt[0]):]
     best, best_len = (None, None, None), -1
     repos = {rx.lstrip("^").split("/")[0].replace("\\", "") for e in index for rx in e[4]}
+    cl = None if wt else clone_main(full, sorted({e[0] for e in index}), repos)
+    if cl:  # the same path in the kept checkout of the clone's repository
+        full = cl[1] + full[len(cl[0]):]
     for e in index:
         root, org, sid, keeper, pats = e[:5]
         if not (full == root or full.startswith(root + os.sep)):
