@@ -1655,6 +1655,9 @@ class PageCacheTest(unittest.TestCase):
     def test_the_listener_renders_at_most_every_30_minutes(self):
         from unittest import mock
         of_studio._refresh_in_background = self.orig[1]
+        quiet = mock.patch("os.getloadavg", return_value=(0.5, 0.5, 0.5))   # the test machine's own load reads nothing
+        quiet.start()                                                         # (of_review on PR 603: at 34.7 on 10 cores
+        self.addCleanup(quiet.stop)                                           # the due render waited)
         of_studio._write_page(os.path.join(of_studio._pages_dir(), ".rendered"), f"{time.time() - 600:.0f} 300.0 60.0\n")
         with mock.patch("subprocess.Popen") as popen:
             self.assertFalse(of_studio._refresh_in_background())             # the listener's tick: rendered 10 min ago
