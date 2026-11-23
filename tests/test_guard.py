@@ -644,6 +644,19 @@ class GuardBashTest(unittest.TestCase):
         self.assertIsNone(deny("cat keys/" + dotted + ".pub"))
         self.assertIn(dotted.replace("repo-write", "*"), of_guard.of_classify.DENY_READ_GLOBS)
 
+    def test_a_template_of_a_secret_shaped_file_ends_in_its_template_word(self):
+        """docs/guard.md G1.2 (a user organization's k8s keeper, through its structure keeper, 2026-11-23): a
+        repository template with no credential is named with the template word after the secret-shaped part, as
+        .env.example; a name that still begins or ends as a secret file's stays secret."""
+        kc = "kube" + "config"
+        write = lambda name: of_guard.critical_deny("Write", {"file_path": "/home/alex/repo/deploy/" + name,
+                                                              "content": "server: https://k8s.example\n"})
+        self.assertIsNone(write("launcher." + kc + ".example"))
+        self.assertIsNone(write("launcher." + kc + ".template"))
+        self.assertTrue(write("launcher." + kc))                    # the real file keeps its deny
+        self.assertTrue(write("launcher.example." + kc))            # still ends as one
+        self.assertTrue(write(kc + ".example.yaml"))                # still begins as one
+
     def test_credential_files_in_an_organization_config(self):
         """docs/guard.md G1.7, G1.8 (a user organization's sec_keeper, msg 01a1c87f, 2026-11-11): Grafana header
         files passed the guard and could be sent with curl; so did 36 *.password files, *.secret.json, a
