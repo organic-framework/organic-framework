@@ -724,9 +724,29 @@ class GuardBashTest(unittest.TestCase):
         self.assertIn("G1.15", of_guard._WARNINGS[0][2])
         self.assertIsNone(of_guard.critical_deny("Read", {"file_path": "/home/alex/.kube/config"}))
         self.assertTrue(of_guard._WARNINGS)
+        for cased in ("cat ~/.KUBE/config", "cat ~/.kube/CONFIG"):     # this Mac's volumes ignore case (PR 599)
+            self.assertIsNone(deny(cased), cased)
+            self.assertIn("the default kubeconfig", of_guard._WARNINGS[0][0], cased)
+        self.assertIn("without --raw or --flatten", of_guard.KUBE_CONFIG_NOTE)
         for quiet in ("ls ~/.kube/cache", "cat ~/.kube/config.md", "kubectl get pods -n web"):
             self.assertIsNone(deny(quiet), quiet)
             self.assertEqual(of_guard._WARNINGS, [], quiet)
+        # G6.2 (of_secrets-review on PR 599): --raw and --flatten print the credentials in full; they warn first
+        for loud in ("kubectl config view --raw", "kubectl config view --flatten --minify",
+                     "kubectl --context prod config view --raw=true -o jsonpath='{.users[0].user.token}'"):
+            self.assertIsNone(deny(loud), loud)
+            self.assertIn("prints the kubeconfig unredacted", of_guard._WARNINGS[0][0], loud)
+            self.assertIn("G6.2", of_guard._WARNINGS[0][2], loud)
+        for quiet in ("kubectl config view", "kubectl config view --minify", "kubectl config view --raw=false",
+                      "kubectl get --raw /healthz"):
+            self.assertIsNone(deny(quiet), quiet)
+            self.assertEqual(of_guard._WARNINGS, [], quiet)
+        saved = of_guard.CONFIG_VIEW_RAW_MODE
+        try:
+            of_guard.CONFIG_VIEW_RAW_MODE = "deny"
+            self.assertTrue(deny("kubectl config view --raw"))
+        finally:
+            of_guard.CONFIG_VIEW_RAW_MODE = saved
         old = of_guard.KUBE_CONFIG_MODE
         try:
             of_guard.KUBE_CONFIG_MODE = "deny"

@@ -279,10 +279,11 @@ def _env_file(q):
 # 3,003 calls naming .kube or KUBECONFIG, live flows among them (KUBECONFIG= for kubectl, test -e, copies). It denies
 # once those have moved, and once kubectl's and helm's own --kubeconfig and KUBECONFIG are told apart from a read.
 KUBE_CONFIG_MODE = "warn"
-_KUBE_CONFIG = re.compile(r"(?:^|/)\.kube/config$")
-KUBE_CONFIG_NOTE = ("~/.kube/config holds the clusters' credentials: let kubectl read it (kubectl config view redacts "
-                    "them), never print or copy the file; it will be a secret path once these flows have moved "
-                    "(docs/guard.md G1.15)")
+_KUBE_CONFIG = re.compile(r"(?:^|/)\.kube/config$", re.I)  # without case, as every secret path: this Mac's volumes
+# ignore it (of_secrets-review on PR 599)
+KUBE_CONFIG_NOTE = ("~/.kube/config holds the clusters' credentials: let kubectl read it (kubectl config view without "
+                    "--raw or --flatten redacts them), never print or copy the file; it will be a secret path once "
+                    "these flows have moved (docs/guard.md G1.15)")
 
 
 def _kube_config(q):
@@ -2208,6 +2209,13 @@ _KUBE_ELEMENT, _KUBE_ANY, _KUBE_KEY = ("[]", False), ("*", False), ("(key)", Fal
 # of a workload 14), while a Pod's template reaching env was 11, and `set env --list` and `view-last-applied` on these
 # kinds had no use.
 POD_SPEC_MODE = {"describe pod": "warn", "workload": "warn"}
+# G6.2 warns first: `kubectl config view --raw` and `--flatten` print the kubeconfig's certificates and tokens in full
+# (of_secrets-review on PR 599). 18 calls of 21 days (2026-11-23), all allowed until now, most a CA's data taken out
+# with --minify and a template, or a file written; it denies once those have moved.
+CONFIG_VIEW_RAW_MODE = "warn"
+CONFIG_VIEW_RAW_NOTE = ("kubectl config view --raw and --flatten print the clusters' credentials in full: read the "
+                        "redacted view, or a committed script that takes one field and prints no credential; it will "
+                        "deny once these flows have moved (docs/guard.md G6.2)")
 POD_ENV_DENY = "a command that would print container env values"
 POD_ENV_ADVICE = ("read the fields you need outside the containers' env ({.status}, {.spec.containers[*].image}), or "
                   "env names only (env[*].name); a value stays where it is used (docs/guard.md G6)")
@@ -2527,6 +2535,17 @@ def _kubectl_secret_deny(args, line_vars=None):
     workload's spec warn first (_kube_pod_spec_read, docs/guard.md G6 and G6.1)."""
     nonopt = _positional(args, _KUBECTL_VALUE)
     sub = nonopt[0] if nonopt else None
+    if sub == "config" and nonopt[1:2] == ["view"]:  # G6.2: --raw and --flatten print the kubeconfig unredacted
+        flag = next((f for f in ("--raw", "--flatten") if any(a == f or a.lower() in (f + "=true", f + "=1")
+                                                                 for a in args)), None)
+        if flag and CONFIG_VIEW_RAW_MODE == "deny":
+            return _prints(f"kubectl config view {flag}")
+        if flag:
+            note = (f"a command that prints the kubeconfig unredacted (kubectl config view {flag})",
+                    f"kubectl config view {flag}", CONFIG_VIEW_RAW_NOTE)
+            if note not in _WARNINGS:
+                _WARNINGS.append(note)
+        return None
     has_secret = _kube_names(nonopt, ("secret", "secrets", "all"))
     has_pod = _kube_names(nonopt, ("pod", "pods", "po"))
     out = (_opt_value(args, ("-o", "--output")) or "").split("=")[0].lower()  # kubectl reads `-o YAML` as yaml
