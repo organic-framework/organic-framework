@@ -166,6 +166,42 @@ class ServerTest(ServerBase):
         got = sorted(x["event_id"] for _, _, rows in self.ch.inserts for x in rows)
         self.assertEqual([e for e in got if e.startswith("f-")], ["f-e1", "f-e2", "f-e3"])
 
+    def test_one_batch_sent_twice_at_once_keeps_its_records(self):
+        """of_review on PR 611: a retry of a batch while its first request is still queuing found no receipt, waited for
+        the lock, found every record seen and queued an empty copy over the first one's records. The receipt is read
+        again under the lock, so the second request answers with the first one's receipt."""
+        from unittest import mock
+        with self.app.store.conn() as c:
+            m = dict(zip(("machine_id", "orgs", "raw_orgs", "tenant"), c.execute(
+                "SELECT machine_id, orgs, raw_orgs, tenant FROM machines WHERE machine_id = ?",
+                (of_events.machine_id(),)).fetchone()))
+        batch = {"batch_id": "t1", "records": [event("t-e1", "ofb"), event("t-e2", "ofb")]}
+        real_put, entered, release, out = self.app.buffer.put, threading.Event(), threading.Event(), {}
+
+        def slow_put(bid, payload):
+            if payload["records"]:
+                entered.set()
+                release.wait(5)
+            return real_put(bid, payload)
+
+        def first():
+            out["first"] = of_server.accept(self.app.store, self.app.buffer, self.app.router(), m, batch, "sha-t1")
+        with mock.patch.object(self.app.buffer, "put", slow_put):
+            t = threading.Thread(target=first)
+            t.start()
+            self.assertTrue(entered.wait(5))                  # the first holds the lock in its put
+            second = {}
+            t2 = threading.Thread(target=lambda: second.setdefault("r", of_server.accept(
+                self.app.store, self.app.buffer, self.app.router(), m, batch, "sha-t1")))
+            t2.start()
+            time.sleep(0.2)                                   # the second passed the first check and waits for the lock
+            release.set()
+            t.join(5)
+            t2.join(5)
+        self.assertEqual((out["first"][0], out["first"][1]["accepted"]), (202, 2))
+        self.assertEqual((second["r"][0], second["r"][1]["accepted"], second["r"][1]["state"]), (202, 2, "queued"))
+        self.assertEqual([x["data"]["event_id"] for x in self.app.buffer.get("t1")["records"]], ["t-e1", "t-e2"])
+
     def test_writer_retries_in_order_when_clickhouse_is_down(self):
         self.client.send_batch([event("e1", "ofb")], batch_id="b1")
         self.client.send_batch([event("e2", "ofb")], batch_id="b2")
