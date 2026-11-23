@@ -70,23 +70,140 @@ def rules_folders(positions, org_paths, work_dir=None):
     return out
 
 
-def _exclude(folder, run=None):
-    """Keep the rules file out of the folder's git repository: one line in its info/exclude, never a commit."""
-    import subprocess
-    run = run or subprocess.run
-    r = run(["git", "-C", folder, "rev-parse", "--git-path", "info/exclude"], capture_output=True, text=True,
-            env=dict(os.environ, GIT_CEILING_DIRECTORIES=os.path.expanduser("~")))
-    if r.returncode != 0 or not r.stdout.strip():
-        return False
-    path = r.stdout.strip() if os.path.isabs(r.stdout.strip()) else os.path.join(folder, r.stdout.strip())
-    line = "/.claude/rules/of-*.md"
+# ---- names inside a session's folder ----
+# A session can write its own folder from its sandbox, while of apply and the pulse write there from outside it. So
+# every name below a session's folder is opened from the folder's descriptor one component at a time: no link
+# followed, a file created only as a new one, a file appended to only when it is a regular file of this user with no
+# second name (of_agent-server, message 01a20511-834d).
+
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_DIR = getattr(os, "O_DIRECTORY", 0)
+# no open waits: a name that is a pipe would hold the pulse until something writes it (of_server, 2026-11-22, on the rules writer's first fix)
+_NB = getattr(os, "O_NONBLOCK", 0)
+
+
+def _dir_fd(base, parts, make=False):
+    """A descriptor of BASE/PARTS..., each component opened from the one above without following a link; None when one
+    is missing (and not MAKE) or is not a folder."""
     try:
-        have = open(path).read().splitlines() if os.path.exists(path) else []
+        fd = os.open(os.path.realpath(base), os.O_RDONLY | _DIR | _NOFOLLOW | _NB)
+    except OSError:
+        return None
+    for part in parts:
+        try:
+            nxt = os.open(part, os.O_RDONLY | _DIR | _NOFOLLOW | _NB, dir_fd=fd)
+        except FileNotFoundError:
+            if not make:
+                os.close(fd)
+                return None
+            try:
+                os.mkdir(part, 0o755, dir_fd=fd)
+                nxt = os.open(part, os.O_RDONLY | _DIR | _NOFOLLOW | _NB, dir_fd=fd)
+            except OSError:
+                os.close(fd)
+                return None
+        except OSError:
+            os.close(fd)
+            return None
+        os.close(fd)
+        fd = nxt
+    return fd
+
+
+def _split(rel):
+    parts = [x for x in rel.split(os.sep) if x]
+    if not parts or any(x in (".", "..") for x in parts):
+        raise ValueError(rel)
+    return parts[:-1], parts[-1]
+
+
+def read_in(base, rel, limit=10 ** 7):
+    """BASE/REL's text when it is a regular file reached without a link, else None."""
+    dirs, name = _split(rel)
+    fd = _dir_fd(base, dirs)
+    if fd is None:
+        return None
+    import stat
+    try:
+        f = os.open(name, os.O_RDONLY | _NOFOLLOW | _NB, dir_fd=fd)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    if not stat.S_ISREG(os.fstat(f).st_mode):
+        os.close(f)
+        return None
+    with os.fdopen(f, "rb") as fh:
+        data = fh.read(limit + 1)
+    return data[:limit].decode("utf-8", "replace")
+
+
+def write_in(base, rel, text):
+    """Write BASE/REL whole: a new file beside it, renamed over the name (which replaces a link, never follows it)."""
+    dirs, name = _split(rel)
+    fd = _dir_fd(base, dirs, make=True)
+    if fd is None:
+        raise OSError(f"{os.path.join(base, *dirs)}: not a folder reached without a link")
+    tmp = f".{name}.{os.getpid()}.{os.urandom(4).hex()}.tmp"
+    try:
+        f = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _NB, 0o644, dir_fd=fd)
+        with os.fdopen(f, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, name, src_dir_fd=fd, dst_dir_fd=fd)
+    except OSError:
+        try:
+            os.unlink(tmp, dir_fd=fd)
+        except OSError:
+            pass
+        raise
+    finally:
+        os.close(fd)
+
+
+def remove_in(base, rel):
+    """Remove the name BASE/REL (a link is removed, never what it points at); False when it is not there."""
+    dirs, name = _split(rel)
+    fd = _dir_fd(base, dirs)
+    if fd is None:
+        return False
+    try:
+        os.unlink(name, dir_fd=fd)
+        return True
     except OSError:
         return False
-    if line not in have:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "a") as fh:
+    finally:
+        os.close(fd)
+
+
+def _exclude(folder, run=None):
+    """Keep the rules file out of the folder's git repository: one line in its .git/info/exclude, never a commit. Only
+    where .git is a folder of its own: a worktree's or submodule's .git file names its git folder, which the session
+    could point anywhere, and no git runs here on a repository a session can write (RUN is kept for callers)."""
+    import stat
+    try:
+        st = os.lstat(os.path.join(os.path.realpath(folder), ".git"))
+    except OSError:
+        return False
+    if not stat.S_ISDIR(st.st_mode):
+        return False
+    fd = _dir_fd(folder, [".git", "info"], make=True)
+    if fd is None:
+        return False
+    line = "/.claude/rules/of-*.md"
+    try:
+        f = os.open("exclude", os.O_RDWR | os.O_APPEND | os.O_CREAT | _NOFOLLOW | _NB, 0o644, dir_fd=fd)
+    except OSError:
+        os.close(fd)
+        return False
+    os.close(fd)
+    fs = os.fstat(f)
+    # a regular file of this user with one name; 0 names is one replaced after the open (PR 541's rule)
+    if not stat.S_ISREG(fs.st_mode) or fs.st_nlink > 1 or fs.st_nlink < 1 or fs.st_uid != os.getuid():
+        os.close(f)
+        return False
+    with os.fdopen(f, "r+", encoding="utf-8", errors="replace") as fh:
+        have = fh.read(10 ** 6).splitlines()
+        if line not in have:
             fh.write(("\n" if have and have[-1] else "") + "# of apply's rules files (hand-over 83b08e7b)\n" + line + "\n")
     return True
 
@@ -227,8 +344,7 @@ def write_rules(positions, org_paths, dry_run=False, log=print, run=None, sessio
     for d, orgs in shared.items():
         for org in orgs:
             old = os.path.join(d, RULES_FILE.format(org=org))
-            if os.path.exists(old) and not dry_run:
-                os.remove(old)
+            if not dry_run and remove_in(d, RULES_FILE.format(org=org)):
                 log(f"  removed {old}: {d} is shared by {', '.join(sorted(orgs))}")
     for org, dirs in folders.items():
         text = rules_file_text(org, os.path.join(roots.get(org) or "", "AGENTS.md"))
@@ -243,24 +359,54 @@ def write_rules(positions, org_paths, dry_run=False, log=print, run=None, sessio
             # or a session there loads the rules twice
             if any(a != r and r.startswith(a + os.sep) for a in mine):
                 inner = os.path.join(d, RULES_FILE.format(org=org))
-                if os.path.exists(inner) and not dry_run:
-                    os.remove(inner)
+                if not dry_run and remove_in(d, RULES_FILE.format(org=org)):
                     log(f"  removed {inner}: the folder above holds the same rules")
                 continue
             path = os.path.join(d, RULES_FILE.format(org=org))
-            if _read(path, 10 ** 7) == text:
+            if read_in(d, RULES_FILE.format(org=org)) == text:
                 continue
             written.append(path)
             if dry_run:
                 log(f"  would write {path}")
                 continue
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path + ".tmp", "w") as fh:
-                fh.write(text)
-            os.replace(path + ".tmp", path)
-            _exclude(d, run)
+            try:
+                write_in(d, RULES_FILE.format(org=org), text)
+            except OSError as e:
+                log(f"  not written {path}: {e}")
+                written.pop()
+                continue
+            try:
+                _exclude(d, run)
+            except (OSError, ValueError) as e:   # one folder's exclude never stops the others
+                log(f"  no exclude line in {d}: {e}")
             log(f"  wrote {path} ({len(text):,} characters of {org}'s binding rules)")
+    # a rules file OF did not write, under the name OF uses: a session can leave one, which the exclude line hides
+    # and every session there would load as rules; removed in each folder OF writes rules into (of_server,
+    # 2026-11-22, on the rules writer's first fix)
+    keep = {}
+    for org, dirs in folders.items():
+        for d in dirs:
+            r = os.path.realpath(d)
+            if r not in shared:
+                keep.setdefault(r, set()).add(os.path.basename(RULES_FILE.format(org=org)))
+    for r in sorted({os.path.realpath(d) for dirs in folders.values() for d in dirs}):
+        for name in _rules_names(r):
+            if name.startswith("of-") and name.endswith(".md") and name not in keep.get(r, set()) and not dry_run:
+                if remove_in(r, os.path.join(os.path.dirname(RULES_FILE.format(org="x")), name)):
+                    log(f"  removed {os.path.join(r, '.claude', 'rules', name)}: OF did not write it")
     return written
+
+
+def _rules_names(folder):
+    fd = _dir_fd(folder, os.path.dirname(RULES_FILE.format(org="x")).split(os.sep))
+    if fd is None:
+        return []
+    try:
+        return sorted(os.listdir(fd))
+    except OSError:
+        return []
+    finally:
+        os.close(fd)
 
 
 def rules_loaded_from(cwd, org, agents_md):
@@ -272,7 +418,7 @@ def rules_loaded_from(cwd, org, agents_md):
     d = os.path.realpath(os.path.expanduser(cwd))
     while True:
         path = os.path.join(d, RULES_FILE.format(org=org))
-        if _read(path, 10 ** 7) == text:
+        if read_in(d, RULES_FILE.format(org=org)) == text:
             return path
         up = os.path.dirname(d)
         if up == d:

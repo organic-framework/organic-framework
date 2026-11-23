@@ -190,6 +190,113 @@ class RulesFileTest(unittest.TestCase):
                          [(iso, "alpha", up), (iso, "beta", low)])
         self.assertEqual(of_context.position_starts(conn), {("alpha", "keeper"): up, ("beta", "keeper"): low})
 
+    def test_no_write_through_a_link_or_a_second_name(self):
+        """of_agent-server, message 01a20511-834d: the rules file and the exclude line are written from outside the
+        sandbox into a folder a session can write; no name there is followed through a link, and a file is appended to
+        only when it is a regular file of this user with no second name."""
+        import of_spawn
+        saved = of_spawn.work_dir
+        of_spawn.work_dir = self.wd
+        outside = os.path.join(os.path.dirname(self.work), "outside")
+        os.makedirs(outside)
+        target = os.path.join(outside, "target")
+        with open(target, "w") as fh:
+            fh.write("unchanged\n")
+        rules_dir = os.path.join(self.work, ".claude", "rules")
+        info = os.path.join(self.work, ".git", "info")
+
+        def run():
+            of_context.write_rules(self.positions, {"acme": [self.work]}, log=lambda m: None, sessions={})
+
+        def reset():
+            for p in (os.path.join(self.work, ".claude"), info):
+                if os.path.islink(p) or os.path.isfile(p):
+                    os.remove(p)
+                elif os.path.isdir(p):
+                    import shutil
+                    shutil.rmtree(p)
+        try:
+            cases = [
+                lambda: (os.makedirs(rules_dir), os.symlink(target, os.path.join(rules_dir, "of-acme.md"))),
+                lambda: (os.makedirs(rules_dir), os.symlink(target, os.path.join(rules_dir, "of-acme.md.tmp"))),
+                lambda: (os.makedirs(info), os.symlink(target, os.path.join(info, "exclude"))),
+                lambda: (os.makedirs(info), os.link(target, os.path.join(info, "exclude"))),
+                lambda: os.symlink(outside, os.path.join(self.work, ".claude")),
+                lambda: os.symlink(outside, info),
+            ]
+            for i, plant in enumerate(cases):
+                with self.subTest(case=i):
+                    reset()
+                    plant()
+                    run()
+                    with open(target) as fh:
+                        self.assertEqual(fh.read(), "unchanged\n")
+                    self.assertEqual(sorted(os.listdir(outside)), ["target"])
+            # and with nothing planted, both are written as before
+            reset()
+            run()
+            self.assertTrue(os.path.isfile(os.path.join(rules_dir, "of-acme.md")))
+            with open(os.path.join(info, "exclude")) as fh:
+                self.assertIn("/.claude/rules/of-*.md", fh.read())
+        finally:
+            of_spawn.work_dir = saved
+
+    def test_no_open_waits_and_a_rules_file_of_did_not_write_is_removed(self):
+        """of_server, 2026-11-22, on the rules writer's first fix: a pipe at a name never holds the writer or the reader, a bad exclude never stops
+        the run, and a rules file under OF's name that OF did not write is removed."""
+        import of_spawn
+        saved = of_spawn.work_dir
+        of_spawn.work_dir = self.wd
+        rules_dir = os.path.join(self.work, ".claude", "rules")
+        try:
+            os.makedirs(rules_dir)
+            os.mkfifo(os.path.join(rules_dir, "of-acme.md"))
+            self.assertIsNone(of_context.read_in(self.work, os.path.join(".claude", "rules", "of-acme.md")))
+            os.remove(os.path.join(rules_dir, "of-acme.md"))
+            info = os.path.join(self.work, ".git", "info")
+            os.makedirs(info, exist_ok=True)
+            if os.path.exists(os.path.join(info, "exclude")):
+                os.remove(os.path.join(info, "exclude"))
+            os.mkfifo(os.path.join(info, "exclude"))
+            with open(os.path.join(rules_dir, "of-planted.md"), "w") as fh:
+                fh.write("- a rule nobody reviewed\n")
+            of_context.write_rules(self.positions, {"acme": [self.work]}, log=lambda m: None, sessions={})
+            self.assertEqual(sorted(os.listdir(rules_dir)), ["of-acme.md"])
+        finally:
+            of_spawn.work_dir = saved
+
+    def test_the_sandbox_and_the_file_tools_keep_the_rules_folder(self):
+        import json
+        import of_spawn
+        from unittest import mock
+        self.assertIn("**/.claude/rules/**", of_spawn.PROTECTED_EDITS)
+        with mock.patch.object(of_spawn, "_accounts_dirs", return_value=[]):
+            box = json.loads(of_spawn.session_settings(None, [], platform="linux", scratch=(self.work, "S1")))
+        self.assertIn(os.path.join(self.work, ".claude", "rules"), box["sandbox"]["filesystem"]["denyWrite"])
+
+    def test_nested_registry_folders(self):
+        """of_review on PR 564: a folder above another organization's registry folder is shared (its sessions below
+        would load both rules files); the nearest registry folder decides who is foreign; one position name in two
+        organizations is two rows."""
+        up, low = "/w/alpha", "/w/alpha/beta"
+        folders = {"alpha": [up], "beta": [low]}
+        self.assertEqual(of_context.shared_folders(folders), {up: {"alpha", "beta"}})
+        self.assertEqual(of_context.foreign_orgs("beta", low, folders), set())         # its own folder, below another's
+        self.assertEqual(of_context.foreign_orgs("alpha", up + "/x", folders), set())
+        self.assertEqual(of_context.foreign_orgs("beta", up + "/x", folders), {"alpha"})
+        both = {"alpha": [up], "beta": [up]}
+        self.assertEqual(of_context.foreign_orgs("alpha", up, both), set())             # both named there
+        self.assertEqual(of_context.foreign_orgs("beta", up, both), set())
+        self.assertEqual(of_context.stray_sessions(folders, {low: {"beta"}, up: {"beta"}}), {up: {"beta"}})
+        import sqlite3
+        import time as _t
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE event (name TEXT, ts TEXT, org TEXT, position TEXT, cwd TEXT)")
+        iso = _t.strftime("%Y-%m-%dT%H:%M:%S.000Z", _t.gmtime())
+        conn.executemany("INSERT INTO event VALUES ('of.session_start', ?, ?, 'keeper', ?)",
+                         [(iso, "alpha", up), (iso, "beta", low)])
+        self.assertEqual(of_context.position_starts(conn), {("alpha", "keeper"): up, ("beta", "keeper"): low})
+
     def test_spawn_refuses_another_organizations_folder(self):
         """of_architect, message 01a204f7-ef0e: a session of one organization must not start where another's
         positions run, where it would load their rules."""
