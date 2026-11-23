@@ -102,5 +102,70 @@ class TallyTest(unittest.TestCase):
         self.assertIn("too few", text)
 
 
+class MainTest(unittest.TestCase):
+    """main over a scratch store and two organizations: only --org's labels count, a carried label is replayed against
+    its registry as it stood, and the output names no issue, note or position (of_release on PR 581)."""
+
+    def test_two_organizations_and_a_replay(self):
+        import contextlib
+        import io
+        import json
+        import subprocess
+        import tempfile
+        import of_store
+        git = ["git", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@t"]
+        with tempfile.TemporaryDirectory() as t:
+            orgs = []
+            for name, systems in (("acme", {"app": {"keeper": "acme_lead"}, "db": None, "queue": {"keeper": "acme_lead"}}),
+                                  ("beta", {"web": {"keeper": "beta_lead"}, "cache": None})):
+                repo = os.path.join(t, name)
+                os.makedirs(os.path.join(repo, "registry"))
+                with open(os.path.join(repo, "registry", "positions.yaml"), "w") as fh:
+                    json.dump({"organization": name, "systems": systems,
+                               "positions": [{"name": f"{name}_lead", "system": next(iter(systems)), "status": "active"}]}, fh)
+                env = dict(os.environ, GIT_AUTHOR_DATE="2026-11-01T00:00:00Z", GIT_COMMITTER_DATE="2026-11-01T00:00:00Z")
+                subprocess.run(git + ["init", "-q", repo], check=True)
+                subprocess.run(git + ["-C", repo, "add", "-A"], check=True)
+                subprocess.run(git + ["-C", repo, "commit", "-q", "-m", "registry"], check=True, env=env)
+                orgs.append(f"  - name: {name}\n    path: {repo}\n")
+            with open(os.path.join(t, "orgs.yaml"), "w") as fh:
+                fh.write("orgs:\n" + "".join(orgs))
+            conn = of_store.connect(os.path.join(t, "of.db"))
+            iid = of_priors.of_model.issue_id
+            for i, (org, rule, v, label, note, ts, issue) in enumerate((
+                    ("acme", "unkept-system", 0, "true_positive", "db has no keeper", "2026-11-10T09:00:00Z",
+                     iid("unkept-system", ["db"])),                               # @0, carried by @1: replayed, raised
+                    ("acme", "unkept-system", 0, "false_positive", "kept by the vendor", "2026-11-10T09:20:00Z",
+                     iid("unkept-system", ["app"])),                              # replayed: app has a keeper
+                    ("acme", "unkept-system", 1, "true_positive", "a note", "2026-11-12T09:00:00Z", "a1b2c3d4e5f6"),
+                    ("beta", "unkept-system", 0, "false_positive", "beta's own", "2026-11-10T09:00:00Z",
+                     iid("unkept-system", ["cache"])))):
+                of_store.add_event(conn, {"of.event.id": f"e{i}", "timestamp": ts, "event.name": "of.issue_labelled",
+                                          "of.org": org, "of.payload": {"issue_id": issue, "rule": f"ap.{rule}",
+                                                                        "rule_version": f"ap.{rule}@{v}",
+                                                                        "label": label, "note": note, "by": "owner"}})
+            conn.close()
+            saved = {k: os.environ.get(k) for k in ("OF_ORGS", "OF_DB")}
+            os.environ.update(OF_ORGS=os.path.join(t, "orgs.yaml"), OF_DB=os.path.join(t, "of.db"))
+            out, err = io.StringIO(), io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    rc = of_priors.main(["--org", "acme", "--json"])
+                with contextlib.redirect_stdout(io.StringIO()) as text, contextlib.redirect_stderr(io.StringIO()):
+                    of_priors.main(["--org", "acme"])
+            finally:
+                for k, v in saved.items():
+                    os.environ.pop(k) if v is None else os.environ.__setitem__(k, v)
+        self.assertEqual(rc, 0, err.getvalue())
+        d = json.loads(out.getvalue())
+        self.assertEqual((d["labels"], d["replays"]), (3, 1))                 # beta's label is not acme's
+        r = d["rules"]["ap.unkept-system@1"]
+        self.assertEqual((r["labels"], r["older_version"], r["replay_blocked"], r["not_raised"], r["counted"],
+                          r["distinct"], r["false_positive"], r["p"]), (3, 0, 0, 1, 2, 2, 0, None))
+        self.assertIn("replay 1/1", err.getvalue())
+        for secret in ("db has no keeper", "vendor", "a1b2c3d4e5f6", iid("unkept-system", ["db"]), "acme_lead", '"db"'):
+            self.assertNotIn(secret, out.getvalue() + text.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
