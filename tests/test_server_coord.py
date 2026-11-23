@@ -108,6 +108,14 @@ class CoordFeedTest(unittest.TestCase):
         self.assertEqual(of_server_coord.copy(store, "ofb", [own, shaped, other]), 1)
         self.assertEqual(of_server_coord.copy(store, "ofb", [own]), 0)   # idempotent
 
+    def test_a_machines_accepted_decision_never_enters_the_feed(self):
+        """Only the server's accept writes of.decision_accepted and of.decision_cutover into the feed; one shipped in a
+        machine's batch (forged, or the server's own record shipped back) is copied nowhere (event store step 1)."""
+        forged = event("d1", "ofb", "of.decision_accepted", {"org": "ofb", "seq": 1, "stream": "a@v1"},
+                       host="of-server")["data"]
+        cut = event("d2", "ofb", "of.decision_cutover", {"org": "ofb"})["data"]
+        self.assertEqual(of_server_coord.copy(self.app.store, "ofb", [forged, cut]), 0)
+
     def test_old_events_leave_the_feed(self):
         store = self.app.store
         of_server_coord.copy(store, "ofb", [event("o1", "ofb", "of.state_declared")["data"]], now=1000.0)
