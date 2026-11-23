@@ -2836,6 +2836,22 @@ def cmd_org(args):
                   + (f", work_root {o['work_root']} (each position in <work_root>/<position>)"
                      if o.get("work_root") else ""))
         return 0
+    if args.action == "folder":
+        # a position's own folder under the work_root, with its clones (of_review on PR 608): the owner's, as work_root
+        import of_asks_answer
+        import of_spawn
+        if of_asks_answer.not_the_owner():
+            raise OfError("a position's folder is the owner's to make: sessions write it. The owner runs `of org folder "
+                          "<org> <position> --clone <repository>` in a plain terminal")
+        if not args.org or not args.key or args.value or not args.clone:
+            raise OfError("of org folder <org> <position> --clone <repository URL or folder> [--clone …]")
+        try:
+            folder = of_spawn.make_folder(args.org, args.key, args.clone)
+        except of_spawn.SpawnError as e:
+            raise OfError(str(e))
+        print(f"{folder}: ready. Trust it once on the default account (Claude Code's trust dialog, in a plain "
+              f"terminal); of spawn {args.key} then starts the position there and writes its CLAUDE.md")
+        return 0
     usage = ("of org set <org> hold on|off | of org set <org> path <its repository's folder> | "
              "of org set <org> work_clone <a clone of it>|none | of org set <org> work_root <folder>|none")
     if not args.org or args.key not in of_init.ORG_KEYS or not args.value:
@@ -8696,10 +8712,12 @@ def main(argv=None):
     og = sub.add_parser("org", help="an organization's settings in this machine's orgs.yaml: show [<org>] | set <org> "
                         "hold on|off (`of apply` and the desk leave a held organization's panes alone) | set <org> path "
                         "<its repository's folder>")
-    og.add_argument("action", choices=["show", "set"])
+    og.add_argument("action", choices=["show", "set", "folder"])
     og.add_argument("org", nargs="?")
-    og.add_argument("key", nargs="?", choices=["hold", "path", "work_clone", "work_root"])
+    og.add_argument("key", nargs="?", help="hold, path, work_clone or work_root; for folder, the position's name")
     og.add_argument("value", nargs="?")
+    og.add_argument("--clone", action="append", default=[], help="folder: a repository to clone into the position's "
+                    "folder (repeat)")
     og.set_defaults(fn=cmd_org)
     ow = sub.add_parser("owner", help="this machine's owner settings, without an organization: show | set "
                         "language <code or name> | set surface herdr|remote (~/.config/of/owner.yaml)")
