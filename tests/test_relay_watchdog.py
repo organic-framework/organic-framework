@@ -68,10 +68,11 @@ class HeartbeatTest(StateDir):
         self.assertIn("poll http://s", loops)
         self.assertTrue(R.relay_healthy()[0])
 
-    def test_each_organizations_pull_moves_the_coord_loop(self):
-        """Two organizations on one hung server: each pull is bounded, but together they outlast STALE_S, so the
-        loop is stamped before each one (of_review on organic-framework PR 142)."""
-        seen = {}
+    def test_each_organization_is_pulled_in_its_own_long_poll(self):
+        """Event store step 1: each organization of a server has its own coordination loop and long-poll, so a slow or
+        quiet one holds no other one up, and each loop stamps its own tick (of_review on organic-framework PR 142: a
+        loop must be seen moving while a pull is bounded but slow)."""
+        seen, waits = {}, []
 
         class Client:
             def put_presence(self, body):
@@ -81,15 +82,14 @@ class HeartbeatTest(StateDir):
                 time.sleep(0.05)
                 return {"messages": []}
 
-            def coord(self, org, after):
-                if org == "a" and "a" not in seen:
-                    seen["a"] = time.time()
-                    time.sleep(0.6)                                          # the first organization's slow pull
-                elif org == "b" and "b" not in seen:
-                    seen["b"] = time.time()
-                    time.sleep(0.4)                                          # the presence loop writes meanwhile
-                    with open(R.heartbeat_path()) as fh:
-                        seen["tick"] = json.load(fh)["loops"]["coord http://s"]
+            def coord(self, org, after, wait=0):
+                waits.append(wait)
+                if org not in seen:
+                    seen[org] = time.time()
+                    if org == "a":
+                        time.sleep(0.6)                                      # a slow pull of the first organization
+                else:
+                    time.sleep(0.05)
                 return {"last": 0, "events": []}
         with mock.patch.object(R, "org_drains", lambda default: {}), \
                 mock.patch.object(R, "record_queues", lambda *a, **k: None), \
@@ -97,12 +97,21 @@ class HeartbeatTest(StateDir):
             stop, threads = R.run(lambda: {}, lambda u: Client(), {"a": "http://s", "b": "http://s"}, "http://s",
                                   log=lambda m: None)
             try:
-                deadline = time.time() + 5
-                while time.time() < deadline and "tick" not in seen:
+                deadline, loops = time.time() + 5, {}
+                while time.time() < deadline:
+                    try:
+                        loops = json.load(open(R.heartbeat_path())).get("loops") or {}
+                    except (OSError, ValueError):
+                        loops = {}
+                    if {"coord http://s|a", "coord http://s|b"} <= set(loops) and "b" in seen:
+                        break
                     time.sleep(0.1)
             finally:
                 stop.set()
-        self.assertGreaterEqual(seen["tick"], seen["a"] + 0.5)               # stamped after a's pull, before b's
+        self.assertLess(seen["b"] - seen["a"], 0.5)                          # b did not wait for a's slow pull
+        self.assertIn("coord http://s|a", loops)
+        self.assertIn("coord http://s|b", loops)
+        self.assertIn(R.COORD_WAIT, waits)                                   # each read is a long-poll
 
 
 class WatchdogTest(StateDir):

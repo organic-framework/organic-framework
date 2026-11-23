@@ -74,6 +74,19 @@ def fill(c):
         ("position_aliases", {"org": "acme", "alias": "ops", "position": "acme_ops", "updated": "2026-11-19T09:00:00Z"}),
         ("secret_sightings", {"batch_id": "b1", "kind": "k", "hmac": "h", "org": "acme", "tbl": "t", "count": 2,
                               "detected_at": "2026-11-19T09:00:00Z"}),
+        # PR 593's sent headers, and the decisions of event store step 1 with their counter: a move carries them
+        ("sent_across", {"msg_id": "01a1-s1", "from_org": "acme", "from_position": "acme_org", "to_org": "other",
+                         "to_position": "other_org", "sender_machine": "m1", "created": 1795130346.5}),
+        ("sent_across", {"msg_id": "01a1-s2", "from_org": "other", "from_position": "other_org", "to_org": "acme",
+                         "to_position": "acme_org", "sender_machine": "m2", "created": 1795130346.5}),
+        ("decision_orgs", {"org": "acme", "on_at": "2026-11-19T08:00:00Z", "first_seq": 1, "next_seq": 3,
+                           "cutover_id": "01a1-c1"}),
+        ("decisions", {"org": "acme", "seq": 2, "proposal": "01a1-p2", "event_id": "01a1-d2", "kind": "answer",
+                       "stream": "01a1-a@v1", "stream_version": 1, "state": "accepted", "restored": 0,
+                       "machine": "m1", "accepted_at": "2026-11-19T09:00:00Z", "record": "{}"}),
+        ("proposals", {"proposal": "01a1-p2", "org": "acme", "stream": "01a1-a@v1", "body_sha": "x",
+                       "state": "accepted", "status": 200, "answer": "{}", "machine": "m1",
+                       "at": "2026-11-19T09:00:00Z"}),
     ]
     for table, r in rows:
         c.execute(f"INSERT INTO {table} ({', '.join(r)}) VALUES ({', '.join('?' * len(r))})", list(r.values()))
