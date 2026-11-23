@@ -321,11 +321,24 @@ class _Tx:
 
 # ------------------------------------------------------------------ machines
 
-def enroll(store, machine_id, pubkey, orgs, raw_orgs=(), tenant=False, person=None, allowed_raw=None, consent=None):
+def same_key(a, b):
+    """Two OpenSSH public key lines name one key: type and key, the comment aside."""
+    return (a or "").split()[:2] == (b or "").split()[:2]
+
+
+def enroll(store, machine_id, pubkey, orgs, raw_orgs=(), tenant=False, person=None, allowed_raw=None, consent=None,
+           replace_key=False):
+    """Enrol MACHINE_ID with PUBKEY, or change an enrolled machine's organizations. A new key for an enrolled, unrevoked
+    machine is a new identity and needs replace_key (2026-11-23: a lab test re-keyed this machine on its live server
+    through `of server enroll-machine`, and `of init` with a scratch config folder would do the same): EnrollError 409."""
     allowed_raw = sorted(raw_orgs if allowed_raw is None else allowed_raw)
     consent = consent or {o: {"tiers": ["typed", "raw"] if o in raw_orgs else ["typed"], "terms": None,
                               "at": of_events.now_iso()} for o in orgs}
     with store.conn() as c:
+        had = c.execute("SELECT pubkey FROM machines WHERE machine_id = ? AND revoked_at IS NULL", (machine_id,)).fetchone()
+        if had and not replace_key and not same_key(had[0], pubkey):
+            raise EnrollError(409, "conflict", f"{machine_id} is enrolled with another key: revoke it first, or replace "
+                                               "its key on purpose (of server enroll-machine --replace-key)")
         _seed_new_orgs(c, machine_id, orgs)   # card ids of an organization new to this server start at 1 (Card ids)
         c.execute("INSERT OR REPLACE INTO machines (machine_id, pubkey, orgs, raw_orgs, tenant, enrolled_at, revoked_at,"
                   " person, allowed_raw, consent) VALUES (?,?,?,?,?,?,NULL,?,?,?)",
