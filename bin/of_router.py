@@ -160,7 +160,9 @@ def clone_main(full, roots, repos):
     the systems map claims by name (REPOS), kept there under that name, but cloned under another folder name
     (`devops-k8s-wfk` for `devops-k8s`): the two checkouts' origins are the same. Else None. A checkout named as a
     claimed repository, a root itself, and a linked worktree (worktree_main's) are never one (a user organization's
-    structure keeper, 2026-11-23: the router knew a worktree's repository but a clone only by its folder name)."""
+    structure keeper, 2026-11-23: the router knew a worktree's repository but a clone only by its folder name).
+    Observe mode only: whoever made the clone wrote its `.git/config`, so its origin line is a session's own choice of
+    system; enforcement must not trust it (of_review on organic-framework PR 591)."""
     for root in roots:
         if not full.startswith(root + os.sep):
             continue
