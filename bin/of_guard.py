@@ -5407,24 +5407,23 @@ _BENCH_KEY = re.compile(r"""^(?:bench|'bench'|"bench")[ \t]*:[ \t]*(.*?)[ \t]*$"
 
 def _bench_home():
     """Bench's checkout as of_benchpath.home() names it: owner.yaml's top-level `bench:`, else ~/.local/share/bench.
-    Read without YAML, since the hook decides before importing PyYAML, and without waiting. owner.yaml is the owner's
-    (G33). What cannot be read falls back to the default, as OF's own reading does."""
+    Read without YAML, since the hook decides before importing PyYAML, and without waiting (_read_text). owner.yaml is
+    the owner's (G33). A file that is there and cannot be read, or a value that is no path, is recorded as unreadable,
+    so the hook denies the call (of_review on PR 575: a value that raised here dropped the shell's write rules)."""
     import of_events
-    import stat as _stat
+    path = of_events.config_path("owner.yaml")
     v = None
     try:
-        fd = os.open(of_events.config_path("owner.yaml"), os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
-        try:
-            text = os.read(fd, 1 << 16).decode("utf-8", "replace") if _stat.S_ISREG(os.fstat(fd).st_mode) else ""
-        finally:
-            os.close(fd)
-        for line in text.splitlines():
+        for line in _read_text(path, 1 << 16).splitlines():
             m = _BENCH_KEY.match(line)
             if m:
                 v = _yaml_scalar(m.group(1))
         return os.path.realpath(_expanduser(v or os.path.join("~", ".local", "share", "bench")))
-    except Exception:  # noqa: BLE001 - any value at all: the default, never an error on the guard's path
-        return os.path.realpath(_expanduser(os.path.join("~", ".local", "share", "bench")))
+    except OSError as e:
+        _unreadable(path, e)
+    except Exception as e:  # noqa: BLE001 - a value that is no path (a NUL, say): unreadable, never an error here
+        UNREADABLE.append(f"{path} ({type(e).__name__})")
+    return os.path.realpath(_expanduser(os.path.join("~", ".local", "share", "bench")))
 
 
 def _yaml_scalar(raw):
