@@ -3004,14 +3004,17 @@ def _render_cache(orgs_file=None, log=None):
     now = time.time()
     try:   # the window is read once for every organization (2026-11-14: each read every organization's rows)
         import of_store
-        shared = of_model.load_events(of_store.connect(), since=of_model.iso(now - 9 * DAY), names=kinds())
+        stats = {}
+        shared = of_model.load_events(of_store.connect(), since=of_model.iso(now - 9 * DAY), names=kinds(), stats=stats)
     except Exception:  # noqa: BLE001 — each page reads for itself then
-        shared = None
+        shared, stats = None, {}
     # where the memory goes, per step, read where the render runs (2026-11-23: 2.0 GiB on the founder's laptop under
     # memory pressure, of_capacity msg 01a20791-99fd): the peak only grows, so each step's rise is its own
     if log:
+        big = sorted(stats.items(), key=lambda kv: -kv[1][1])[:6]
         log(f"window: {len(shared) if shared is not None else 'not'} rows read in {time.time() - t0:.0f} s, "
-            f"peak {peak_mib()} MiB")
+            f"peak {peak_mib()} MiB" + ("; most payload: " + ", ".join(f"{n} {c} rows {b / 2**20:.0f} MiB"
+                                                                       for n, (c, b) in big) if big else ""))
     for o in orgs(orgs_file):
         t1 = time.time()
         try:

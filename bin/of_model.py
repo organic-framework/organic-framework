@@ -1175,7 +1175,8 @@ def snapshot_path(repo, model):
 
 # ------------------------------------------------------------------ events from the local store
 
-def load_events(conn, since=None, until=None, names=None):
+def load_events(conn, since=None, until=None, names=None, stats=None):
+    """STATS: a dict the caller passes to learn, per event name, [rows, payload bytes as stored]."""
     sql = "SELECT event_id, ts, name, session_id, position, org, cwd, source, harness_name, payload FROM event WHERE 1=1"
     args = []
     if since:
@@ -1185,13 +1186,24 @@ def load_events(conn, since=None, until=None, names=None):
     if names:
         sql += " AND name IN (%s)" % ",".join("?" * len(names)); args += list(names)
     out = []
+    # one copy of each value that repeats across rows: a name, a session, a position, a folder, a payload's keys. A row
+    # took about 2.2 KiB, and the page cache's 9-day window of 688,633 rows held 1.5 GiB on the founder's laptop under
+    # memory pressure (2026-11-23, of_capacity msg 01a207c0-c43a); on the agent host's window this saves 19% of it.
+    keep = {}
+    one = keep.setdefault
+    pairs = lambda items: {one(k, k): v for k, v in items}
     for e, ts, n, s, pos, org, cwd, src, harness, pl in conn.execute(sql + " ORDER BY ts, rowid", args):
+        if stats is not None:
+            st = stats.setdefault(n, [0, 0])
+            st[0] += 1
+            st[1] += len(pl or "")
         try:
-            payload = json.loads(pl) if pl else {}
+            payload = json.loads(pl, object_pairs_hook=pairs) if pl else {}
         except ValueError:
             payload = {}
-        out.append({"event_id": e, "ts": ts, "_t": epoch(ts), "name": n, "session_id": s, "position": pos, "org": org,
-                    "cwd": cwd, "source": src, "harness": harness, "payload": payload})
+        out.append({"event_id": e, "ts": ts, "_t": epoch(ts), "name": one(n, n), "session_id": s and one(s, s),
+                    "position": pos and one(pos, pos), "org": org and one(org, org), "cwd": cwd and one(cwd, cwd),
+                    "source": src and one(src, src), "harness": harness and one(harness, harness), "payload": payload})
     if not names or "of.human_prompt" in names:
         # a correction may come days after its prompt, never before it (`of db prompt-origins` writes it from the
         # transcript later; all 261 in the store on 2026-11-14 follow theirs): every one since the window's start,
