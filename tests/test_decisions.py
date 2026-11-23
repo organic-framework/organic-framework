@@ -58,6 +58,17 @@ class StreamTest(unittest.TestCase):
         self.assertEqual(d.accepted_id("P"), of_events.stable_id("decision", "P"))
 
 
+class PayloadTest(unittest.TestCase):
+    def test_the_payload_keys_the_contract_takes(self):
+        """of_server, message 01a208a4-7e35: at most 32 keys, each a lowercase name; the server's own keys dropped."""
+        self.assertEqual(d._fields({"answer": "yes", "seq": 3, "stream_version": 2, "note": None, "quote": "q"}),
+                         {"answer": "yes", "quote": "q"})
+        with self.assertRaisesRegex(d.DecisionError, "lowercase"):
+            d.propose(ORG, "answer", d.answer_stream(ASK, 1), {"Answer": "yes"}, "P")
+        with self.assertRaisesRegex(d.DecisionError, "at most 32"):
+            d.propose(ORG, "answer", d.answer_stream(ASK, 1), {f"k{i}": i for i in range(33)}, "P")
+
+
 class FoldTest(unittest.TestCase):
     """The race that started this: two machines answering one card; every machine shows the one accepted."""
 
@@ -171,6 +182,10 @@ class SendTest(unittest.TestCase):
             got = d.send_pending(self.conn, post, only=[e, a])                    # the popup's own, at once
         self.assertEqual((got[e]["state"], got[e]["record"]["proposal"]), ("refused", a))
         self.assertEqual(got[a]["state"], "accepted")
+        f = self.propose("f")
+        with mock.patch.object(of_events, "_org_server_url", return_value="https://s"):
+            got = d.send_pending(self.conn, lambda u, b: (400, {"title": "malformed"}), only=[f])
+        self.assertEqual(got[f]["state"], "refused")                                # not sent again
 
     def test_unreachable_before_the_cutover_is_todays_answer_and_after_it_only_waits(self):
         a = self.propose("a")
