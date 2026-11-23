@@ -1,5 +1,7 @@
 """of tools (bin/of_tools.py): the profile, the generated session config and the catalogue check. Pure logic."""
 import json
+import shlex
+import tempfile
 import os
 import sys
 import unittest
@@ -677,6 +679,38 @@ class CodexTest(unittest.TestCase):
             anc = [helper, (11, "bash -c true -p of-L1"), (10, "codex -p of-L2")]
             with self.assertRaises(of_tools.ToolsError):
                 of_tools.header("acme", "grafana-read", {"acme": d}, ancestors=anc, state_dir=st)
+
+
+
+class StartTextTest(unittest.TestCase):
+    """of_architect, msg 01a20606-072f: plan names the size of the text a plugin's SessionStart hooks add to every
+    session, for of_capacity."""
+
+    def make(self, d, out, matcher="startup|resume"):
+        root = os.path.join(d, "plugins", "cache", "sp")
+        os.makedirs(os.path.join(root, "hooks"))
+        with open(os.path.join(root, "hooks", "say.sh"), "w") as fh:
+            fh.write(f"cat >/dev/null; printf '%s' {shlex.quote(out)}\n")
+        with open(os.path.join(root, "hooks", "hooks.json"), "w") as fh:
+            json.dump({"hooks": {"SessionStart": [{"matcher": matcher, "hooks": [
+                {"type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/say.sh\""}]}]}}, fh)
+        with open(os.path.join(d, "plugins", "installed_plugins.json"), "w") as fh:
+            json.dump({"version": 2, "plugins": {"sp@m": [{"scope": "user", "installPath": root}]}}, fh)
+
+    def test_json_context_is_measured(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.make(d, json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart",
+                                                            "additionalContext": "x" * 400}}))
+            self.assertEqual(of_tools.start_text_size(d, "sp@m"), 400)
+            self.assertIsNone(of_tools.start_text_size(d, "other@m"))  # not installed there
+
+    def test_plain_output_counts_whole_and_a_matcher_that_skips_startup_runs_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.make(d, "hello")
+            self.assertEqual(of_tools.start_text_size(d, "sp@m"), 5)
+        with tempfile.TemporaryDirectory() as d:
+            self.make(d, "hello", matcher="compact")
+            self.assertIsNone(of_tools.start_text_size(d, "sp@m"))
 
 
 if __name__ == "__main__":

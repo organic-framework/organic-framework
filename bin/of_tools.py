@@ -32,6 +32,7 @@ import secrets
 import shlex
 import socket
 import sqlite3
+import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -278,6 +279,62 @@ def installed_plugins(config_dir):
             return sorted((json.load(fh).get("plugins") or {}).keys())
     except (OSError, ValueError):
         return []
+
+
+def plugin_path(config_dir, plugin_id):
+    """The folder a plugin is installed in on a Claude config folder (installed_plugins.json), or None."""
+    try:
+        with open(os.path.join(os.path.expanduser(config_dir), "plugins", "installed_plugins.json")) as fh:
+            rec = (json.load(fh).get("plugins") or {}).get(plugin_id)
+    except (OSError, ValueError, AttributeError):
+        return None
+    for r in (rec if isinstance(rec, list) else [rec]):
+        if isinstance(r, dict) and r.get("installPath") and os.path.isdir(r["installPath"]):
+            return r["installPath"]
+    return None
+
+
+def start_text_size(config_dir, plugin_id, timeout=10):
+    """Bytes of the text a plugin's SessionStart hooks add to every session's context, measured by running them as
+    Claude Code does at a start (their JSON's hookSpecificOutput.additionalContext, else their whole output), or
+    None when the plugin is not installed there or has no such hook. A session re-reads that text on every call, so
+    its size is a cost of_capacity weighs (of_architect, msg 01a20606-072f). It runs the plugin's own hook code, the
+    same that runs at each of its sessions' starts, with a minimal environment and no input beyond the event."""
+    root = plugin_path(config_dir, plugin_id)
+    if not root:
+        return None
+    try:
+        with open(os.path.join(root, "hooks", "hooks.json")) as fh:
+            groups = (json.load(fh).get("hooks") or {}).get("SessionStart") or []
+    except (OSError, ValueError, AttributeError):
+        return None
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.path.expanduser("~"),
+           "CLAUDE_PLUGIN_ROOT": root, "CLAUDE_CONFIG_DIR": os.path.expanduser(config_dir), "OF_AUTOMATION": "1"}
+    total, ran = 0, False
+    for g in groups:
+        if g.get("matcher") and not re.search(str(g["matcher"]), "startup"):
+            continue
+        for h in g.get("hooks") or []:
+            if h.get("type") != "command" or not h.get("command"):
+                continue
+            ran = True
+            try:
+                r = subprocess.run(["sh", "-c", h["command"].replace("${CLAUDE_PLUGIN_ROOT}", shlex.quote(root))],
+                                   cwd=root, env=env, input=json.dumps({"hook_event_name": "SessionStart",
+                                                                         "source": "startup"}),
+                                   capture_output=True, text=True, timeout=timeout)
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            out = r.stdout or ""
+            try:
+                doc = json.loads(out)
+                ctx = ((doc.get("hookSpecificOutput") or {}).get("additionalContext")
+                       if isinstance(doc, dict) else None)
+                out = ctx if isinstance(ctx, str) else out
+            except ValueError:
+                pass
+            total += len(out.encode())
+    return total if ran else None
 
 
 # ---------- shared servers (docs/tools.md §4a) ----------
@@ -1232,6 +1289,12 @@ def main(argv=None):
                 print(f"account-bound (need a sign-in on the account): {', '.join(cfg['account_bound'])}")
             print("--mcp-config:", json.dumps(cfg["mcp"], indent=1) if cfg["mcp"] else "none")
             print("--settings keys:", json.dumps(cfg["settings"], indent=1))
+            if a.config_dir:
+                for pid, on in sorted((cfg["settings"].get("enabledPlugins") or {}).items()):
+                    n = start_text_size(a.config_dir, pid) if on else None
+                    if n:
+                        print(f"start text: {pid} adds {n} bytes (about {n // 4} tokens) to every session's context, "
+                              f"measured by running its SessionStart hooks on this account")
             for n in cfg["notes"]:
                 print("note:", n)
             return 0
