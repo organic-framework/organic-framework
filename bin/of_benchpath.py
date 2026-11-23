@@ -18,11 +18,19 @@ def _plain(path):
     quoted scalar, an unquoted `#` comment dropped), or None; ValueError when YAML reads the file to another value,
     so OF and the guard never read two (of_secrets-review on PR 575)."""
     import re
-    try:
-        with open(path, encoding="utf-8") as fh:
-            text = fh.read(1 << 16)
+    import stat
+    try:   # never waiting on a pipe, and only a regular file (of_review on PR 575)
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     except OSError:
         return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        text = os.read(fd, 1 << 16).decode("utf-8", "replace")
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
     key = re.compile(r"""^(?:bench|'bench'|"bench")[ \t]*:[ \t]*(.*?)[ \t]*$""")   # of_guard._BENCH_KEY
     v = None
     for line in text.splitlines():
