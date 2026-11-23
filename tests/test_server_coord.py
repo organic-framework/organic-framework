@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "bin"))
 import of_client  # noqa: E402
 import of_coord  # noqa: E402
 import of_events  # noqa: E402
+from tests.test_server import release_store_conns  # noqa: E402
 import of_server  # noqa: E402
 import of_relay_client  # noqa: E402
 import of_server_coord  # noqa: E402
@@ -58,6 +59,7 @@ class CoordFeedTest(unittest.TestCase):
         self.httpd.server_close()
         self.app.writer.stop.set()
         of_events.STATE_DIR = self.saved
+        release_store_conns(self.tmp.name)
         self.tmp.cleanup()
 
     def machine(self, name, orgs, tenant=False):

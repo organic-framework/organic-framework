@@ -44,6 +44,18 @@ def transcript(uuid, project, raw='{"x": 1}'):
         "source_path": f"{HOME}/.claude-x/projects/{project}/T.jsonl", "raw": raw, "tool_names": ""}}
 
 
+def release_store_conns(root):
+    """Close the event log's cached connections to the stores under ROOT. of_events._conn keeps one per store path and
+    thread, and each test's state folder is new, so they piled up, three descriptors a test, until the whole suite
+    passed select()'s 1,024 in tests.test_stacks (of_release, message 01a20904-fd6f, on public main 0f9db4d6)."""
+    for k in [k for k in list(of_events._CONN) if str(k[0]).startswith(root)]:
+        conn = of_events._CONN.pop(k, None)
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001 - another thread's: dropped from the cache, it closes when collected
+            pass
+
+
 class ServerBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -83,6 +95,7 @@ class ServerBase(unittest.TestCase):
         self.httpd.server_close()
         self.app.writer.stop.set()
         of_events.STATE_DIR = self.saved_state
+        release_store_conns(self.tmp.name)
         self.tmp.cleanup()
 
 
@@ -563,6 +576,7 @@ class PerOrgServerTest(unittest.TestCase):
         self.httpd.server_close()
         self.app.writer.stop.set()
         of_events.STATE_DIR = self.saved_state
+        release_store_conns(self.tmp.name)
         self.tmp.cleanup()
 
     def test_client_routed_records_and_copy_allow_list(self):
@@ -988,6 +1002,7 @@ class RedactionTest(unittest.TestCase):
         self.httpd.server_close()
         self.app.writer.stop.set()
         of_events.STATE_DIR = self.saved
+        release_store_conns(self.tmp.name)
         self.tmp.cleanup()
 
     def rec(self, uuid, raw, host):
