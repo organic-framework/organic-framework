@@ -9,9 +9,15 @@ Bench is RubyGems and Bundler, and OF is Rails. The design is organic-framework-
 ## Setting it up
 
 - **Bench's checkout.** Clone `organic-framework/bench` to `~/.local/share/bench`, or anywhere and name it with
-  `of owner set bench <folder>` (the owner's alone, in a plain terminal: OF runs its code). `of owner show` says where
+  `of owner set bench <folder>`, and check out the commit this OF is tested with, `54e4cc352a3fe5b5c476bb9a5fe2b1bc80a54c18` (Bench's
+  first slice, its pull request 1; CI pins the same commit) (the owner's alone, in a plain terminal: OF runs its code). `of owner show` says where
   OF looks. OF never takes the path from an environment variable. Without a checkout, `of bench` says where it looked,
   and an organization without a `Benchfile.lock` naming a package runs as before.
+- **Bench's outer sandbox.** Bench evaluates only inside an operating-system sandbox of its own: `sandbox-exec` on
+  macOS, which is there; on Linux `bubblewrap` (`apt install bubblewrap`) in a scope of the user's systemd manager
+  (`systemd-run --user`). Ubuntu 24.04's AppArmor keeps bwrap from making user namespaces until
+  `kernel.apparmor_restrict_unprivileged_userns` is 0, which is the machine owner's to set. It cannot start inside an
+  agent session's sandbox.
 - **A Lua runtime.** Bench reads every Lua file in a closed environment of its own: Lua 5.4, LuaJIT 2.1 or Lua 5.1
   (macOS: `brew install luajit`; Debian or Ubuntu: `apt install lua5.4`).
 - **Protection.** The checkout is code OF imports, the pulse included, outside any sandbox, so it is protected as OF's
@@ -67,4 +73,6 @@ setting `escalate_after`, only where the organization's `Benchfile.lock` names t
 
 `bin/of_benchpath.py` (where Bench is), `bin/of_method.py` (main.lua's words, settings, hooks), `cmd_bench` in
 `bin/of`. Tests: `tests/test_of_method.py`, which take a Bench checkout from `OF_TEST_BENCH` (read by the tests only)
-and skip without one.
+and skip without one. CI's unit job checks out Bench at `54e4cc352a3fe5b5c476bb9a5fe2b1bc80a54c18` into `OF_TEST_BENCH`, with bubblewrap
+installed, so these tests run there, never skip. A newer Bench is pinned here and in `.github/workflows/tests.yml`
+together.
