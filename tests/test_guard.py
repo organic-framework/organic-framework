@@ -716,6 +716,25 @@ class GuardBashTest(unittest.TestCase):
         finally:
             of_guard.ENV_FILE_MODE = old
 
+    def test_the_default_kube_config_warns_first(self):
+        """docs/guard.md G1.15 (2026-11-23): ~/.kube/config holds the clusters' credentials; 12 calls of 21 days would
+        newly deny, live flows among them, so it warns with a note, and denies once KUBE_CONFIG_MODE is "deny"."""
+        self.assertIsNone(deny("cat ~/.kube/config"))
+        self.assertIn("the default kubeconfig", of_guard._WARNINGS[0][0])
+        self.assertIn("G1.15", of_guard._WARNINGS[0][2])
+        self.assertIsNone(of_guard.critical_deny("Read", {"file_path": "/home/alex/.kube/config"}))
+        self.assertTrue(of_guard._WARNINGS)
+        for quiet in ("ls ~/.kube/cache", "cat ~/.kube/config.md", "kubectl get pods -n web"):
+            self.assertIsNone(deny(quiet), quiet)
+            self.assertEqual(of_guard._WARNINGS, [], quiet)
+        old = of_guard.KUBE_CONFIG_MODE
+        try:
+            of_guard.KUBE_CONFIG_MODE = "deny"
+            self.assertTrue(deny("cat ~/.kube/config"))
+            self.assertTrue(of_guard.critical_deny("Read", {"file_path": "/home/alex/.kube/config"}))
+        finally:
+            of_guard.KUBE_CONFIG_MODE = old
+
     def test_a_triple_quoted_block_is_carried_text(self):
         # docs/guard.md G8 (of_capacity, 2026-11-07): a python edit whose old and new strings name a secret path
         tok = "~/.config/mt/agent-" + "identity/op-sa." + "token"
