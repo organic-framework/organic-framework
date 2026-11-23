@@ -2832,10 +2832,12 @@ def cmd_org(args):
                   f"{o.get('path') or '(none: joined through a server only)'}"
                   + (f", work clone {o['work_clone']}" + ("" if _clone_ok(o) else " (not writable: refused, or no "
                                                                    ".git/commondir holding '.')")
-                     if o.get("work_clone") else ""))
+                     if o.get("work_clone") else "")
+                  + (f", work_root {o['work_root']} (each position in <work_root>/<position>)"
+                     if o.get("work_root") else ""))
         return 0
     usage = ("of org set <org> hold on|off | of org set <org> path <its repository's folder> | "
-             "of org set <org> work_clone <a clone of it>|none")
+             "of org set <org> work_clone <a clone of it>|none | of org set <org> work_root <folder>|none")
     if not args.org or args.key not in of_init.ORG_KEYS or not args.value:
         raise OfError(usage)
     if args.key == "hold":
@@ -2866,6 +2868,28 @@ def cmd_org(args):
             if not of_spawn.clone_ready(folder):
                 raise OfError(f"{args.value}: .git/commondir must be a file holding '.': a worktree or a link is no "
                               "work clone")
+            home = os.path.realpath(os.path.expanduser("~"))
+            value = shown_value = "~" + folder[len(home):] if folder.startswith(home + "/") else folder
+    elif args.key == "work_root":
+        # each position's own folder below it (hand-over 4c70deab; of_architect's ruling, message 01a20513-20d2): the
+        # owner's alone, as work_clone, since sessions write those folders
+        import of_asks_answer
+        if of_asks_answer.not_the_owner():
+            raise OfError("an organization's work_root is the owner's to set: sessions write the folders below it. The "
+                          "owner runs `of org set <org> work_root <folder>` in a plain terminal")
+        if args.value == "none":
+            value, shown_value = None, "none"
+        else:
+            folder = os.path.realpath(os.path.expanduser(args.value))
+            if not os.path.isdir(folder):
+                raise OfError(f"{args.value}: no such folder")
+            if os.path.lexists(os.path.join(folder, ".git")):
+                raise OfError(f"{args.value}: a git repository; a work_root holds the positions' folders, each with "
+                              "its clones")
+            import of_spawn
+            why = of_spawn.clone_refused(folder, entries, os.path.dirname(os.path.abspath(path)))
+            if why:
+                raise OfError(f"{args.value}: not a work_root: {why}")
             home = os.path.realpath(os.path.expanduser("~"))
             value = shown_value = "~" + folder[len(home):] if folder.startswith(home + "/") else folder
     else:
@@ -8676,7 +8700,7 @@ def main(argv=None):
                         "<its repository's folder>")
     og.add_argument("action", choices=["show", "set"])
     og.add_argument("org", nargs="?")
-    og.add_argument("key", nargs="?", choices=["hold", "path", "work_clone"])
+    og.add_argument("key", nargs="?", choices=["hold", "path", "work_clone", "work_root"])
     og.add_argument("value", nargs="?")
     og.set_defaults(fn=cmd_org)
     ow = sub.add_parser("owner", help="this machine's owner settings, without an organization: show | set "

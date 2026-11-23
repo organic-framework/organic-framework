@@ -56,6 +56,7 @@ def rules_folders(positions, org_paths, work_dir=None):
     """{org: [folders]}: the folders the organization's active positions run in (of_spawn.work_dir)."""
     import of_spawn
     work_dir = work_dir or of_spawn.work_dir
+    roots = of_spawn.work_roots()
     out = {}
     for p in positions:
         if p.get("status") not in (None, "active") or (p.get("holder") or {}).get("runtime") == "human":
@@ -65,6 +66,11 @@ def rules_folders(positions, org_paths, work_dir=None):
             d = work_dir(p, p.get("_systems") or {}, org_paths.get(p.get("_org")) or [])
         except Exception:  # noqa: BLE001 - no folder for it: of registry check names it
             continue
+        root = roots.get(p.get("_org"))
+        if root and d and os.path.dirname(os.path.realpath(d)) == root:
+            # a position's own folder: the rules go into the work_root above it, which no session writes, so a
+            # session cannot edit its own rules (the position folders design, condition 5)
+            d = root
         if d and d not in out.setdefault(org, []):
             out[org].append(d)
     return out

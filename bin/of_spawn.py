@@ -50,6 +50,7 @@ def clone_guard(orgs_file=None):
     readers outside the sandbox that pick a folder (work_dir, doc_path) never take such a path (of_review on PR 551:
     checked where the folder is picked, not predicted when the clone is named)."""
     clones = [c for _, c, _, _ in work_clones(orgs_file, include_refused=True)]
+    clones += list(work_roots(orgs_file).values())   # the positions' own folders, which sessions write
 
     def near(q):
         return any(q == c or q.startswith(c + os.sep) or c.startswith(q + os.sep) for c in clones)
@@ -94,6 +95,12 @@ def clone_guard(orgs_file=None):
 def work_dir(p, systems, org_paths, exists=os.path.isdir):
     """The position's folder: the first repository of its system that exists under the organization's paths (as a
     child of a path, or as a sibling of it), else the organization's first path. Never a named work clone."""
+    pf = position_folder(p)
+    if pf:   # the organization names a work_root: the position's own folder, or none (hand-over 4c70deab)
+        if exists(pf):
+            return pf
+        raise SpawnError(f"no working folder for {p['name']}: {pf} is not made yet; the owner's setup makes it "
+                         f"under the organization's work_root (docs/registry.md)")
     repos = ((systems or {}).get(p.get("system")) or {}).get("repos") or []
     roots = [os.path.expanduser(str(x)) for x in org_paths or []]
     in_clone = clone_guard()
@@ -304,6 +311,84 @@ def work_clones(orgs_file=None, include_refused=False):
     return out
 
 
+# a position's own folder under its organization's work_root (hand-over 4c70deab; of_architect's ruling, message
+# 01a20513-20d2): no git repository itself, its clones directly below it. Denied for writes at its top, so nothing
+# there makes it a repository or changes how a session starts (the position folders
+# design, conditions 2, 3 and 6); CLAUDE.md is of spawn's (prepare_folder)
+POSITION_TOP = (".git", "HEAD", "config", "objects", "refs", "commondir", "packed-refs", "info", "hooks",
+                ".claude", ".mcp.json", "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md")
+
+
+def work_roots(orgs_file=None):
+    """{organization: its work_root, resolved} from this machine's orgs.yaml (the owner's, G33). A root that
+    clone_refused refuses (an organization's path or checkout, OF's own folders, the home) is left out."""
+    import yaml
+    f = orgs_file or _orgs_file()
+    try:
+        with open(f) as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, ValueError, yaml.YAMLError):
+        return {}
+    base = os.path.dirname(os.path.abspath(f))
+    entries = [o for o in ((doc.get("orgs") if isinstance(doc, dict) else None) or []) if isinstance(o, dict)]
+    out = {}
+    for o in entries:
+        if not o.get("work_root"):
+            continue
+        root = os.path.realpath(os.path.join(base, os.path.expanduser(str(o["work_root"]))))
+        if not clone_refused(root, entries, base):
+            name = o.get("name") or os.path.basename(os.path.realpath(os.path.expanduser(str(o.get("path") or ""))))
+            out[name] = root
+    return out
+
+
+def position_folder(p, orgs_file=None):
+    """<work_root>/<position> when the position's organization names a work_root, else None (today's rule)."""
+    root = work_roots(orgs_file).get(p.get("_org"))
+    if not root or not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", str(p.get("name") or "")):
+        return None
+    return os.path.join(root, p["name"])
+
+
+def position_clones(folder):
+    """The git clones directly below a position's folder: each a folder whose .git is a folder, no link."""
+    import stat
+    out = []
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return out
+    for n in names:
+        d = os.path.join(folder, n)
+        try:
+            if stat.S_ISDIR(os.lstat(d).st_mode) and stat.S_ISDIR(os.lstat(os.path.join(d, ".git")).st_mode):
+                out.append(d)
+        except OSError:
+            continue
+    return out
+
+
+def in_position_folder(cwd, org, orgs_file=None):
+    """Is CWD a position's folder of ORG (directly under its work_root)?"""
+    root = work_roots(orgs_file).get(org)
+    return bool(root and cwd and os.path.dirname(os.path.realpath(cwd)) == root)
+
+
+def prepare_folder(cwd, org, orgs_file=None):
+    """Before a session starts in a position's folder: its CLAUDE.md, importing the AGENTS.md of each clone below it,
+    since Claude Code loads instructions at the start only from the start folder and above (condition 6). Written
+    from outside the sandbox without following a link (of_context.write_in). Returns its path, or None."""
+    if not in_position_folder(cwd, org, orgs_file):
+        return None
+    import of_context
+    lines = ["# Written by OF (of spawn) before this session started: the instructions of the repositories below.",
+             "# Edit their AGENTS.md, not this file; of spawn writes it again.", ""]
+    lines += [f"@{os.path.basename(c)}/AGENTS.md" for c in position_clones(cwd)
+              if os.path.isfile(os.path.join(c, "AGENTS.md"))]
+    of_context.write_in(cwd, "CLAUDE.md", "\n".join(lines) + "\n")
+    return os.path.join(cwd, "CLAUDE.md")
+
+
 def _muse_dir():
     try:
         import of_subagent
@@ -502,6 +587,12 @@ def sandbox_settings(deny=None, platform=None, scratch=None, org=None, rules_dir
         for f in rules_files_up(base):
             if f not in guarded:
                 guarded.append(f)
+    if cwd and in_position_folder(cwd, org):
+        # the position's own folder: its top never becomes a repository or a start setting, and each clone below it
+        # keeps its git control and Claude Code files closed (the position folders design, conditions 2 and 3)
+        top = os.path.realpath(cwd)
+        guarded += [os.path.join(top, x) for x in POSITION_TOP]
+        guarded += [os.path.join(c, x) for c in position_clones(top) for x in CLONE_CONTROL]
     return {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
             "autoAllowBashIfSandboxed": True,
             "filesystem": {"denyRead": denied,
@@ -668,6 +759,11 @@ def plan(p, positions, agents, bind, systems, org_paths, org_root, want_workspac
     if p.get("status") in ("parked", "finished"):
         raise SpawnError(f"{p['name']} is {p['status']} in the registry; its keeper resumes it first")
     cwd = os.path.expanduser(cwd) if cwd else work_dir(p, systems, org_paths)
+    if in_position_folder(cwd, p.get("_org")):
+        unready = [c for c in position_clones(cwd) if not clone_ready(c)]
+        if unready:   # without it the sandbox would cover the absent name with a file git dies on (condition 2)
+            raise SpawnError(f"{', '.join(unready)}: .git/commondir must be a file holding '.' before a session "
+                             f"starts above it; the owner's setup writes it")
     if folders is not None:
         import of_context
         other = of_context.foreign_orgs(p.get("_orgid") or p.get("_org"), cwd, folders)
@@ -838,6 +934,9 @@ def run(pl, herdr, deliver, rename, wait_session, log=print, of_bin=None, timeou
     wait_session(sid, timeout) -> agent or None; held(pane) -> submit_held's result, after the brief is typed.
     Returns the pane id."""
     import of_capacity
+    made = prepare_folder(pl["cwd"], pl.get("org"))   # a position's own folder: its CLAUDE.md before the start
+    if made:
+        log(f"  wrote {made}")
     ws = herdr("workspace", "list")["workspaces"]
     tabs = herdr("tab", "list")["tabs"]
     panes = herdr("pane", "list")["panes"]
