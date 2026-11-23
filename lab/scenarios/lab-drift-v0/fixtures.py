@@ -405,6 +405,12 @@ SCENARIOS += [
                [_lrun(2 + d, f"2026-11-0{5 + d}T13:00Z", "gate", "h1", queued=f"2026-11-0{5 + d}T10:00Z",
                       started=f"2026-11-0{5 + d}T10:05Z") for d in (0, 1, 2)],   # r2..r4: one id per run, as of loop run writes
                "negative", rule="ap.loop-eval-bottleneck"),
+    # v1: one run with a queue time is no share to judge, whatever the other runs' gaps (hand-over 0985ab73)
+    _loop_case("loop-eval-bottleneck/negative-one-queued",
+               [_lrun(1, "2026-11-05T13:00Z", "offline", "h1"),
+                _lrun(2, "2026-11-05T13:00Z", "gate", "h1", queued="2026-11-05T10:00Z", started="2026-11-05T12:00Z")] +
+               [_lrun(3 + d, f"2026-11-0{6 + d}T13:00Z", "gate", "h1") for d in (0, 1)],
+               "negative", rule="ap.loop-eval-bottleneck"),
 ]
 
 

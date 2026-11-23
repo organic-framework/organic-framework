@@ -286,10 +286,11 @@ rules:
                 "restate a hypothesis about the part to the owner as an inference, never a finding"]
 
   loop-eval-bottleneck:
-    version: 0
+    version: 1                   # v1 (2026-11-23): rung_runs_gte counts the runs with a queue time (wait_runs), hand-over 0985ab73
+    labels_carry_from: [0]       # v1 only narrows what fires
     p: 0.6
     m_decide: 5
-    thresholds: {wait_share_gt: 0.40, rung_runs_gte: 3}
+    thresholds: {wait_share_gt: 0.40, rung_runs_gte: 3}   # rung_runs_gte: runs the share is read from
     needs: [registry.works.loop, of.loop_run]
     decider: work_owner
     severity: medium
