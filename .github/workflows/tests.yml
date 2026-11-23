@@ -37,13 +37,23 @@ jobs:
           python-version: "3.14"
       - name: Install PyYAML
         run: python3 -m pip install --disable-pip-version-check pyyaml
-      # Bench's reader runs Lua in a process of its own (docs/bench.md); tests/test_of_method.py also needs a Bench
-      # checkout in OF_TEST_BENCH, added here once organic-framework/bench has a pushed commit to pin
-      - name: Install Lua
-        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends lua5.4
+      # Bench's reader runs Lua in a process of its own (docs/bench.md), inside bwrap, which Ubuntu 24.04's AppArmor
+      # keeps from making user namespaces until this is lifted; tests/test_of_method.py takes a Bench checkout from
+      # OF_TEST_BENCH: organic-framework/bench at the commit docs/bench.md pins (its pull request 1), so they run here
+      - name: Install Lua and bwrap
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y --no-install-recommends lua5.4 bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Bench at its pinned commit
+        run: |
+          git init -q "$RUNNER_TEMP/bench" && cd "$RUNNER_TEMP/bench"
+          git fetch -q --depth 1 https://github.com/organic-framework/bench 54e4cc352a3fe5b5c476bb9a5fe2b1bc80a54c18
+          git checkout -q FETCH_HEAD
+          test "$(git rev-parse HEAD)" = 54e4cc352a3fe5b5c476bb9a5fe2b1bc80a54c18
       - name: Unit suite
         env:
           GIT_CONFIG_GLOBAL: /dev/null
           GIT_CONFIG_NOSYSTEM: "1"
           OF_AUTOMATION: "1"
+          OF_TEST_BENCH: ${{ runner.temp }}/bench
         run: python3 -m unittest discover -s tests -t .

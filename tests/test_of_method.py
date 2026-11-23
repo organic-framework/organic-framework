@@ -24,6 +24,8 @@ def setUpModule():
     other modules' tests see no Bench (of_checkouts takes it)."""
     global bench, of_method
     if not (BENCH and os.path.isfile(os.path.join(BENCH, "bin", "bench.py"))):
+        if os.environ.get("CI"):   # CI checks out the pinned Bench (.github/workflows/tests.yml): there they run
+            raise AssertionError("no Bench checkout in CI: the unit job sets OF_TEST_BENCH to the pinned commit")
         raise unittest.SkipTest("no Bench checkout (set OF_TEST_BENCH to one)")
     import importlib
     import of_init
