@@ -2559,13 +2559,27 @@ def draft_error(name, pane, draft, cancelled_wait=False):
 
 AFTER_ESC_READS = 5      # reads, 2 s apart, for the input box to come back after the limit wait is cancelled
 FAILED_RETRY_S = 1800    # a failed move is not retried before this, except one that cancelled a limit wait
+UNTRUSTED_HOLD_S = 6 * 3600  # a move refused for an untrusted folder, until an account trusts it (rest_lifted)
 
 
 def failed_hold_s(e):
     """How long the balancer leaves a session alone after its move failed with MoveError `e`: not every pulse, but a
     session whose limit wait the move cancelled is tried again on the next run (it no longer continues by itself), and
     so is one whose obstacle passes in seconds."""
-    return 6 * 3600 if e.untrusted else 0 if e.cancelled_wait or e.retry_next_run else FAILED_RETRY_S
+    return UNTRUSTED_HOLD_S if e.untrusted else 0 if e.cancelled_wait or e.retry_next_run else FAILED_RETRY_S
+
+
+def rest_lifted(sid, mark, sessions, dirs):
+    """Whether the rest a refused move left on session `sid` ends now: a move refused for an untrusted folder rests
+    UNTRUSTED_HOLD_S, but only until an account trusts that folder, since the owner decided or OF's trust read changed.
+    The folder is the mark's, else, for a mark written before it kept one, the folder the session runs in.
+    2026-11-23: a worktree read as untrusted at 23:33Z, the read was fixed at 00:16Z, and the session, stopped on its
+    limit from 02:20Z, would have rested on its spent account until 05:33Z."""
+    if len(mark) < 3 or mark[2] != "fail" or mark[1] < UNTRUSTED_HOLD_S:
+        return False
+    folder = mark[3] if len(mark) > 3 and mark[3] else next(
+        (x.get("cwd") for xs in sessions.values() for x in xs if x.get("session") == sid), None)
+    return bool(folder) and any(trusted_key(d, folder) for d in dirs)
 
 
 # ------------------------------------------------------------ folder trust
@@ -7078,7 +7092,8 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
     wcalib = {r["config_dir"]: calibrate_week(r, now, index, week_history(cache0, r["config_dir"], now))
               for r in rows if r.get("logged_in")}
     cache = load_cache()
-    recent = {sid: t for sid, t in (cache.get("_balanced") or {}).items() if now - t[0] < t[1]}
+    recent = {sid: t for sid, t in (cache.get("_balanced") or {}).items()
+              if now - t[0] < t[1] and not rest_lifted(sid, t, sessions, dirs)}
     _apply_policy_tiers(rows, policy)
     needs = {x["session"]: tools_used(find_transcript(d, x["session"]) or "")
              for d, xs in sessions.items() for x in xs if x.get("status") in ("idle", "shell", "waiting")}
@@ -7151,7 +7166,7 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
                            session=m["session"])
         except MoveError as e:
             m["done"], m["error"], m["stuck"] = False, str(e), bool(e.stuck)
-            recent[m["session"]] = (now, failed_hold_s(e), "fail")
+            recent[m["session"]] = (now, failed_hold_s(e), "fail", e.untrusted or None)
             of_events.emit("capacity_balanced", dict(m), position=m["position"], session=m["session"])
             log(f"balance: {m['position']} not moved: {e}")
             if e.untrusted:
