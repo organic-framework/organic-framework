@@ -65,10 +65,10 @@ rules:
     remedies: [announce rule on the interface, move the seam]
 
   over-coupled:
-    version: 4                   # v4 (2026-11-15): relay-era recalibration, the ratio stays 3 and a pair needs 3 merged PRs (diagnose.md 2.4); v3 (2026-11-10): decided by the structure keeper; v2 (2026-11-10): no pair with a unit owner (kind owner) or the structure keeper; v1 (2026-11-06): waits recorded per pair
-    labels_carry_from: [0, 1, 2, 3] # v2 and v4 only narrow what fires; v3 changes only the decider
+    version: 5                   # v5 (2026-11-23): p from the deciders' labels (diagnose.md §5.2); v4 (2026-11-15): relay-era recalibration, the ratio stays 3 and a pair needs 3 merged PRs (diagnose.md 2.4); v3 (2026-11-10): decided by the structure keeper; v2 (2026-11-10): no pair with a unit owner (kind owner) or the structure keeper; v1 (2026-11-06): waits recorded per pair
+    labels_carry_from: [0, 1, 2, 3, 4] # v2 and v4 only narrow what fires; v3 changes only the decider; v5 only priors
     decider: structure_keeper    # of_architect, 2026-11-10: its remedies are structure diffs; through of_platform's daily keeper digest
-    p: 0.5
+    p: 0.95   # 2026-11-23: 26 of 26 distinct labelled judgements true, held under certainty (diagnose.md §5.2); was 0.5
     m_decide: 15
     thresholds: {interface_ratio_gte: 3, reciprocity_gte: 0.5, reciprocity_without_waits_gte: 0.8, mutual_waits_gte: 1, observed_days_gte: 3, waits_recorded: per_pair,
                  exclude_pair_kinds: [owner], exclude_structure_keeper: true, pair_merged_prs_gte: 3}
@@ -100,9 +100,9 @@ rules:
     remedies: [hand writes to the system agent, route changes through the keeper's review]
 
   orphan-work:
-    version: 4                   # v4 (2026-11-15): the cluster part is decided by the structure keeper (diagnose.md §1, Who decides); v3 (2026-11-10): keeperless moves to unkept-system (2.23), which flags a live system nobody keeps with or without work; v2 (2026-11-07): keeperless only on live systems kept by nobody
-    labels_carry_from: [0, 1, 2, 3] # v1 left detection unchanged; v2 narrowed keeperless; v3 drops it; v4 changes only a decider
-    p: {cluster: 0.6, unmapped: 0.8}
+    version: 5                   # v5 (2026-11-23): p from the deciders' labels (diagnose.md §5.2); v4 (2026-11-15): the cluster part is decided by the structure keeper (diagnose.md §1, Who decides); v3 (2026-11-10): keeperless moves to unkept-system (2.23), which flags a live system nobody keeps with or without work; v2 (2026-11-07): keeperless only on live systems kept by nobody
+    labels_carry_from: [0, 1, 2, 3, 4] # v1 left detection unchanged; v2 narrowed keeperless; v3 drops it; v4 changes only a decider; v5 only priors
+    p: 0.6   # 2026-11-23: 6 of 10 distinct labelled judgements true; the labels name no part (diagnose.md §5.2); was {cluster: 0.6, unmapped: 0.8}
     m_decide: {cluster: 10, unmapped: 3}
     thresholds: {unowned_verdicts_per_cluster_gte: 3, unmapped_wr_share_gte: 0.05, cluster_exclude_paths: [/tmp, /private/tmp, $TMPDIR, '*/scratchpad/*'], merge_into: unkept-system}   # a cluster on a system nobody keeps is evidence on that system's issue
     cluster_from_router: rt-v4   # input rule (2026-11-07, of_studio 13b781f): earlier routers judged linked worktrees unowned
@@ -168,10 +168,10 @@ rules:
     remedies: [rewrite the brief with done criteria, split if two jobs share one position]
 
   function-gap:
-    version: 1                   # v1 (2026-11-15): decided by the structure keeper (diagnose.md §1, Who decides)
-    labels_carry_from: [0]       # v1 changes only the decider
+    version: 2                   # v2 (2026-11-23): p from the deciders' labels (diagnose.md §5.2); v1 (2026-11-15): decided by the structure keeper (diagnose.md §1, Who decides)
+    labels_carry_from: [0, 1]    # v1 changes only the decider; v2 only priors
     decider: unit_owner_or_structure_keeper   # of_architect, 2026-11-15 (relay msg 01a1dc76-ed6e): the structure keeper, or the unit owner inside a delegated unit (of_diagnose.EITHER)
-    p: 0.7
+    p: 0.8   # 2026-11-23: 4 of 5 distinct labelled judgements true, across two organizations (diagnose.md §5.2); was 0.7
     m_decide: 20
     thresholds: {uncovered_function_with_dependent_interest: true}
     critical: right_to_operate     # an uncovered function that a right-to-operate interest depends on
@@ -337,9 +337,9 @@ rules:
   # ---- structure coverage (diagnose.md 2.23-2.26; of_architect, 2026-11-10): the registry's coverage as Studio shows it
   # (model coverage and cells, one computation), routed to the organization's structure keeper, never to the owner.
   unkept-system:
-    version: 1                   # v1 (2026-11-15): part unit, a subsystem is in its parent's unit (the first user organization's labels; diagnose.md 2.23)
-    labels_carry_from: [0]       # v1 only narrows what fires
-    p: {keeper: 0.6, unit: 0.5}
+    version: 2                   # v2 (2026-11-23): p from the deciders' labels (diagnose.md §5.2); v1 (2026-11-15): part unit, a subsystem is in its parent's unit (the first user organization's labels; diagnose.md 2.23)
+    labels_carry_from: [0, 1]    # v1 only narrows what fires; v2 changes only priors
+    p: 0.95   # 2026-11-23: 12 of 12 distinct labelled judgements true, held under certainty; the labels name no part (diagnose.md §5.2); was {keeper: 0.6, unit: 0.5}
     m_decide: {keeper: 5, unit: 3}
     thresholds: {}               # coverage flags no_keeper, keeper_unknown, keeper_<status>; units: a live system in no unit
     needs: [registry.systems.keeper]   # an organization that names no keeper has not started its map
@@ -351,9 +351,9 @@ rules:
       unit: [put the system in the unit whose owner answers for it, a new unit]
 
   off-map-work:
-    version: 1                   # v1 (2026-11-15): edits in the position's own system or its subsystems, kept by another, count as its own (the first user organization's label; diagnose.md 2.24)
-    labels_carry_from: [0]       # v1 only narrows what fires
-    p: 0.8   # 2026-11-15: 4 of 5 distinct labelled judgements true, after v1 (diagnose.md §5.2); was 0.5
+    version: 2                   # v2 (2026-11-23): p from the deciders' labels (diagnose.md §5.2); v1 (2026-11-15): edits in the position's own system or its subsystems, kept by another, count as its own (the first user organization's label; diagnose.md 2.24)
+    labels_carry_from: [0, 1]    # v1 only narrows what fires; v2 changes only priors
+    p: 0.69   # 2026-11-23: 9 of 13 distinct labelled judgements true (diagnose.md §5.2); 0.8 on 2026-11-15 from 4 of 5; was 0.5
     m_decide: 10
     thresholds: {edits_gte: 10, in_mandate_share_lt: 0.5, edit_tools: [Edit, Write, MultiEdit, NotebookEdit], min_router: 4}   # file edits in_mandate or owned_by another keeper; reads, Bash (unscoped), outside and unclaimed paths (orphan-work's cluster) are left out
     needs: [of.mandate_check]
@@ -365,8 +365,9 @@ rules:
       mostly_elsewhere: [list the cells it works in under owns (RFC 0007), name the subsystem it works in, hand the work to the keeper of the system it changes]
 
   cell-gap:
-    version: 0
-    p: {system: 0.6, nobody: 0.6, no_decider: 0.5}
+    version: 1                   # v1 (2026-11-23): p from the deciders' labels (diagnose.md §5.2)
+    labels_carry_from: [0]       # v1 changes only priors
+    p: 0.95   # 2026-11-23: 14 of 14 distinct labelled judgements true, held under certainty; the labels name no part (diagnose.md §5.2); was {system: 0.6, nobody: 0.6, no_decider: 0.5}
     m_decide: {system: 10, nobody: 5, no_decider: 5}
     thresholds: {merge_into: cell-overlap}   # gaps as model cells compute them (needed cell of a live system, no active decider); a no_decider gap on an overlapping cell is evidence on the overlap
     needs: []                    # blocked by the rule itself while no system declares needs
