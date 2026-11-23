@@ -915,6 +915,19 @@ class PlanAndWatch(unittest.TestCase):
         cmd = of_capacity.probe_command()
         self.assertIn('{"disableAllHooks": true}', cmd)
         self.assertIn("--strict-mcp-config", cmd)
+        self.assertIn("--no-session-persistence", cmd)  # no transcript per probe (of_review on PR 600)
+
+    def test_a_probe_leaves_no_empty_project_folder(self):
+        d, cwd = tempfile.mkdtemp(), tempfile.mkdtemp()
+        proj = os.path.join(d, "projects", of_capacity.folder_key(os.path.realpath(cwd)))
+        os.makedirs(os.path.join(proj, "memory"))
+        of_capacity._drop_empty_project(d, cwd)
+        self.assertFalse(os.path.exists(proj))
+        os.makedirs(os.path.join(proj, "memory"))
+        with open(os.path.join(proj, "s.jsonl"), "w") as fh:   # a folder holding anything stays
+            fh.write("{}")
+        of_capacity._drop_empty_project(d, cwd)
+        self.assertTrue(os.path.exists(os.path.join(proj, "s.jsonl")))
 
 
 class ZellijToHerdr(unittest.TestCase):
