@@ -1832,7 +1832,7 @@ def bind(positions, agents):
 
 # ------------------------------------------------------------------- apply
 
-def plan_apply(positions, agents, tabs, workspaces, labels=None):
+def plan_apply(positions, agents, tabs, workspaces, labels=None, max_per_tab=None):
     """Return (commands, notes). Pure: no herdr calls. `labels` maps pane id to its label."""
     labels = labels or {}
     desk_ws = {w["workspace_id"] for w in workspaces if w.get("label") == DESK}
@@ -1872,6 +1872,20 @@ def plan_apply(positions, agents, tabs, workspaces, labels=None):
     import of_views
     pinned = of_views.pinned_positions()
     tab_by_id = {t["tab_id"]: t for t in tabs}
+    # A tab crowded past max_per_tab by an organization's agents (no units, not the desk, not a pinned view) keeps its
+    # first agent; each other moves, running, to a new tab of its role (the founder, prompt 01a20537-b8c3: "it launches
+    # all the agents in one tab, there is no room left there"; hand-over 81931dd4). A small group stays as it is.
+    k = (max_per_tab or layout_config()["max_per_tab"])
+    crowd = {}
+    for p, a in pairs:
+        if p["name"] not in pinned and not p.get("_unit") and a.get("workspace_id") not in desk_ws and a.get("tab_id"):
+            crowd.setdefault(a["tab_id"], []).append((p, a))
+    for members in crowd.values():
+        if len(members) <= k:
+            continue
+        for p, a in sorted(members, key=lambda pa: pa[1]["pane_id"])[1:]:
+            cmds.append(["pane", "move", a["pane_id"], "--new-tab", "--workspace", a["workspace_id"], "--label",
+                         p.get("role") or p["name"], "--no-focus"])
     for p, a in pairs:
         if p["name"] in pinned:
             continue

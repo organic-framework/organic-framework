@@ -29,6 +29,13 @@ def plan(p=P, agents=(), **kw):
 
 
 class SpawnPlanTest(unittest.TestCase):
+    def test_outside_a_unit_a_new_pane_gets_a_tab_of_its_role(self):
+        """The founder, prompt 01a20537-b8c3: one system's agents all landed in one tab (hand-over 81931dd4)."""
+        p = {"name": "of_docs", "system": "organic-framework", "role": "docs"}
+        self.assertEqual(of_spawn.place(p, lambda q: "of"), ("of", "docs"))
+        unit = dict(p, _unit="u", _systems={"organic-framework": {"label": "of"}})
+        self.assertEqual(of_spawn.place(unit, lambda q: "of·u"), ("of·u", "of"))
+
     def test_folder_brief_place_and_command(self):
         exists = lambda path: path.endswith(("acme/ansible-creek", "acme"))
         self.assertTrue(of_spawn.work_dir(P, SYSTEMS, ["~/acme"], exists).endswith("acme/ansible-creek"))

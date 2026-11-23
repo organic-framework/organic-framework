@@ -694,6 +694,20 @@ class ApplyTest(unittest.TestCase):
                 self.assertEqual(homes, {"alpha_x": "al·ops", "beta_x": "beta"}, (ws, label))
                 self.assertTrue(any(repr(ws or label) in x for x in problems), (ws, label, problems))
 
+    def test_a_crowded_tab_sends_its_extra_agents_to_tabs_of_their_roles(self):
+        """Hand-over 81931dd4: nine agents in one tab on the agent host. A small group stays."""
+        positions = [pos(f"of_{r}", "organic-framework", r, f"s{i}", _workspace="of") for i, r in enumerate("abcdef")]
+        agents = [agent(f"w6:p{i}", f"s{i}", name=f"of_{r}", ws="w6", tab="w6:t4") for i, r in enumerate("abcdef")]
+        cmds, _ = of.plan_apply(positions, agents, [{"tab_id": "w6:t4", "pane_count": 6, "label": "x"}],
+                                [{"workspace_id": "w6", "label": "of"}], max_per_tab=4)
+        moves = [c for c in cmds if c[:2] == ["pane", "move"]]
+        self.assertEqual([m[2] for m in moves], ["w6:p1", "w6:p2", "w6:p3", "w6:p4", "w6:p5"])  # the first stays
+        self.assertEqual(moves[0], ["pane", "move", "w6:p1", "--new-tab", "--workspace", "w6", "--label", "b",
+                                    "--no-focus"])
+        cmds, _ = of.plan_apply(positions[:3], agents[:3], [{"tab_id": "w6:t4", "pane_count": 3, "label": "x"}],
+                                [{"workspace_id": "w6", "label": "of"}], max_per_tab=4)
+        self.assertFalse([c for c in cmds if c[:2] == ["pane", "move"]])
+
     def test_idempotent(self):
         positions = [pos("of_a", "of", "a", "s1", summary="d", _workspace="of")]
         agents = [agent("w1:p1", "s1", name="of_a", tokens={"system": "of", "role": "a", "summary": "d"})]
