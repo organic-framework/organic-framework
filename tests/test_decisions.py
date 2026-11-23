@@ -178,6 +178,9 @@ class SendTest(unittest.TestCase):
         proposal = json.loads(self.conn.execute("SELECT payload FROM event WHERE event_id = ?", (a,)).fetchone()[0])
         self.assertEqual(d.send_one(self.conn, proposal, post, "https://s"), "accepted")
         self.assertEqual(self.names(a), {"of.decision_accepted"})
+        (ref,) = self.conn.execute("SELECT raw_ref FROM event WHERE event_id = ?", (d.accepted_id(a),)).fetchone()
+        import of_coord
+        self.assertTrue(ref.startswith(of_coord.RAW_REF))        # of ship never sends the server's record back
         b = self.propose("b", answer="no")
         with mock.patch.object(of_events, "_org_server_url", return_value="https://s"):
             self.assertEqual(d.counts(d.send_pending(self.conn, post)), {"refused": 1})
