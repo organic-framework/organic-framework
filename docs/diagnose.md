@@ -138,7 +138,7 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 - **Default remedy.** Merge *p* and *q* if the combined working set fits one holder (§2.5 signals below their thresholds). Otherwise publish the interface.
 - **ΔT basis:** waiting hours removed on *raise*/*sustain* positions × their T rate. *p* = 0.5. *m_decide* = 15 min.
 
-### 2.5 Context overload — `ap.context-overload@0`
+### 2.5 Context overload — `ap.context-overload@1`
 
 *Built 2026-11-14 (`of_field-analyst`). It was specified on `of.correction`, an agent's correction of itself (`events.md`, backlog item 9), which was never recorded. It reads the owner's corrections instead, `of.founder_correction` (`of_platform`'s judge, RFC 0006 §2.4).*
 
@@ -154,6 +154,7 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 - **Default remedy.** The position keeps its context: no fresh holder and no cleared context (the founder, 2026-11-18, prompt `01a1eeff-880b`: "Context is a very important part of the agents' understanding of the system, and so context must not be wiped"; [`method.md`](method.md), "Sizing positions").
   - If the load is history-bound (one long-lived session whose working set is small): move its reading, searches and reviews to subagents and to other harnesses (RFC 0008), so fewer of its own turns fill the context.
   - A split at a seam, if the working set itself is too big (many systems, many inbound edges: see §2.8).
+  - v1 (2026-11-23) changes nothing in what fires. It marks these remedies, which replaced a fresh holder under @0 (organic-framework PR 377), and keeps @0's labels (`labels_carry_from: [0]`; `of_review` on PR 377, message `01a1f3e1-fa47`).
 - **ΔT basis:** corrections avoided × their mean cost, plus owner re-explain minutes freed. *p* = 0.5. *m_decide* = 10 min.
 
 ### 2.6 Fragmented ownership — `ap.fragmented-ownership@1`

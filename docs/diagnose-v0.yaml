@@ -77,7 +77,9 @@ rules:
     remedies: [merge if the working set fits one holder, publish the interface]
 
   context-overload:
-    version: 0                   # built 2026-11-14 on of.founder_correction (of.correction was never recorded; diagnose.md 2.5)
+    version: 1                   # built 2026-11-14 on of.founder_correction (of.correction was never recorded; diagnose.md 2.5)
+                                 # v1 (2026-11-23): marks the remedies changed under @0 in organic-framework PR 377
+    labels_carry_from: [0]       # v1 changes only remedies
     p: 0.5
     m_decide: 10
     thresholds: {compactions_per_active_day_gte: 4, median_multiple_gte: 3, forgotten_fact_errors_gte: 2, after_compaction_hours: 2}
