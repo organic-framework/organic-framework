@@ -733,12 +733,15 @@ class GuardBashTest(unittest.TestCase):
             self.assertEqual(of_guard._WARNINGS, [], quiet)
         # G6.2 (of_secrets-review on PR 599): --raw and --flatten print the credentials in full; they warn first
         for loud in ("kubectl config view --raw", "kubectl config view --flatten --minify",
-                     "kubectl --context prod config view --raw=true -o jsonpath='{.users[0].user.token}'"):
+                     "kubectl --context prod config view --raw=true -o jsonpath='{.users[0].user.token}'",
+                     # every spelling Go's ParseBool reads as true (of_review on PR 599)
+                     "kubectl config view --raw=t", "kubectl config view --raw=T", "kubectl config view --flatten=t",
+                     "kubectl config view --raw=1", "kubectl config view --raw=TRUE", "kubectl config view --raw=True"):
             self.assertIsNone(deny(loud), loud)
             self.assertIn("prints the kubeconfig unredacted", of_guard._WARNINGS[0][0], loud)
             self.assertIn("G6.2", of_guard._WARNINGS[0][2], loud)
         for quiet in ("kubectl config view", "kubectl config view --minify", "kubectl config view --raw=false",
-                      "kubectl get --raw /healthz"):
+                      "kubectl config view --raw=F", "kubectl config view --flatten=0", "kubectl get --raw /healthz"):
             self.assertIsNone(deny(quiet), quiet)
             self.assertEqual(of_guard._WARNINGS, [], quiet)
         saved = of_guard.CONFIG_VIEW_RAW_MODE
