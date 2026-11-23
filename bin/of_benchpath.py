@@ -2,8 +2,8 @@
 
 One checkout, at the path the machine's owner settings name (`bench:` in ~/.config/of/owner.yaml, set with
 `of owner set bench <folder>`), else ~/.local/share/bench. Never an environment variable: whoever set one would choose
-the code OF imports. The checkout is code OF runs, outside any sandbox too (the pulse reads an organization's settings
-through it), so it is protected as OF's own checkout is (of_spawn.of_checkouts; the guard's list)."""
+the code OF imports. The checkout is code OF runs wherever `of bench` runs, outside any session's sandbox too, so it is
+protected as OF's own checkout is (of_spawn.of_checkouts; the guard's list)."""
 
 import os
 
