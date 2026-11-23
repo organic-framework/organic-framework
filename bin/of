@@ -110,6 +110,7 @@ def committed_registry(path, timeout=5):
         return None
 ORG_SHORT = {}  # organization -> short name for unit workspace labels (`short:` in orgs.yaml)
 ORG_WS_SET = set()  # organizations whose orgs.yaml entry names its workspace label; the others take the registry's `label:`
+WS_REFUSED = {}  # organization -> why its orgs.yaml workspace label was refused (the loader's problems name it)
 ORGS_FILE = os.environ.get("OF_ORGS") or os.path.join(os.environ.get("OF_CONFIG_DIR") or os.path.expanduser("~/.config/of"), "orgs.yaml")
 HERDR = os.environ.get("OF_HERDR", "herdr")
 
@@ -157,15 +158,31 @@ def org_registries(orgs_file=ORGS_FILE):
     with open(orgs_file) as fh:
         doc = yaml.safe_load(fh) or {}
     base = os.path.dirname(os.path.abspath(orgs_file))
+    entries = [o for o in doc.get("orgs") or [] if isinstance(o, dict)]
+    names = {o.get("name") or os.path.basename(os.path.expanduser(str(o["path"])).rstrip("/")) for o in entries
+             if o.get("name") or o.get("path")}  # as of_init.org_entry_name
     out = []
-    for o in doc.get("orgs") or []:
+    for o in entries:
         if not o.get("path"):
             continue  # joined through a server only, no local checkout of its repository yet
         root = os.path.join(base, os.path.expanduser(str(o["path"])))
         name = o.get("name") or os.path.basename(root)
-        out.append((name, os.path.join(root, "registry", "positions.yaml"), o.get("workspace") or name))
-        ORG_SHORT[name] = str(o.get("short") or o.get("workspace") or name)
-        if o.get("workspace"):
+        ws = o.get("workspace")
+        WS_REFUSED.pop(name, None)
+        ORG_WS_SET.discard(name)
+        if ws:
+            # orgs.yaml is set by agents too (of org set, G33): a label that is the desk or another organization's name
+            # or workspace label would mix two organizations' panes in one workspace, so the name stands instead
+            # (of_server on organic-framework PR 570)
+            others = {DESK} | (names - {name}) | {str(x.get("workspace")) for x in entries
+                                                    if x is not o and x.get("workspace")}
+            why = label_problem(ws, others)
+            if why:
+                WS_REFUSED[name] = f"orgs.yaml: {name}: workspace {str(ws)!r} {why}; herdr shows {name!r}"
+                ws = None
+        out.append((name, os.path.join(root, "registry", "positions.yaml"), str(ws) if ws else name))
+        ORG_SHORT[name] = str(o.get("short") or ws or name)
+        if ws:
             ORG_WS_SET.add(name)
         if o.get("hold"):
             HELD.add(name)
@@ -180,6 +197,7 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
     # (2026-11-13).
     docs = {}
     regs = org_registries(orgs_file)
+    problems.extend(WS_REFUSED[o] for o, _, _ in regs if o in WS_REFUSED)
     taken = {DESK} | {o for o, _, _ in regs} | {w for _, _, w in regs}  # names, and the labels orgs.yaml gives
     for org, path, workspace in regs:
         rel = f"{org}:registry/positions.yaml"
@@ -1904,6 +1922,31 @@ def label_problem(label, taken):
     return None
 
 
+def _labels_taken(entries, org, base):
+    """The labels an organization's workspace may not take: the desk, and every other organization's name, orgs.yaml
+    `workspace:` and registry `label:` (of_server on organic-framework PR 570: of org set is an agents' command)."""
+    import of_init
+    taken = {DESK}
+    for o in entries:
+        name = of_init.org_entry_name(o)
+        if name == org:
+            continue
+        if name:
+            taken.add(name)
+        if o.get("workspace"):
+            taken.add(str(o["workspace"]))
+        if o.get("path"):
+            reg = os.path.join(base, os.path.expanduser(str(o["path"])), "registry", "positions.yaml")
+            try:
+                with open(reg) as fh:
+                    label = (yaml.safe_load(fh) or {}).get("label")
+            except (OSError, yaml.YAMLError, AttributeError):
+                label = None
+            if label:
+                taken.add(str(label))
+    return taken
+
+
 def system_label(p):
     """What herdr shows for a position's system: the system's `label:` in the registry, else its id (docs/registry.md;
     the founder, prompt 01a2052f-9cc2: the OF organization's names in herdr read `of`)."""
@@ -2913,9 +2956,9 @@ def cmd_org(args):
         # a display label, as hold: a setting of herdr's look, so agents set it through this command too (G33)
         if args.value == "none":
             value, shown_value = None, "none (the registry's label:, else the name)"
-        elif not LABEL_RE.fullmatch(args.value) or args.value == DESK:
-            raise OfError(f"{args.value!r}: a workspace label is one word of at most 32 letters, digits, . _ · -, "
-                          f"and not {DESK!r}")
+        elif why := label_problem(args.value, _labels_taken(entries, args.org, os.path.dirname(os.path.abspath(path)))):
+            raise OfError(f"{args.value!r} {why}: an organization's workspace label is its own (of_server on "
+                          f"organic-framework PR 570)")
         else:
             value = shown_value = args.value
     elif args.key == "work_clone":
