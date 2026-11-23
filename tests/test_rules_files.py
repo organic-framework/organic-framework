@@ -265,14 +265,27 @@ class RulesFileTest(unittest.TestCase):
         finally:
             of_spawn.work_dir = saved
 
-    def test_the_sandbox_and_the_file_tools_keep_the_rules_folder(self):
+    def test_the_sandbox_and_the_file_tools_keep_ofs_rules_files_only(self):
+        """of_review on PR 601: only OF's own rules files are closed; an organization's own rules stay editable."""
         import json
         import of_spawn
         from unittest import mock
-        self.assertIn("**/.claude/rules/**", of_spawn.PROTECTED_EDITS)
+        self.assertIn("**/.claude/rules/of-*.md", of_spawn.PROTECTED_EDITS)
+        self.assertNotIn("**/.claude/rules/**", of_spawn.PROTECTED_EDITS)
+        rules_dir = os.path.join(self.work, ".claude", "rules")
+        os.makedirs(rules_dir, exist_ok=True)
+        for n in ("of-acme.md", "team.md"):
+            with open(os.path.join(rules_dir, n), "w") as fh:
+                fh.write("- a rule\n")
+        os.symlink(os.path.join(rules_dir, "team.md"), os.path.join(rules_dir, "of-linked.md"))
         with mock.patch.object(of_spawn, "_accounts_dirs", return_value=[]):
             box = json.loads(of_spawn.session_settings(None, [], platform="linux", scratch=(self.work, "S1")))
-        self.assertIn(os.path.join(self.work, ".claude", "rules"), box["sandbox"]["filesystem"]["denyWrite"])
+        deny = box["sandbox"]["filesystem"]["denyWrite"]
+        real = os.path.realpath(rules_dir)
+        self.assertIn(os.path.join(real, "of-acme.md"), deny)
+        self.assertNotIn(os.path.join(real, "team.md"), deny)
+        self.assertNotIn(real, deny)
+        self.assertNotIn(os.path.join(real, "of-linked.md"), deny)
 
     def test_nested_registry_folders(self):
         """of_review on PR 564: a folder above another organization's registry folder is shared (its sessions below
