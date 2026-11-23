@@ -1792,6 +1792,10 @@ class FolderTrust(unittest.TestCase):
             with open(os.path.join(lnk, ".git"), "w") as fh:
                 fh.write("gitdir: " + os.path.join(real(lnk), "admin") + "\n")
             self.assertEqual(of_capacity.trust_candidates(lnk), [lnk] if real(lnk) == lnk else [lnk, real(lnk)])
+            # a pipe in place of commondir: read without waiting, and no key (of_server on PR 573)
+            os.remove(os.path.join(lnk, "admin", "commondir"))
+            os.mkfifo(os.path.join(lnk, "admin", "commondir"))
+            self.assertIsNone(of_capacity.worktree_main(lnk))
         # the home folder as the main repository: never a key
         with mock.patch.dict(os.environ, {"HOME": os.path.join(self.home.name, "work", "repo")}):
             self.assertEqual(of_capacity.worktree_main(wt), None)
