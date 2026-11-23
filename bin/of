@@ -4614,8 +4614,10 @@ def cmd_send(args):
             present(hc, home)
             hc.sent_header(r["msg_id"], to, sender)
         except Exception as e:  # noqa: BLE001
-            print(f"warning: {from_org}'s server did not keep this message's header ({type(e).__name__}: "
-                  f"{str(e)[:200]}), so a reply from {to} to it will be refused there; the message itself was sent",
+            older = getattr(e, "status", None) == 404  # a server from before headers (of_capacity, 2026-11-23)
+            print(f"warning: the message was sent, but {from_org}'s server did not keep its header ("
+                  + ("that server is older than headers" if older else f"{type(e).__name__}: {str(e)[:200]}")
+                  + f"), so a reply from {to} to it goes through there only under a grant of its own",
                   file=sys.stderr)
     of_events.emit("agent_message_out", {"to": to, "to_position": to.split(":", 1)[1], "delivery": r.get("state"),
                                          "authority": r.get("authority"), "msg_id": r.get("msg_id"), "via": "relay",
