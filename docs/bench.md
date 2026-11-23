@@ -21,17 +21,21 @@ Bench is RubyGems and Bundler, and OF is Rails. The design is organic-framework-
   agent session's sandbox.
 - **A Lua runtime.** Bench reads every Lua file in a closed environment of its own: Lua 5.4, Lua 5.5, LuaJIT 2.1 or
   Lua 5.1 (macOS: `brew install luajit`; Debian or Ubuntu: `apt install lua5.4`).
-- **Protection.** The checkout is code OF imports, the pulse included, outside any sandbox, so it is protected as OF's
-  own checkout is: every session's sandbox denies writes to it (`of_spawn.of_checkouts`), and so does the guard.
-  `of owner set bench` refuses a development clone (one that runs the release gate), since positions write those.
+- **Protection.** The checkout is code OF imports and runs wherever `of bench` runs, outside any session's sandbox too,
+  so it is protected as OF's own checkout is: every session's sandbox denies writes to it (`of_spawn.of_checkouts`), and
+  so does the guard. `of owner set bench` refuses a development clone (one that runs the release gate), since positions
+  write those.
 - **The reader's closedness.** OF evaluates an organization's `config/settings/*.lua` and `extensions/*/*.lua` through
-  Bench's reader, only outside agent sessions (the pulse included); those files come from the organization's
-  repository, which agents write. Their safety rests on two layers. The reader: a Lua process of its own given no
-  file, with no `io`, `os`, `load`, `require` beyond the package's sources or `debug`, and budgets on instructions,
-  memory and wall time. Around it, Bench's operating-system sandbox (above): Bench evaluates only inside it and
-  refuses when it cannot start. Both layers and their tests live in `organic-framework/bench` (its `docs/bench.md`,
-  "The reader", and `tests/test_bench.py`'s hostile set, one test per case), and the guard's keeper passed them in
-  that repository's pull request 1.
+  Bench's reader when someone runs `of bench` (nothing in the pulse does yet); those files come from the organization's
+  repository, which agents write. Where that can happen differs by system. On Linux a session's sandbox keeps Bench's
+  sandbox from starting, so only a process outside every session, such as the owner's terminal, evaluates. On macOS a
+  session has no sandbox of its own, so an agent that runs `of bench install`, `hook` or `read` evaluates the
+  organization's Lua from its session, inside Bench's `sandbox-exec`. Their safety rests on two layers. The reader: a
+  Lua process of its own given no file, with no `io`, `os`, `load`, `require` beyond the package's sources or `debug`,
+  and budgets on instructions, memory and wall time. Around it, Bench's operating-system sandbox (above): Bench
+  evaluates only inside it and refuses when it cannot start. Both layers and their tests live in
+  `organic-framework/bench` (its `docs/bench.md`, "The reader", and `tests/test_bench.py`'s hostile set, one test per
+  case), and the guard's keeper passed them in that repository's pull request 1.
 
 ## The commands
 
@@ -67,9 +71,10 @@ Setting types: `string`, `int`, `number`, `bool`, `duration` (`"30m"`, `"2h"`, `
   decides, and the result names the hook. A hook whose file changed since the install, that the reader stopped, or
   that returns no decision stops the module: a hook before a module is a gate.
 
-The first package is `of-asks` (`organic-framework/of-asks`, kept by `of_bench`; at work `bin/of_asks_package.py`,
-`of_asks`'s): `of ask` calls the hooks before the module "file", and a bare `ask_unanswered` rule rises after the
-setting `escalate_after`, only where the organization's `Benchfile.lock` names the package.
+The first package is `of-asks` (`organic-framework/of-asks`, kept by `of_bench`). With `of_asks`'s change
+(organic-framework PR 574, open; `bin/of_asks_package.py`), `of ask` calls the hooks before the module "file", and a
+bare `ask_unanswered` rule rises after the setting `escalate_after`, only where the organization's `Benchfile.lock`
+names the package; until it merges, nothing outside `of bench` evaluates through Bench.
 
 ## Code
 
