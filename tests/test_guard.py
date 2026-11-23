@@ -1035,5 +1035,33 @@ class NoWaitTest(unittest.TestCase):
         os.mkfifo(os.path.join(self.tmp.name, "gitfile"))
         self.assertEqual(of_guard._read_regular(os.path.join(wt, ".git"), 7), b"gitdir:")
 
+
+class ParserSlipTest(unittest.TestCase):
+    """of_review on PR 575: a helper that raised inside the shell reading left the write rules out of that line."""
+
+    def test_a_slip_denies_unless_the_text_match_does(self):
+        from unittest import mock
+        with mock.patch.object(of_guard, "_bash_deny", side_effect=ValueError("embedded null byte")):
+            got = of_guard.critical_deny("Bash", {"command": "echo x > ~/.config/of/orgs.yaml"}, "/tmp")
+            self.assertTrue(got and "could not read whole (ValueError)" in got[0], got)
+            got = of_guard.critical_deny("Bash", {"command": "cat ~/.ssh/id_ed25519"}, "/tmp")
+            self.assertTrue(got and "could not read whole" not in got[0], got)
+
+    def test_a_trailing_escape_is_no_line_the_shell_refuses(self):
+        """of_review: bash runs a line that ends in a backslash, so its slip denies (a G33 write passed before)."""
+        for cmd in ("echo x > ~/.config/of/orgs.yaml \\", "echo x > ~/.config/of/orgs.yaml \\\n"):
+            got = of_guard.critical_deny("Bash", {"command": cmd}, "/tmp")
+            self.assertTrue(got, cmd)
+        self.assertIsNone(of_guard.critical_deny("Bash", {"command": 'echo "unterminated'}, "/tmp"))   # bash refuses
+
+    def test_a_broken_quote_on_a_later_line_denies(self):
+        """of_secrets-review: bash runs each complete line before a broken one."""
+        from unittest import mock
+        with mock.patch.object(of_guard, "_bash_deny", side_effect=ValueError("No closing quotation")):
+            self.assertIsNone(of_guard.critical_deny("Bash", {"command": 'echo "one line'}, "/tmp"))
+            got = of_guard.critical_deny("Bash", {"command": 'echo x > ~/.config/of/orgs.yaml\necho "'}, "/tmp")
+            self.assertTrue(got and "could not read whole" in got[0], got)       # the text match still names it
+
+
 if __name__ == "__main__":
     unittest.main()

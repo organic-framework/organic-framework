@@ -183,16 +183,31 @@ def guard_protection(state_dir, orgs_file=None):
     return got if got is not None else protection(cached(state_dir, orgs_file))
 
 
-def load(orgs_file=None):
-    """{org: {roots, credentials: {id: {paths, keeper, acts_as}}, positions: {name: [ids]}}} from every registry."""
+class Unreadable(Exception):
+    """A registry the guard has never read whole: its protections are unknown, so the hook denies until it reads."""
+
+
+def load(orgs_file=None, previous=None):
+    """{org: {roots, credentials: {id: {paths, keeper, acts_as}}, positions: {name: [ids]}}} from every registry.
+    A registry that is there and does not read as a mapping keeps the organization's last reading (PREVIOUS, the
+    cache's), never an empty one, since an empty one would take its protections away; with no last reading, Unreadable.
+    On the agent host a registry follows what any session pushes (card OF-266), so one broken push must not undo the
+    guard (of_server, 2026-11-23)."""
     import yaml
     out = {}
     for org, path in _registries(orgs_file):
         try:
             with open(path) as fh:
                 doc = yaml.safe_load(fh) or {}
-        except (OSError, yaml.YAMLError):
-            continue
+            if not isinstance(doc, dict):
+                raise ValueError("not a mapping")
+        except (OSError, ValueError, yaml.YAMLError) as e:   # gone, unreadable or not a mapping: its last reading
+            if isinstance(previous, dict) and isinstance(previous.get(org), dict):
+                out[org] = previous[org]
+                continue
+            if isinstance(e, FileNotFoundError):   # never read here and not there: nothing to keep yet
+                continue
+            raise Unreadable(f"{org}'s registry")
         out[org] = _org_entry(org, doc)
     # G21 also keeps what the owner lists in orgs.yaml (of protected ff reads its ff entries from there alone): a
     # registry that follows agents' pushes can add a path but never take one of his away (of_secrets-review on
@@ -222,7 +237,7 @@ def cached(state_dir, orgs_file=None):
     if c.get("stamp") == stamp and c.get("version") == CACHE_VERSION and isinstance(c.get("orgs"), dict):
         return c["orgs"]
     regs = [r for _, r in _registries(orgs_file)]
-    orgs = load(orgs_file)
+    orgs = load(orgs_file, previous=c.get("orgs") if c.get("version") == CACHE_VERSION else None)
     c = {"stamp": [mt(_orgs_file(orgs_file))] + [mt(r) for r in regs], "registries": regs, "orgs": orgs,
          "version": CACHE_VERSION}
     try:
