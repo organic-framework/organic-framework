@@ -701,8 +701,8 @@ class StartTextTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.make(d, json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart",
                                                             "additionalContext": "x" * 400}}))
-            self.assertEqual(of_tools.start_text_size(d, "sp@m"), 400)
-            self.assertIsNone(of_tools.start_text_size(d, "other@m"))  # not installed there
+            self.assertEqual(of_tools.start_text_size(d, "sp@m"), (400, None))
+            self.assertEqual(of_tools.start_text_size(d, "other@m"), (None, None))  # not installed there
 
     def test_the_plugin_root_is_expanded_by_sh_never_pasted(self):
         """of_secrets-review, PR 584: a root with a space read wrong, and one with $(…) ran."""
@@ -711,9 +711,16 @@ class StartTextTest(unittest.TestCase):
                 d = os.path.join(base, name)
                 os.makedirs(os.path.join(d, "plugins"))
                 self.make(d, "hello")
-                self.assertEqual(of_tools.start_text_size(d, "sp@m"), 5, name)
+                self.assertEqual(of_tools.start_text_size(d, "sp@m"), (5, None), name)
                 found = [f for _, _, fs in os.walk(base) for f in fs if f == "PWNED"]
                 self.assertEqual(found, [], name)
+
+    def test_a_failed_hook_is_not_measured(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.make(d, "x")
+            with open(os.path.join(of_tools.plugin_path(d, "sp@m"), "hooks", "say.sh"), "w") as fh:
+                fh.write("echo partial; exit 3\n")
+            self.assertEqual(of_tools.start_text_size(d, "sp@m")[0], None)
 
     def test_a_hook_past_its_timeout_is_killed_with_its_children(self):
         import time
@@ -724,7 +731,8 @@ class StartTextTest(unittest.TestCase):
             with open(os.path.join(root, "hooks", "say.sh"), "w") as fh:
                 fh.write(f"(sleep 2; touch {shlex.quote(mark)}) & sleep 30\n")
             t0 = time.time()
-            self.assertEqual(of_tools.start_text_size(d, "sp@m", timeout=0.5), 0)  # ran, measured nothing
+            n, why = of_tools.start_text_size(d, "sp@m", timeout=0.5)
+            self.assertEqual((n, why), (None, "1 of its SessionStart hooks failed or passed 0.5 s"))  # never a 0
             self.assertLess(time.time() - t0, 5)
             time.sleep(2.5)
             self.assertFalse(os.path.exists(mark))   # the child it left was killed too
@@ -732,10 +740,10 @@ class StartTextTest(unittest.TestCase):
     def test_plain_output_counts_whole_and_a_matcher_that_skips_startup_runs_nothing(self):
         with tempfile.TemporaryDirectory() as d:
             self.make(d, "hello")
-            self.assertEqual(of_tools.start_text_size(d, "sp@m"), 5)
+            self.assertEqual(of_tools.start_text_size(d, "sp@m"), (5, None))
         with tempfile.TemporaryDirectory() as d:
             self.make(d, "hello", matcher="compact")
-            self.assertIsNone(of_tools.start_text_size(d, "sp@m"))
+            self.assertEqual(of_tools.start_text_size(d, "sp@m"), (None, None))
 
 
 if __name__ == "__main__":
