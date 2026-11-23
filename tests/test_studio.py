@@ -637,6 +637,26 @@ class DiagnoseTest(unittest.TestCase):
         self.assertEqual(self.status(d, "lingering")["missing"], ["registry.mandate_exit"])
         self.assertIn(self.status(d, "chatty")["status"], ("blocked", "not_built"))
 
+    def test_a_rule_that_raises_fails_alone(self):
+        """One rule raising never stops the run: it reads failed, with its error, and the other rules' issues stay
+        (2026-11-23: wip_arms may be a map by rung, which a rule comparing a count with one number could not read)."""
+        import types
+        from unittest import mock
+        rows = [self.wr(1, ["bot"])]
+        before = self.diag(rows)
+        name = next(r["rule"][3:] for r in before["rules"] if r["status"] in ("quiet", "fired"))
+        boom = mock.patch.dict(of_diagnose.RULES, {name: lambda *a, **k: 1 > {}})
+        with boom:
+            d = self.diag(rows)
+        row = self.status(d, name)
+        self.assertEqual(row["status"], "failed")
+        self.assertIn("TypeError", row["error"])
+        self.assertEqual(len(d["rules"]), len(before["rules"]))
+        self.assertEqual({i["issue_id"] for i in d["issues"] if i["rule"] != "ap." + name},
+                         {i["issue_id"] for i in before["issues"] if i["rule"] != "ap." + name})
+        html = of_studio._rules_status(types.SimpleNamespace(diagnosis=d))
+        self.assertIn(f"failed</span> {name}", html)
+
     def test_labels(self):
         rows = [self.wr(i, []) for i in range(5)]   # orphan-work's unmapped part (keeperless moved to unkept-system, 2026-11-10)
         iid = of_diagnose.issue_id("orphan-work", ["(unmapped)"])
@@ -1834,7 +1854,65 @@ class LoopTest(unittest.TestCase):
         self.assertEqual((c2["cost_week"]["usd"], c2["cost_week"]["runs_without_usd"], c2["cost_week"]["tokens"]), (7.5, 7, 3000.0))
         self.assertEqual(c2["cost_week"]["usd_per_kept_cycle"], 3.75)   # h1 and h2 kept this week
         self.assertEqual([h["id"] for h in c["register"]["open"]], ["h3"])  # h5 is in test
-        self.assertEqual(c["wip"], {"testing": 1, "limit": 1, "over": False})
+        self.assertEqual({k: c["wip"][k] for k in ("testing", "limit", "over")}, {"testing": 1, "limit": 1, "over": False})
+        self.assertIsNone(rung["day_pass"]["wait_share"])                  # no run there has a queue time
+        self.assertEqual(rung["day_pass"]["wait_note"], "not observed (5 runs without a queue time)")
+
+    def test_the_wait_is_read_only_from_a_queue_time(self):
+        """A rung's wait share comes only from runs with queued_at; the previous run's end or the hypothesis's filing is
+        no queue time (of_architect's hand-over 0985ab73: a user organization's loop with no queued_at showed 82 to 94%
+        waiting, its analysis and reviews between runs)."""
+        import of_studio
+        run = lambda i, ts, hid, **kw: self.ev(i, ts, "of.loop_run", dict({"hypothesis": hid, "rung": "offline"}, **kw))
+        hyp = self.ev(1, "2026-11-02T00:00Z", "of.loop_hypothesis", {"id": "h1", "change": "x"})
+        bare = [hyp, run(2, "2026-11-02T10:00Z", "h1", started_at="2026-11-02T09:00Z"),
+                run(3, "2026-11-03T10:00Z", "h1", started_at="2026-11-03T09:00Z")]
+        x = {r["rung"]: r for r in self.card(bare)["ladder"]}["offline"]
+        self.assertEqual((x["wait_share"], x["wait_runs"], x["wait_unobserved"]), (None, 0, 2))   # was 0.95 and 0.96
+        self.assertEqual(x["wait_note"], "not observed (2 runs without a queue time)")
+        self.assertIn("not observed (2 runs without a queue time)", of_studio._wait_cell(x))
+        some = bare + [run(4, "2026-11-04T10:00Z", "h1", queued_at="2026-11-04T08:00Z", started_at="2026-11-04T09:00Z")]
+        x = {r["rung"]: r for r in self.card(some)["ladder"]}["offline"]
+        self.assertEqual((x["wait_share"], x["wait_runs"], x["wait_unobserved"], x["wait_note"]), (0.5, 1, 2, None))
+        self.assertEqual(of_studio._wait_cell(x), '50% <span class="sub">(1 with a queue time, 2 without)</span>')
+        one = {r["rung"]: r for r in self.card(bare[:2])["ladder"]}["offline"]
+        self.assertEqual(one["wait_note"], "not observed (1 run without a queue time)")
+
+    def test_wip_is_counted_per_cell_and_per_rung(self):
+        """With cells, wip_arms counts per cell; as a map, per rung (the rung of the latest run, else the cost's); the
+        rule reads metrics.wip_groups, each with its limit (of_architect's hand-overs c4ef8758 and 0985ab73: six
+        hypotheses over four cells, none above its limit of three, were read as over)."""
+        import of_studio
+        spec = dict(self.SPEC, wip_arms=3, cells={"a": "p1", "b": "p2", "c": "p3", "d": "p4"})
+        h = lambda i, hid, cell, rung="day_pass": self.ev(i, f"2026-11-02T0{i}:00Z", "of.loop_hypothesis",
+                                                       {"id": hid, "change": hid, "cell": cell, "cost": {"rung": rung}})
+        run = lambda i, ts, hid, rung: self.ev(i, ts, "of.loop_run", {"hypothesis": hid, "rung": rung})
+        six = [h(1, "h1", "a"), h(2, "h2", "a"), h(3, "h3", "b"), h(4, "h4", "c"), h(5, "h5", "d"), h(6, "h6", "d")]
+        rows = six + [run(10 + i, f"2026-11-03T0{i}:00Z", f"h{i}", "offline") for i in range(1, 7)]
+        c = self.card(rows, spec)
+        self.assertEqual((c["wip"]["testing"], c["wip"]["over"]), (6, False))
+        self.assertEqual([(g["cell"], g["testing"], g["limit"]) for g in c["wip"]["groups"]],
+                         [("a", 2, 3), ("b", 1, 3), ("c", 1, 3), ("d", 2, 3)])
+        self.assertIn("cell a: 2 of 3", of_studio._wip_line(c["wip"]))
+        lp = of_model.loops(of_model.build(dict(DOC, works={"w1": {"title": "S", "owner": "colleague", "doers": ["bot_search"],
+                                                                   "loop": spec}}), rows, at=self.NOW))["w1"]
+        groups = {g["cell"]: g for g in lp["metrics"]["wip_groups"]}
+        self.assertEqual(groups["a"]["limit"], 3)
+        self.assertEqual(groups["a"]["series"], [(of_model.epoch("2026-11-03T01:00Z"), 1), (of_model.epoch("2026-11-03T02:00Z"), 2)])
+        # wip_arms by rung, no cells: a hypothesis moves to the rung of its latest run
+        by_rung = dict(self.SPEC, wip_arms={"offline": 1, "day_pass": 2})
+        rows2 = six[:3] + [run(20, "2026-11-03T01:00Z", "h1", "offline"), run(21, "2026-11-03T02:00Z", "h2", "offline"),
+                           run(22, "2026-11-03T03:00Z", "h3", "day_pass"), run(23, "2026-11-03T04:00Z", "h2", "day_pass")]
+        c2 = self.card(rows2, by_rung)
+        self.assertEqual([(g["rung"], g["testing"], g["limit"], g["over"]) for g in c2["wip"]["groups"]],
+                         [("day_pass", 2, 2, False), ("offline", 1, 1, False)])
+        m2 = of_model.loops(of_model.build(dict(DOC, works={"w1": {"title": "S", "owner": "colleague", "doers": ["bot_search"],
+                                                                   "loop": by_rung}}), rows2, at=self.NOW))["w1"]
+        off = next(g for g in m2["metrics"]["wip_groups"] if g["rung"] == "offline")
+        t = lambda hh: of_model.epoch(f"2026-11-03T{hh}:00Z")
+        self.assertEqual(off["series"], [(t("01"), 1), (t("02"), 2), (t("04"), 1)])   # 2 over 1 from 02:00 to 04:00
+        self.assertEqual(off["limit"], 1)
+        self.assertEqual(self.card(rows, dict(self.SPEC, wip_arms=3))["wip"]["over"], True)   # no cells: 6 over 3
 
     def test_register_order_and_production_checkpoint(self):
         import of_loops
@@ -1862,7 +1940,8 @@ class LoopTest(unittest.TestCase):
         w = lp["w1"]
         self.assertEqual((w["owner"], w["doers"], w["target"]["better"], w["babysit_model"]), ("colleague", ["bot_search"], "higher", "sonnet"))
         self.assertEqual([x["production"] for x in w["ladder_spec"]], [False, False, False, True, True])
-        self.assertEqual(w["metrics"]["rungs"]["offline"], {"runs": 1, "cycle_time": 2.0, "wait_share": 0.5})
+        self.assertEqual(w["metrics"]["rungs"]["offline"], {"runs": 1, "cycle_time": 2.0, "wait_share": 0.5, "wait_runs": 1,
+                                                            "wait_unobserved": 0})
         self.assertEqual(w["metrics"]["wip"][:2], [(of_model.epoch("2026-11-02T06:00Z"), 1), (of_model.epoch("2026-11-03T01:00Z"), 0)])
         self.assertEqual(w["metrics"]["production"], {"last_at": None, "days_since": None})
         self.assertEqual(w["metrics"]["babysit"], {"bot_search": {"runner": {}, "monitor": {"claude-opus-5-5": 1}}})

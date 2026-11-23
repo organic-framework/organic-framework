@@ -254,9 +254,9 @@ def cmd_issues(args):
         print()
         if several:
             print(f"rules for {n}:")
-        _table([(r["version"], r["status"], r["issues"] or "", ", ".join(r["missing"]) or
+        _table([(r["version"], r["status"], r["issues"] or "", r.get("error") or ", ".join(r["missing"]) or
                  ("parts blocked: " + ", ".join(f"{k} ({', '.join(v)})" for k, v in r["parts_blocked"].items()) if r["parts_blocked"] else ""))
-                for r in d["rules"]], ["rule", "status", "issues", "missing"])
+                for r in d["rules"]], ["rule", "status", "issues", "missing or error"])
         for r in d["rules"]:
             for x in r.get("notes") or []:
                 print(f"note {r['version']}: {x}")

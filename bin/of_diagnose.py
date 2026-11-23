@@ -228,7 +228,15 @@ def diagnose(model, rows, a, b, cat=None, context=None):
         else:
             fn = RULES[name]
             kw = {"context": context} if "context" in fn.__code__.co_varnames else {}
-            res = fn(model, rows, a, b, cat, spec, ok, **kw) if ok is not None else fn(model, rows, a, b, cat, spec, **kw)
+            try:
+                res = (fn(model, rows, a, b, cat, spec, ok, **kw) if ok is not None
+                       else fn(model, rows, a, b, cat, spec, **kw))
+            except Exception as exc:  # noqa: BLE001 — one rule failing never takes the others' issues with it
+                # (2026-11-23: wip_arms may be a map by rung, which a rule comparing a count with one number could not
+                # read; the diagnosis of the whole organization, its escalations with it, stopped on such a rule)
+                row.update(status="failed", error=f"{type(exc).__name__}: {str(exc)[:200]}")
+                status.append(row)
+                continue
             notes = []
             if isinstance(res, tuple):
                 res, extra, *rest = res
