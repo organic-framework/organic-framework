@@ -41,6 +41,8 @@ CREATE INDEX IF NOT EXISTS messages_from ON messages (from_org, from_position, s
 CREATE TABLE IF NOT EXISTS position_aliases (org TEXT, alias TEXT, position TEXT, machine_id TEXT, updated REAL,
   PRIMARY KEY (org, alias));
 CREATE TABLE IF NOT EXISTS presented (org TEXT, position TEXT, last_seen REAL, PRIMARY KEY (org, position));
+CREATE TABLE IF NOT EXISTS sent_across (msg_id TEXT PRIMARY KEY, from_org TEXT, from_position TEXT, to_org TEXT,
+  to_position TEXT, sender_machine TEXT, created REAL);
 """
 ALIAS_TTL = 30 * 86400  # an alias a holder presented within this many seconds still readdresses a new message
 ALIAS_QUIET = 86400     # a name a holder presented within this many seconds is never taken as an alias
@@ -444,6 +446,10 @@ class Relay:
         with self.app.store.conn() as c:
             r = c.execute("SELECT from_org, from_position, to_org, to_position, state, done_at, created FROM messages"
                           " WHERE msg_id = ?", (rid,)).fetchone()
+            h = None if r else c.execute("SELECT from_org, from_position, to_org, to_position, created FROM sent_across"
+                                         " WHERE msg_id = ?", (rid,)).fetchone()
+        if not r and h:
+            return self._reply_to_header(m, rid, h, from_org, from_pos, to_org, to_pos)
         if not r:
             return None, f"reply_to {rid} names no message (give its full id)"
         if (r[0], r[1], r[2], r[3]) != (to_org, to_pos, from_org, from_pos):
@@ -463,6 +469,54 @@ class Relay:
         if not holds:
             return None, held_why
         return f"a reply to {rid} (no grant needed; carries no authority)", None
+
+    def _reply_to_header(self, m, rid, h, from_org, from_pos, to_org, to_pos):
+        """_reply_across for a reply_to this server knows only by its header (`sent`): a message its sender's machine
+        posted to the receiver's server, another one. The header has no delivery state, so "not expired or failed"
+        cannot be checked here: the 7 days count from the header's arrival (of_architect, msg 01a206a9-0644)."""
+        if (h[0], h[1], h[2], h[3]) != (to_org, to_pos, from_org, from_pos):
+            return None, f"reply_to {rid} is not a message from {to_org}:{to_pos} to {from_org}:{from_pos}"
+        if not h[4] or time.time() - h[4] > self.REPLY_WINDOW_S:
+            return None, f"reply_to {rid} was sent more than {self.REPLY_WINDOW_S // 86400} days ago"
+        holds, held_why = self._holds(m, from_org, from_pos)
+        if not holds:
+            return None, held_why
+        return f"a reply to {rid}, sent from here to another server (no grant needed; carries no authority)", None
+
+    def sent(self, m, body):
+        """Keep the header of a message this machine posted to another organization's server, on the server of its
+        sender's organization: its id, its two ends and when the header came, never its text. A reply to it comes
+        here, and the message itself is not here (of_architect, msg 01a206a9-0644, 2026-11-23: since one
+        organization's server moved to another machine, every reply to it from a position with no grant was refused,
+        "names no message"). Each server checks only its own records (docs/contours.md §2)."""
+        body = body or {}
+        msg_id = body.get("msg_id")
+        if not isinstance(msg_id, str) or not msg_id or len(msg_id) > 64:
+            raise RelayError(400, "bad_request", "msg_id is required")
+        to_org, to_pos = parse_address(body.get("to"))
+        from_org, from_pos = parse_address(body.get("from"))
+        if from_org == to_org:
+            raise RelayError(400, "bad_request", "a header is kept only for a message to another organization")
+        if not self._org_known(from_org):
+            raise RelayError(404, "unknown_org", f"organization {from_org} is not served here")
+        if not (m["tenant"] or from_org in self._machine_orgs(m)):
+            raise RelayError(403, "forbidden", f"this machine has not joined {from_org}")
+        holds, why = self._holds(m, from_org, from_pos)
+        if not holds:
+            raise RelayError(403, "forbidden", why)
+        ends = (from_org, from_pos, to_org, to_pos)
+        with self.app.store.conn() as c:
+            c.execute("DELETE FROM sent_across WHERE created < ?", (time.time() - self.REPLY_WINDOW_S,))
+            old = c.execute("SELECT from_org, from_position, to_org, to_position FROM sent_across WHERE msg_id = ?",
+                            (msg_id,)).fetchone()
+            if old and tuple(old) != ends:
+                raise RelayError(409, "conflict", "msg_id kept already with other ends")
+            if not old:
+                if c.execute("SELECT 1 FROM messages WHERE msg_id = ?", (msg_id,)).fetchone():
+                    raise RelayError(409, "conflict", "msg_id names a message on this server")
+                c.execute("INSERT INTO sent_across VALUES (?,?,?,?,?,?,?)",
+                          (msg_id, *ends, m["machine_id"], time.time()))
+        return {"msg_id": msg_id, "kept": True}
 
     def post(self, m, body):
         body = body or {}

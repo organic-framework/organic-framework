@@ -4577,25 +4577,46 @@ def cmd_send(args):
         local = of_relay_client.local_holders(positions, bind, live_agents_or_none(warn=False))
     except OfError:
         local = {}
-    body = of_relay_client.presence_bodies(local, servers, default).get(server, [])
-    if not any(f"{h['org']}:{h['position']}" == sender for h in body):
-        org, pos = sender.split(":", 1)
-        # the calling session only when it is the sender's registered holder: another session sending --from a
-        # position (`of capacity balance`, a job) would replace the live holder's row, and its `of inbox --mine` be
-        # refused not_holder until the relay's next PUT (of_secrets-review on organic-framework PR 251)
-        sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
-        own = sid if sid and any(p.get("_org") == org and p.get("name") == pos and session_of(p) == sid
-                                 for p in positions) else None
-        body.append({"org": org, "position": pos, "session_id": own, "state": "working",
-                     "pane": os.environ.get("HERDR_PANE_ID") if own else None, "kind": "agent"})
-    # A merge: it adds or updates the rows it carries and drops none. A plain PUT replaces this machine's whole set on
-    # that server, so a send that read no agents (a launchd job that cannot reach herdr) dropped every other position
-    # here until the relay's next PUT, up to a minute (a user organization's structure keeper, msg 01a1e766-e334,
-    # 2026-11-16). The sender is still presented: `verified` across servers, a sender the relay has not published yet
-    # (of_review on organic-framework PR 251). An older server ignores `merge` and replaces, as before.
-    client.put_presence(body, merge=True)
+    bodies = of_relay_client.presence_bodies(local, servers, default)
+
+    def present(c, url):
+        """PUT this machine's presence on URL's server, the sender included; returns the rows sent."""
+        rows = list(bodies.get(url, []))
+        if not any(f"{h['org']}:{h['position']}" == sender for h in rows):
+            org, pos = sender.split(":", 1)
+            # the calling session only when it is the sender's registered holder: another session sending --from a
+            # position (`of capacity balance`, a job) would replace the live holder's row, and its `of inbox --mine` be
+            # refused not_holder until the relay's next PUT (of_secrets-review on organic-framework PR 251)
+            sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+            own = sid if sid and any(p.get("_org") == org and p.get("name") == pos and session_of(p) == sid
+                                     for p in positions) else None
+            rows.append({"org": org, "position": pos, "session_id": own, "state": "working",
+                         "pane": os.environ.get("HERDR_PANE_ID") if own else None, "kind": "agent"})
+        # A merge: it adds or updates the rows it carries and drops none. A plain PUT replaces this machine's whole set
+        # on that server, so a send that read no agents (a launchd job that cannot reach herdr) dropped every other
+        # position here until the relay's next PUT, up to a minute (a user organization's structure keeper, msg
+        # 01a1e766-e334, 2026-11-16). The sender is still presented: `verified` across servers, a sender the relay has
+        # not published yet (of_review on organic-framework PR 251). An older server ignores `merge` and replaces.
+        c.put_presence(rows, merge=True)
+        return rows
+
+    body = present(client, server)
     priority = "fyi" if getattr(args, "fyi", False) else ("urgent" if getattr(args, "urgent", False) else None)
     r = client.send_message(to, sender, args.text, args.reply_to, args.grant, grants, priority=priority)
+    home = servers.get(from_org, default)
+    if to_org != from_org and of_client.pinned_url(home) != of_client.pinned_url(server) and r.get("msg_id"):
+        # The message went to the receiver's server; a reply to it comes to the sender's, which keeps its header so
+        # that the reply is taken there (of_architect, msg 01a206a9-0644, 2026-11-23: every reply from a position with
+        # no grant was refused, "names no message", once the two organizations' servers were two). The message is
+        # sent either way; only a reply to it would be refused.
+        try:
+            hc = of_client.Client(home)
+            present(hc, home)
+            hc.sent_header(r["msg_id"], to, sender)
+        except Exception as e:  # noqa: BLE001
+            print(f"warning: {from_org}'s server did not keep this message's header ({type(e).__name__}: "
+                  f"{str(e)[:200]}), so a reply from {to} to it will be refused there; the message itself was sent",
+                  file=sys.stderr)
     of_events.emit("agent_message_out", {"to": to, "to_position": to.split(":", 1)[1], "delivery": r.get("state"),
                                          "authority": r.get("authority"), "msg_id": r.get("msg_id"), "via": "relay",
                                          "chars": len(args.text)},

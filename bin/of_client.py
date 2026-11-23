@@ -569,6 +569,11 @@ class Client:
             body["grants"] = grants
         return self._authed("POST", "/v1/messages", body=body)[1]
 
+    def sent_header(self, msg_id, to, sender):
+        """Keep the header of a message posted to another server on this one, the sender's organization's, so that a
+        reply to it is taken here (docs/server.md, `POST /v1/messages/sent`)."""
+        return self._authed("POST", "/v1/messages/sent", body={"msg_id": msg_id, "to": to, "from": sender})[1]
+
     def coord(self, org, after=0, wait=0):
         """The organization's coordination feed after `after` (docs/server-several-machines.md §4.2)."""
         from urllib.parse import quote
