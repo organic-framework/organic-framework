@@ -295,8 +295,8 @@ def plugin_path(config_dir, plugin_id):
 
 
 def _run_hook(command, cwd, env, timeout):
-    """A hook's stdout, or None when it could not run or passed `timeout`: then its whole process group, the shell
-    and every child it left, is killed."""
+    """A hook's stdout, or None when it could not start, exited non-zero or passed `timeout`: then its whole process
+    group, the shell and every child it left, is killed."""
     import signal
     try:
         proc = subprocess.Popen(["sh", "-c", command], cwd=cwd, env=env, stdin=subprocess.PIPE,
@@ -306,7 +306,7 @@ def _run_hook(command, cwd, env, timeout):
     try:
         out, _ = proc.communicate(json.dumps({"hook_event_name": "SessionStart", "source": "startup"}),
                                   timeout=timeout)
-        return out or ""
+        return (out or "") if proc.returncode == 0 else None
     except subprocess.TimeoutExpired:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
@@ -317,9 +317,10 @@ def _run_hook(command, cwd, env, timeout):
 
 
 def start_text_size(config_dir, plugin_id, timeout=10):
-    """Bytes of the text a plugin's SessionStart hooks add to every session's context, measured by running them as
-    Claude Code does at a start (their JSON's hookSpecificOutput.additionalContext, else their whole output), or
-    None when the plugin is not installed there or has no such hook. A session re-reads that text on every call, so
+    """(bytes, None): the text a plugin's SessionStart hooks add to every session's context, measured by running them
+    as Claude Code does at a start (their JSON's hookSpecificOutput.additionalContext, else their whole output);
+    (None, None) when the plugin is not installed there or has no such hook; (None, reason) when a hook could not be
+    measured (it failed or passed its time), since a size nobody observed is not a number (of_review, PR 584). A session re-reads that text on every call, so
     its size is a cost of_capacity weighs (of_architect, msg 01a20606-072f). It runs the plugin's own hook code, the
     same that runs at each of its sessions' starts, with a minimal environment and no input beyond the event, and so
     with whatever side effects that code has (files it writes, programs it starts). ${CLAUDE_PLUGIN_ROOT} is left for
@@ -327,15 +328,15 @@ def start_text_size(config_dir, plugin_id, timeout=10):
     timeout is killed with every process it started (of_secrets-review, PR 584)."""
     root = plugin_path(config_dir, plugin_id)
     if not root:
-        return None
+        return None, None
     try:
         with open(os.path.join(root, "hooks", "hooks.json")) as fh:
             groups = (json.load(fh).get("hooks") or {}).get("SessionStart") or []
     except (OSError, ValueError, AttributeError):
-        return None
+        return None, None
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.path.expanduser("~"),
            "CLAUDE_PLUGIN_ROOT": root, "CLAUDE_CONFIG_DIR": os.path.expanduser(config_dir), "OF_AUTOMATION": "1"}
-    total, ran = 0, False
+    total, ran, failed = 0, False, 0
     for g in groups:
         if g.get("matcher") and not re.search(str(g["matcher"]), "startup"):
             continue
@@ -345,6 +346,7 @@ def start_text_size(config_dir, plugin_id, timeout=10):
             ran = True
             out = _run_hook(h["command"], root, env, timeout)
             if out is None:
+                failed += 1
                 continue
             try:
                 doc = json.loads(out)
@@ -354,7 +356,9 @@ def start_text_size(config_dir, plugin_id, timeout=10):
             except ValueError:
                 pass
             total += len(out.encode())
-    return total if ran else None
+    if failed:
+        return None, f"{failed} of its SessionStart hooks failed or passed {timeout} s"
+    return (total, None) if ran else (None, None)
 
 
 # ---------- shared servers (docs/tools.md §4a) ----------
@@ -1309,12 +1313,16 @@ def main(argv=None):
                 print(f"account-bound (need a sign-in on the account): {', '.join(cfg['account_bound'])}")
             print("--mcp-config:", json.dumps(cfg["mcp"], indent=1) if cfg["mcp"] else "none")
             print("--settings keys:", json.dumps(cfg["settings"], indent=1))
-            if a.config_dir:
-                for pid, on in sorted((cfg["settings"].get("enabledPlugins") or {}).items()):
-                    n = start_text_size(a.config_dir, pid) if on else None
-                    if n:
-                        print(f"start text: {pid} adds {n} bytes (about {n // 4} tokens) to every session's context, "
-                              f"measured by running its SessionStart hooks on this account")
+            on = [pid for pid, v in sorted((cfg["settings"].get("enabledPlugins") or {}).items()) if v]
+            if a.config_dir and on:
+                print("start text: measured by running each enabled plugin's SessionStart hooks on this account "
+                      "(their code runs, with its side effects)")
+                for pid in on:
+                    n, why = start_text_size(a.config_dir, pid)
+                    if why:
+                        print(f"start text: {pid}: not measured ({why})")
+                    elif n is not None:
+                        print(f"start text: {pid} adds {n} bytes (about {n // 4} tokens) to every session's context")
             for n in cfg["notes"]:
                 print("note:", n)
             return 0

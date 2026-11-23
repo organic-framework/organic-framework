@@ -87,7 +87,7 @@ Every start of a position's session generates its configuration from the profile
   - `allowedMcpServers`: exactly the profile's servers. Portable ones pass by `serverName`, account-bound ones by `serverUrl`.
   - `enabledPlugins`: every plugin installed on the account, `true` for the profile's and `false` for the rest.
 
-`of tools plan <position> [--config-dir D]` prints what a start would generate. With `--config-dir`, it also prints, for each plugin the session gets, the bytes its SessionStart hooks add to every session's context, measured by running those hooks there as a start does: a session re-reads that text on every call, so it is a cost (`of_architect`, msg `01a20606-072f`, for `of_capacity`).
+`of tools plan <position> [--config-dir D]` prints what a start would generate. With `--config-dir`, it also prints, for each plugin the session gets, the bytes its SessionStart hooks add to every session's context, measured by running those hooks there as a start does, their code and its side effects included; a hook that fails or passes its 10 s reads "not measured", never a size. A session re-reads that text on every call, so it is a cost (`of_architect`, msg `01a20606-072f`, for `of_capacity`).
 
 **What the harness does, checked** (Claude Code 2.1.322, 2026-11-11; probes are `claude -p --output-format stream-json`, reading the `init` event's `mcp_servers` and `plugins`):
 
