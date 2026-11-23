@@ -26,16 +26,17 @@ Bench is RubyGems and Bundler, and OF is Rails. The design is organic-framework-
   so does the guard. `of owner set bench` refuses a development clone (one that runs the release gate), since positions
   write those.
 - **The reader's closedness.** OF evaluates an organization's `config/settings/*.lua` and `extensions/*/*.lua` through
-  Bench's reader when someone runs `of bench` (nothing in the pulse does yet); those files come from the organization's
-  repository, which agents write. Where that can happen differs by system. On Linux a session's sandbox keeps Bench's
-  sandbox from starting, so only a process outside every session, such as the owner's terminal, evaluates. On macOS a
-  session has no sandbox of its own, so an agent that runs `of bench install`, `hook` or `read` evaluates the
-  organization's Lua from its session, inside Bench's `sandbox-exec`. Their safety rests on two layers. The reader: a
-  Lua process of its own given no file, with no `io`, `os`, `load`, `require` beyond the package's sources or `debug`,
-  and budgets on instructions, memory and wall time. Around it, Bench's operating-system sandbox (above): Bench
-  evaluates only inside it and refuses when it cannot start. Both layers and their tests live in
-  `organic-framework/bench` (its `docs/bench.md`, "The reader", and `tests/test_bench.py`'s hostile set, one test per
-  case), and the guard's keeper passed them in that repository's pull request 1.
+  Bench's reader when someone runs `of bench`, and in the listener when a session asks the hooks door (below); nothing
+  in the pulse does; those files come from the organization's repository, which agents write. Where that can happen
+  differs by system. On Linux a session's sandbox keeps Bench's sandbox from starting, so only a process outside every
+  session evaluates: the owner's terminal, or the listener. On macOS a session has no sandbox of its own, so an agent
+  that runs `of bench install`, `hook` or `read` evaluates the organization's Lua from its session, inside Bench's
+  `sandbox-exec`. Their safety rests on two layers. The reader: a Lua process of its own given no file, with no `io`,
+  `os`, `load`, `require` beyond the package's sources or `debug`, and budgets on instructions, memory and wall time.
+  Around it, Bench's operating-system sandbox (above): Bench evaluates only inside it and refuses when it cannot start.
+  Both layers and their tests live in `organic-framework/bench` (its `docs/bench.md`, "The reader", and
+  `tests/test_bench.py`'s hostile set, one test per case), and the guard's keeper passed them in that repository's pull
+  request 1.
 
 ## The commands
 
@@ -71,10 +72,22 @@ Setting types: `string`, `int`, `number`, `bool`, `duration` (`"30m"`, `"2h"`, `
   decides, and the result names the hook. A hook whose file changed since the install, that the reader stopped, or
   that returns no decision stops the module: a hook before a module is a gate.
 
+**Where an organization's Lua runs.** Always inside Bench's own operating-system sandbox, which cannot start inside a
+session's sandbox (`of_server`'s ruling). So a Claude Code session that needs a hook's decision, on every system, asks
+the listener through the hooks door (`bin/of_hookdoor.py`): a Unix socket the listener serves for this one request, data
+only (the organization, the package and module names, the card's fields, each on an allowlist), the caller's
+organization taken from its own session, the organization's folder from the listener's `orgs.yaml`, and the decision
+alone back. A door that cannot be reached, or refuses, is a stop. The caller's session is read from the command line of
+the nearest Claude Code process above it, which any process of the same OS user can carry: where each organization is
+its own OS user (the agent host), the user check keeps a session to its own organization; where organizations share one
+user (a laptop), a session could ask another organization's hook about a card of its own making, though there sessions
+have no sandbox and can run Bench themselves: an agent that runs `of bench` evaluates the organization's Lua in its
+session, inside Bench's `sandbox-exec` (`of_server`'s review).
+
 The first package is `of-asks` (`organic-framework/of-asks`, kept by `of_bench`). With `of_asks`'s change
 (organic-framework PR 574, open; `bin/of_asks_package.py`), `of ask` calls the hooks before the module "file", and a
 bare `ask_unanswered` rule rises after the setting `escalate_after`, only where the organization's `Benchfile.lock`
-names the package; until it merges, nothing outside `of bench` evaluates through Bench.
+names the package; until it merges, only `of bench` and a request to the hooks door evaluate through Bench.
 
 ## Code
 

@@ -1727,6 +1727,45 @@ SERVES_READERS = ("asks",)  # fresh() vouches for these views: no heartbeat whil
 LAG_OK_S = {"asks": 120}    # a view's acceptable lag: docs/health.md's view.age.<view> degrades past it, fails past 5x
 
 
+def hookdoor_thread(stop=None, log=print):
+    """The hooks door (bin/of_hookdoor.py): a Claude Code session's request for its organization's hook decision,
+    evaluated here, through Bench in its operating-system sandbox (of_server's ruling, message 01a20566-e23c)."""
+    import importlib.machinery
+    import importlib.util
+    import threading
+    import of_hookdoor
+    here = os.path.dirname(os.path.abspath(__file__))
+    state = {"of": None}
+
+    def cli():
+        if state["of"] is None:
+            loader = importlib.machinery.SourceFileLoader("of_cli_hookdoor", os.path.join(here, "of"))
+            mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("of_cli_hookdoor", loader))
+            loader.exec_module(mod)
+            state["of"] = mod
+        return state["of"]
+
+    org_of_session = of_hookdoor.org_of_session   # the hook's session index, never the request
+
+    def project_of(org):
+        e = cli()._org_paths_entry(org) if hasattr(cli(), "_org_paths_entry") else None
+        path = (e or {}).get("path")
+        return os.path.realpath(os.path.expanduser(str(path))) if path else None
+
+    def evaluate(project, package, module, card):
+        import of_method
+        return of_method.before(project, package, module, card)
+
+    def loop():
+        try:
+            of_hookdoor.serve(org_of_session, project_of, evaluate, stop=stop, log=lambda m: log(f"of listen: {m}"))
+        except Exception as e:  # noqa: BLE001 - no hooks door: a session's hook decision stops its card, says so
+            log(f"of listen: hooks door: {type(e).__name__}: {e}")
+    t = threading.Thread(target=loop, daemon=True, name="of-hookdoor")
+    t.start()
+    return t
+
+
 def stuck_timers(ticks, processors, now, slack=None):
     """The timers whose last start is older than their period plus SLACK (the watchdog's ticks_stale), from the
     listener's own memory. With a thread per timer any one of them could keep the timers' file fresh, so a thread
@@ -1955,6 +1994,7 @@ def run(stop=None, log=print, rebuild=False):
     locks = {p.name: threading.Lock() for p in processors}
     ticked = threading.Event()
     tick_thread(processors, ticks, locks, ticked, stop=stop, log=log)
+    hookdoor_thread(stop=stop, log=log)
     while not (stop and stop.is_set()):
         now = time.time()
         try:
