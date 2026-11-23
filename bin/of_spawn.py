@@ -316,21 +316,33 @@ def _server_keys(path=None):
     """The of-server's own keys under this user, from its server.yaml as bin/of_server.py loads them: the tenant's
     master key (the masking key derives from it), a secret_key_file, and the TLS private key. The guard denies *.key by
     name only, and the sandbox is for the reads it does not see (of_server on organic-framework PR 457). What the
-    user's own of commands read stays open: machine_ed25519, the pins under servers, server.yaml itself."""
-    cfg = {}
+    user's own of commands read stays open: machine_ed25519, the pins under servers, server.yaml itself.
+    PATH alone when given; else every server.yaml a server here may read: ~/.config/of's, and the one
+    of_server.config_file() names ($OF_SERVER_CONFIG, else the $OF_CONFIG_DIR folder's), taken together. A variable in
+    the environment of whoever starts the session only adds to the list, never drops the default file's keys
+    (of_secrets-review on PR 592)."""
     import of_events
-    # of_server.config_file()'s rule, without importing the server here (of_secrets-review on PR 590)
-    path = path or os.environ.get("OF_SERVER_CONFIG") or of_events.config_path("server.yaml")
-    try:
-        import yaml
-        with open(path) as fh:
-            cfg = yaml.safe_load(fh) or {}
-    except (OSError, Exception):  # noqa: BLE001 - no server here: its default key path still counts
-        cfg = {}
-    out = [cfg.get("tenant_key_file") or "~/.config/of/tenant.key", cfg.get("secret_key_file")]
-    if isinstance(cfg.get("tls"), dict):
-        out.append(cfg["tls"].get("key"))
-    return [os.path.expanduser(str(x)) for x in out if x]
+    if path:
+        files = [path]
+    else:
+        files = [os.path.expanduser("~/.config/of/server.yaml"),
+                 os.environ.get("OF_SERVER_CONFIG") or of_events.config_path("server.yaml")]
+    out = []
+    for f in files:
+        try:
+            import yaml
+            with open(f) as fh:
+                cfg = yaml.safe_load(fh) or {}
+        except (OSError, Exception):  # noqa: BLE001 - no server here: its default key path still counts
+            cfg = {}
+        cfg = cfg if isinstance(cfg, dict) else {}
+        keys = [cfg.get("tenant_key_file") or "~/.config/of/tenant.key", cfg.get("secret_key_file")]
+        if isinstance(cfg.get("tls"), dict):
+            keys.append(cfg["tls"].get("key"))
+        for k in (os.path.expanduser(str(x)) for x in keys if x):
+            if k not in out:
+                out.append(k)
+    return out
 
 
 # the files and folders Claude Code runs or reads as configuration outside the sandbox, in any folder: settings (and the

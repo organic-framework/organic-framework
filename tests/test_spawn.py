@@ -646,22 +646,51 @@ class SandboxBlock(unittest.TestCase):
         box = of_spawn.sandbox_settings([], platform="linux")
         self.assertIn(os.path.expanduser("~/.config/of/tenant.key"), box["filesystem"]["denyRead"])
 
-    def test_the_servers_keys_come_from_the_server_yaml_the_server_reads(self):
-        """of_secrets-review on PR 590: a server run on OF_SERVER_CONFIG names key files ~/.config/of's file does not."""
+    def test_the_servers_keys_come_from_every_server_yaml_it_may_read(self):
+        """of_secrets-review on PR 590 and PR 592: a server run on OF_SERVER_CONFIG names key files ~/.config/of's file
+        does not, and a variable set by whoever starts the session adds those, never drops the default file's."""
         import tempfile
+        import of_events
+        home = os.path.expanduser("~")
+        default = os.path.join(home, ".config", "of", "server.yaml")
+        os.makedirs(os.path.dirname(default), exist_ok=True)
+        try:                                                            # tests/isolate.py writes one: kept as it was
+            with open(default) as fh:
+                kept = fh.read()
+        except FileNotFoundError:
+            kept = None
+        saved = {k: os.environ.get(k) for k in ("OF_SERVER_CONFIG",)}
+        saved_dir = of_events.CONFIG_DIR
         with tempfile.TemporaryDirectory() as d:
-            y = os.path.join(d, "named.yaml")
-            with open(y, "w") as fh:
-                fh.write("tenant_key_file: /home/alex/srv/tenant.key\n")
-            saved = os.environ.get("OF_SERVER_CONFIG")
-            os.environ["OF_SERVER_CONFIG"] = y
             try:
-                keys = of_spawn._server_keys()
-            finally:
+                with open(default, "w") as fh:
+                    fh.write("secret_key_file: ~/fake/secret.key\ntls: {key: ~/fake/tls.key}\n")
+                base = [os.path.join(home, ".config/of/tenant.key"), os.path.join(home, "fake/secret.key"),
+                        os.path.join(home, "fake/tls.key")]
+                self.assertEqual(of_spawn._server_keys(), base)
+                empty = os.path.join(d, "empty.yaml")
+                open(empty, "w").close()
+                os.environ["OF_SERVER_CONFIG"] = empty
+                self.assertEqual(of_spawn._server_keys(), base)          # an empty named file drops nothing
+                named = os.path.join(d, "named.yaml")
+                with open(named, "w") as fh:
+                    fh.write("tenant_key_file: /home/alex/srv/tenant.key\n")
+                os.environ["OF_SERVER_CONFIG"] = named
+                self.assertEqual(of_spawn._server_keys(), base + ["/home/alex/srv/tenant.key"])
                 os.environ.pop("OF_SERVER_CONFIG")
-                if saved is not None:
-                    os.environ["OF_SERVER_CONFIG"] = saved
-        self.assertEqual(keys, ["/home/alex/srv/tenant.key"])
+                of_events.CONFIG_DIR = os.path.join(d, "other")           # another config folder drops nothing either
+                self.assertEqual(of_spawn._server_keys(), base)
+            finally:
+                of_events.CONFIG_DIR = saved_dir
+                if kept is None:
+                    os.unlink(default)
+                else:
+                    with open(default, "w") as fh:
+                        fh.write(kept)
+                for k, v in saved.items():
+                    os.environ.pop(k, None)
+                    if v is not None:
+                        os.environ[k] = v
 
     def test_a_glob_is_its_matches_when_the_session_starts(self):
         import tempfile
