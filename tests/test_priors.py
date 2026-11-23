@@ -139,12 +139,13 @@ class MainTest(unittest.TestCase):
                 fh.write("orgs:\n" + "".join(orgs))
             conn = of_store.connect(os.path.join(t, "of.db"))
             iid = of_priors.of_model.issue_id
+            now = of_priors.current(of_priors.of_diagnose.catalogue(), "ap.unkept-system")[0]   # @0 is carried by it
             for i, (org, rule, v, label, note, ts, issue) in enumerate((
                     ("acme", "unkept-system", 0, "true_positive", "db has no keeper", "2026-11-10T09:00:00Z",
                      iid("unkept-system", ["db"])),                               # @0, carried by @1: replayed, raised
                     ("acme", "unkept-system", 0, "false_positive", "kept by the vendor", "2026-11-10T09:20:00Z",
                      iid("unkept-system", ["app"])),                              # replayed: app has a keeper
-                    ("acme", "unkept-system", 1, "true_positive", "a note", "2026-11-12T09:00:00Z", "a1b2c3d4e5f6"),
+                    ("acme", "unkept-system", now, "true_positive", "a note", "2026-11-12T09:00:00Z", "a1b2c3d4e5f6"),
                     ("beta", "unkept-system", 0, "false_positive", "beta's own", "2026-11-10T09:00:00Z",
                      iid("unkept-system", ["cache"])))):
                 of_store.add_event(conn, {"of.event.id": f"e{i}", "timestamp": ts, "event.name": "of.issue_labelled",
@@ -166,7 +167,7 @@ class MainTest(unittest.TestCase):
         self.assertEqual(rc, 0, err.getvalue())
         d = json.loads(out.getvalue())
         self.assertEqual((d["labels"], d["replays"]), (3, 1))                 # beta's label is not acme's
-        r = d["rules"]["ap.unkept-system@1"]
+        r = d["rules"][f"ap.unkept-system@{now}"]
         self.assertEqual((r["labels"], r["older_version"], r["replay_blocked"], r["not_raised"], r["counted"],
                           r["distinct"], r["false_positive"], r["p"]), (3, 0, 0, 1, 2, 2, 0, None))
         self.assertIn("replay 1/1", err.getvalue())

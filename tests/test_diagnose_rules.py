@@ -203,7 +203,7 @@ class RulesTest(unittest.TestCase):
         d = of_diagnose.diagnose(of_model.build(doc, [], at=self.B), [], self.A, self.B)
         verify = [i for i in d["issues"] if i["affected"] == ["eng", "method:verify"]]
         self.assertEqual([i["rule"] for i in verify], ["ap.cell-overlap"])
-        self.assertIn("ap.cell-gap@0", verify[0]["evidence"]["merged"])
+        self.assertIn("ap.cell-gap@1", verify[0]["evidence"]["merged"])
         self.assertTrue(all(i["decider"] == "structure_keeper" for i in d["issues"] if i["rule"].startswith("ap.cell-")))
 
     HID = "01a1c759-4e99-7222-b4aa-f0f8aa11bb22"
@@ -385,7 +385,7 @@ class RulesTest(unittest.TestCase):
         d = of_diagnose.diagnose(of_model.build(doc, rows, at=self.B), rows, self.A, self.B)
         oc = [i for i in d["issues"] if i["rule"] == "ap.over-coupled"]
         self.assertEqual([(i["affected"], i["rule_version"]) for i in oc],
-                         [(["bot_nonce", "bot_search"], "ap.over-coupled@4")])        # 12 messages / 3 PRs, reciprocal
+                         [(["bot_nonce", "bot_search"], "ap.over-coupled@5")])        # 12 messages / 3 PRs, reciprocal
         frag = [i for i in d["issues"] if i["rule"] == "ap.fragmented-ownership"]
         self.assertEqual(frag[0]["affected"], ["bot", "bot_operator"])                 # keeper wrote 25%, two windows
         self.assertEqual((frag[0]["part"], frag[0]["severity"]), ("code", "medium"))

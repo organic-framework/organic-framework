@@ -117,7 +117,7 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 - **Default remedy.** An announce rule on the interface: the writer of a change to *s* that touches *t*'s interface notifies *t*'s keeper. Or move the seam so that one position owns both sides.
 - **ΔT basis:** expected integration failures avoided. The incident rate per unmet edge is taken from the organization's history; until then use 0.05 per edge per week × the mean T loss of an incident. *p* = 0.5. *m_decide* = 3 min.
 
-### 2.4 Over-coupled split — `ap.over-coupled@4`
+### 2.4 Over-coupled split — `ap.over-coupled@5`
 
 *v1 (2026-11-06): waits count as recorded per pair, not organization-wide. Under v0, one day of declared states, from the first `of status` declarations on 2026-11-05, switched every pair to the mutual-wait branch. The rule then fell silent on the operator–hosts pair (207 messages, ratio 4.7, reciprocity 0.97).*
 *v2 (2026-11-10): no pair with a unit owner (kind `owner`) or the structure keeper. When of import github began reading the `Position:` line (74% of the first user organization's PRs attributed, up from 26%), the rule ran there for the first time and fired on 26 pairs, 20 of them a unit owner with a position of its unit: the delegation working, not a split to merge, as §2.2 and §2.8 already treat them. v2 fires on 6, among them two positions of the main bot (253 messages, ratio 4.3) and the pair of the bot's operator and its hosts' keeper. Labels carry over: v2 only narrows what fires.*
@@ -174,7 +174,7 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
   - For code, keep the writers, but route their changes through the keeper's review.
 - **ΔT basis:** incident risk (runtime); review cost against rework (code). *p* = 0.7 (runtime), 0.4 (code). *m_decide* = 3 min.
 
-### 2.7 Orphan work — `ap.orphan-work@4`
+### 2.7 Orphan work — `ap.orphan-work@5`
 
 *v1 (2026-11-06): three parts, each with its own prior, decision time, remedies and decider.*
 *v2 (2026-11-07, from the first user organization through `of_architect`): `keeperless` fires only on a system that is live and kept by nobody, by the registry fields `of_architect` added on 2026-11-07. Labels carry over: v2 only narrows what fires.*
@@ -318,7 +318,7 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 - **Default remedy.** Rewrite the brief with done criteria. Split it if two jobs share one position.
 - **ΔT basis:** rework and owner corrections avoided. *p* = 0.5. *m_decide* = 10 min.
 
-### 2.12 Management-function gap — `ap.function-gap@1`
+### 2.12 Management-function gap — `ap.function-gap@2`
 
 - **Signal.** The management-functions check of [`method.md`](method.md): for each function, does an active position's `mandate_functions` ([`registry.md`](registry.md)) cover it? It runs weekly against the registry, and when the stakeholder map changes.
 - **Rule.** A function with no covering position. When the organization's stakeholder map exists as data and lists a right-to-operate interest that depends on the function, the issue is critical. When the map lists any other interest that depends on it, the severity is `high`. Without such evidence it is `medium`. Otherwise the issue is ranked like any other. An organization that does not need a function (for example marketing) dismisses it with a `false_positive` label.
@@ -546,7 +546,7 @@ The decision:
 - **Routing.** Every issue of the family goes to the organization's structure keeper, who brings a diff. Never straight to the owner: the owner approves the diff.
 - **Systems kept outside stand as decided.** `governed_by: external:<who>` counts as kept (§2.7 v2). RFC 0007 §2.2 now makes such a fact count only with the owner's ask id under `confirmed:`, and `of registry check` warns on it, so a false claim is caught there.
 
-**2.23 A live system nobody keeps — `ap.unkept-system@1`.** Two parts. *v1 (2026-11-15): in part `unit`, a subsystem with no unit of its own lies in its nearest parent's unit. The first user organization's structure keeper labelled 6 issues false positive the same day: "A subsystem is in its parent's unit ... The rule should follow parent."*
+**2.23 A live system nobody keeps — `ap.unkept-system@2`.** Two parts. *v1 (2026-11-15): in part `unit`, a subsystem with no unit of its own lies in its nearest parent's unit. The first user organization's structure keeper labelled 6 issues false positive the same day: "A subsystem is in its parent's unit ... The rule should follow parent."*
 
 | Part | Fires when | Remedy |
 |---|---|---|
@@ -558,7 +558,7 @@ The decision:
 - *p* = 0.6 (`keeper`), 0.5 (`unit`); *m_decide* = 5 and 3 min. Severity medium and low.
 - **Calibration** (2026-11-10): in the first user organization it fires once, on a delivery system, live and kept by nobody with 4 merged PRs (under §2.7 v2's 5). Three other systems are kept outside, and a fourth is the supersystem of systems that are all kept and all in units. On the OF team it is quiet.
 
-**2.24 Work off the map — `ap.off-map-work@1`.** A position whose file edits mostly land in systems that other positions keep. *v1 (2026-11-15): an edit in the position's own system, or in a subsystem of it, counts as its own even when another position keeps that system. The first user organization's structure keeper labelled a project working in its own system, kept by its keeper, a false positive: "the rule should count a project's own system as its map".*
+**2.24 Work off the map — `ap.off-map-work@2`.** A position whose file edits mostly land in systems that other positions keep. *v1 (2026-11-15): an edit in the position's own system, or in a subsystem of it, counts as its own even when another position keeps that system. The first user organization's structure keeper labelled a project working in its own system, kept by its keeper, a false positive: "the rule should count a project's own system as its map".*
 - **Signal:** the mandate router's verdicts (`of.mandate_check`, from `rt-v4`) on file edits (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`) in the window: `in_mandate` against `owned_by:<keeper>`.
 - **Left out:**
   - reads, since reading others' code is normal;
@@ -579,7 +579,7 @@ The decision:
 
   Counting unclaimed paths as "outside" fired on all six OF positions: the OF map claims no path of its own repository, and §2.7's clusters already say so.
 
-**2.25 A needed cell nobody decides — `ap.cell-gap@0`.** RFC 0007 step 5, grown from §2.12: a cell is a system or subsystem crossed with a kind of work. The system architect declares `needs:` on systems, and the structure keeper declares `owns:` on positions ([`registry.md`](registry.md)).
+**2.25 A needed cell nobody decides — `ap.cell-gap@1`.** RFC 0007 step 5, grown from §2.12: a cell is a system or subsystem crossed with a kind of work. The system architect declares `needs:` on systems, and the structure keeper declares `owns:` on positions ([`registry.md`](registry.md)).
 
 | Part | Fires when | Remedy |
 |---|---|---|
@@ -763,7 +763,7 @@ The loop rules (2.16–2.22) were added and built on 2026-11-07, after the live 
 
 `of.correction` was never recorded. context-overload and missing-verifier read the owner's corrections, `of.founder_correction`, instead, and were built on 2026-11-14. With them every rule of the catalogue has a result in `lab-drift-v0`.
 
-### 5.2 Priors from labels (2026-11-15)
+### 5.2 Priors from labels (2026-11-15, re-tallied 2026-11-23)
 
 This position's mandate 5 sets each rule's *p* and *m_decide* from its deciders' labels, or names the rule as having too few. The rules:
 - **The labels.** Each issue counts by its latest label. Issues the rule's current version no longer raises are left out (the classes fixed by unclear-mandate@3, chatty@3 and @4, unkept-system@1 and off-map-work@1).
@@ -772,8 +772,25 @@ This position's mandate 5 sets each rule's *p* and *m_decide* from its deciders'
 - ***m_decide*** stays as it was for every rule: a label records no decision time.
 - **The tally is a framework tool**, `python3 bin/of_priors.py --org <organization>` (2026-11-23), so an organization runs it on its side, where its labels stay ([`contours.md`](contours.md) §2; `of_architect`, message `01a205f4-c040`). It applies the rules above and prints, per rule at its current version, only counts and *p*: the labelled issues, those on a version the current one does not carry, those whose replay was blocked, those it no longer raises, those counted, their distinct judgements and false positives, *p* (or "too few"), and the catalogue's *p*. It prints no issue text, id, note or affected position.
   - A label given on the current version counts as it is: that version raised the issue it was given on, since a version changes whenever what it raises does. A label on a version the current one carries, or on none, counts only when the current rules still raise its issue in a replay over the 7 days before it, as Studio's page runs them; an issue merged into another counts as raised. A label whose rule was blocked or failed in that replay is not judged and counts apart (`replay blocked`), so that part is only as complete as the store holds each window's events: it runs on the machine that holds the organization's history.
-  - Its cost: one replay per sitting of such labels (labels less than an hour apart), running only the rules labelled in it, over rows read once, of the kinds Studio's page and those rules read, through a 9-day window slid forward from sitting to sitting, so memory holds one window. Its progress goes to stderr; the footer gives the CPU seconds and the peak memory. The first version replayed every rule over 16 days of every kind per labelled hour: a user organization stopped it at its cap of 60 CPU seconds, past 3 GiB, with nothing printed (`of_architect`, message `01a205fe-0a3d`). On this organization's agent host, over 25 labelled issues and a small store, the first version took 2.5 CPU seconds and 112 MiB with 8 replays, this one 0.5 and 63 MiB with 4, and each replay found the same issues of its rules as a full one.
-- **The 2026-11-23 re-tally waits on that table** from the first user organization, which its structure keeper runs and returns through `of_architect`. The table below stands until it comes; this organization's own labels alone are not the tally.
+  - Its cost: one replay per sitting of such labels (labels less than an hour apart), running only the rules labelled in it, over rows read once, of the kinds Studio's page and those rules read, through a 9-day window slid forward from sitting to sitting, so memory holds one window. Its progress goes to stderr; the footer gives the CPU seconds and the peak memory. The first version replayed every rule over 16 days of every kind per labelled hour: a user organization stopped it at its cap of 60 CPU seconds, past 3 GiB, with nothing printed (`of_architect`, message `01a205fe-0a3d`). On this organization's agent host, over 25 labelled issues and a small store, the first version took 2.5 CPU seconds and 112 MiB with 8 replays, this one 0.5 and 63 MiB with 4, and each replay found the same issues of its rules as a full one. The first user organization then ran it under the same cap: 11 replays over 288 labelled issues, 45 CPU seconds and 1.86 GiB at its peak, with no replay blocked. Its memory is one 9-day window of the model's kinds and one model, as a Studio page of that organization holds: it grows with the organization's events in 9 days, not with how far back its labels go.
+- **The 2026-11-23 re-tally** adds the table the first user organization's structure keeper ran on its side with the tool of organic-framework PR 581 and returned whole through `of_architect` (message `01a20606-59b6`), to this organization's, run on its agent host. Distinct judgements add up across the two, since the organization is part of each. This organization's agent host holds little before 2026-11-15, so 7 of its 25 labelled issues read `replay blocked` (chatty 3, inbound-backlog 3, owner-router 1) and are not judged; neither table names a note, so no cause of a false positive is given here.
+
+| Rule (2026-11-23) | Labelled issues | Counted | Distinct judgements (false positives) | *p* |
+|---|---|---|---|---|
+| cell-gap@1 | 47 | 47 | 14 (0) | system 0.6, nobody 0.6, no_decider 0.5 → 0.95 |
+| chatty@4 | 107 | 81 | 29 (3) | 0.91, unchanged: 0.90 from the judged labels, 0.91 with this organization's 3 true positives whose replay was blocked |
+| function-gap@2 | 9 | 9 | 5 (1) | 0.7 → 0.8 |
+| inbound-backlog@3 | 29 | 23 | 8 (0) | 0.95, unchanged |
+| off-map-work@2 | 16 | 15 | 13 (4) | 0.8 → 0.69 |
+| orphan-work@5 | 21 | 18 | 10 (4) | cluster 0.6, unmapped 0.8 → 0.6 |
+| over-coupled@5 | 35 | 35 | 26 (0) | 0.5 → 0.95 |
+| unkept-system@2 | 20 | 13 | 12 (0) | keeper 0.6, unit 0.5 → 0.95 |
+| coordination-gap@2, unsourced-requirement@0, loop-objective-drift@2, missing-verifier@2, unclear-mandate@4, owner-relay@1, owner-router@1, loop-checkpoint@0, loop-eval-bottleneck@1 | 1 to 6 each | | under 5 each | too few labels: unchanged |
+| the other rules | none | | — | too few labels: unchanged |
+
+- A label names no part, so a rule whose *p* was set per part takes one *p* for all its parts. Each rule whose *p* changed is a version that changes only priors, with `labels_carry_from` listing the earlier ones. *m_decide* is unchanged.
+
+The 2026-11-15 tally:
 
 | Rule | Labelled issues | Distinct judgements (false positives) | *p* |
 |---|---|---|---|
