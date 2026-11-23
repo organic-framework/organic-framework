@@ -78,6 +78,38 @@ class EnrollMachineTest(unittest.TestCase):
         of_server.enroll(self.store, "m1", "ssh-ed25519 AAAAnew m1", ["acme"], tenant=True)  # revoked: a new key is fine
         self.assertEqual(self.key(), "ssh-ed25519 AAAAnew m1")
 
+    def test_one_server_yaml_for_every_reader_and_writer(self):
+        """of_secrets-review on PR 590: of init wrote server.yaml in the config folder and read ~/.config/of's."""
+        import of_events
+        saved, env = of_events.CONFIG_DIR, os.environ.pop("OF_SERVER_CONFIG", None)
+        try:
+            of_events.CONFIG_DIR = os.path.join(self.tmp.name, "cfg")
+            self.assertEqual(of_server.config_file(), os.path.join(self.tmp.name, "cfg", "server.yaml"))
+            os.environ["OF_SERVER_CONFIG"] = os.path.join(self.tmp.name, "named.yaml")
+            self.assertEqual(of_server.config_file(), os.path.join(self.tmp.name, "named.yaml"))
+            with open(os.path.join(self.tmp.name, "named.yaml"), "w") as fh:
+                fh.write("state_dir: /srv/elsewhere\n")
+            self.assertEqual(of_server.load_config()["state_dir"], "/srv/elsewhere")
+        finally:
+            of_events.CONFIG_DIR = saved
+            os.environ.pop("OF_SERVER_CONFIG", None)
+            if env is not None:
+                os.environ["OF_SERVER_CONFIG"] = env
+
+    def test_the_servers_own_enroll_needs_replace_key_too(self):
+        cfg = os.path.join(self.tmp.name, ".config", "of", "server.yaml")
+        run = lambda *extra: subprocess.run(
+            [sys.executable, os.path.join(HERE, "..", "bin", "of_server.py"), "--config", cfg, "enroll", "--machine-id",
+             "m1", "--pubkey", "ssh-ed25519 AAAAother m1", "--org", "acme", *extra],
+            env=self.env, capture_output=True, text=True, timeout=60)
+        r = run()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("enrolled with another key", r.stderr)
+        self.assertEqual(self.key(), "ssh-ed25519 AAAAexample m1")
+        r = run("--replace-key")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.key(), "ssh-ed25519 AAAAother m1")
+
     def test_the_same_key_with_another_comment_is_no_new_key(self):
         with open(self.pub, "w") as fh:
             fh.write("ssh-ed25519 AAAAexample renamed\n")

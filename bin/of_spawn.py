@@ -318,7 +318,9 @@ def _server_keys(path=None):
     name only, and the sandbox is for the reads it does not see (of_server on organic-framework PR 457). What the
     user's own of commands read stays open: machine_ed25519, the pins under servers, server.yaml itself."""
     cfg = {}
-    path = path or os.path.expanduser("~/.config/of/server.yaml")
+    import of_events
+    # of_server.config_file()'s rule, without importing the server here (of_secrets-review on PR 590)
+    path = path or os.environ.get("OF_SERVER_CONFIG") or of_events.config_path("server.yaml")
     try:
         import yaml
         with open(path) as fh:

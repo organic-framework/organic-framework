@@ -156,13 +156,20 @@ MIGRATIONS = (
 )
 
 
+def config_file():
+    """This user's server.yaml: $OF_SERVER_CONFIG, as `of_server.py --config` takes it, else server.yaml in the OF
+    config folder ($OF_CONFIG_DIR, else ~/.config/of). Every reader and writer of it takes it from here: `of server`,
+    `of init`, which writes it, and `of spawn`, which denies the key files it names (of_secrets-review on organic-
+    framework PR 590: of init wrote one file and read another, and spawn read a third)."""
+    return os.environ.get("OF_SERVER_CONFIG") or of_events.config_path("server.yaml")
+
+
 def load_config(path=None):
-    """server.yaml: PATH, else $OF_SERVER_CONFIG, as `of_server.py --config` takes it, else ~/.config/of/server.yaml.
-    Every `of server` command reads it here (2026-11-23: `of server enroll-machine` ignored OF_SERVER_CONFIG, so a lab
-    test that pointed it at a scratch server re-keyed this machine on its live server, and the machine's positions got
-    401 from it once their cached token expired)."""
+    """server.yaml: PATH, else config_file(). Every `of server` command reads it here (2026-11-23: `of server
+    enroll-machine` ignored OF_SERVER_CONFIG, so a lab test that pointed it at a scratch server re-keyed this machine on
+    its live server, and the machine's positions got 401 from it once their cached token expired)."""
     cfg = dict(DEFAULTS)
-    path = path or os.environ.get("OF_SERVER_CONFIG") or os.path.expanduser("~/.config/of/server.yaml")
+    path = path or config_file()
     if os.path.exists(path):
         import yaml
         with open(path) as fh:
@@ -337,8 +344,10 @@ def enroll(store, machine_id, pubkey, orgs, raw_orgs=(), tenant=False, person=No
     with store.conn() as c:
         had = c.execute("SELECT pubkey FROM machines WHERE machine_id = ? AND revoked_at IS NULL", (machine_id,)).fetchone()
         if had and not replace_key and not same_key(had[0], pubkey):
-            raise EnrollError(409, "conflict", f"{machine_id} is enrolled with another key: revoke it first, or replace "
-                                               "its key on purpose (of server enroll-machine --replace-key)")
+            # one sentence for both tools that enrol here, `of server enroll-machine` and `of_server.py enroll`, each
+            # with its own --replace-key (of_review on PR 590: it named the first one to the second one's operator)
+            raise EnrollError(409, "conflict", f"{machine_id} is enrolled with another key: revoke it first, or pass "
+                                               "--replace-key to give it the new key on purpose")
         _seed_new_orgs(c, machine_id, orgs)   # card ids of an organization new to this server start at 1 (Card ids)
         c.execute("INSERT OR REPLACE INTO machines (machine_id, pubkey, orgs, raw_orgs, tenant, enrolled_at, revoked_at,"
                   " person, allowed_raw, consent) VALUES (?,?,?,?,?,?,NULL,?,?,?)",
@@ -3354,6 +3363,8 @@ if __name__ == "__main__":  # the container entry point: python3 of_server.py --
     en.add_argument("--raw-org", action="append", default=[], help="an organization whose raw tier the person consented to")
     en.add_argument("--person", help="the colleague's id in the organization's registry; absent: the tenant")
     en.add_argument("--tenant", action="store_true", help="the tenant's own machine (may invite and revoke)")
+    en.add_argument("--replace-key", action="store_true",
+                    help="give an enrolled machine a new public key (refused without it, as in `of server enroll-machine`)")
     rv = sub.add_parser("revoke", help="revoke one machine, or every machine of a person")
     g = rv.add_mutually_exclusive_group(required=True)
     g.add_argument("--machine-id")
@@ -3421,7 +3432,11 @@ if __name__ == "__main__":  # the container entry point: python3 of_server.py --
             bad = sorted(set(a.org) - set(c["orgs"])) if c.get("orgs") else []
             if bad or set(a.raw_org) - set(a.org):
                 raise SystemExit(f"not served here: {bad}" if bad else "--raw-org must also be an --org")
-            enroll(st, a.machine_id, a.pubkey, a.org, a.raw_org, tenant=a.tenant, person=a.person)
+            try:
+                enroll(st, a.machine_id, a.pubkey, a.org, a.raw_org, tenant=a.tenant, person=a.person,
+                       replace_key=a.replace_key)
+            except EnrollError as e:
+                raise SystemExit(e.title)
             print(f"enrolled {a.machine_id}: orgs {sorted(a.org)}, raw {sorted(a.raw_org)}")
         elif a.cmd == "relay-requeue":
             import of_server_relay
