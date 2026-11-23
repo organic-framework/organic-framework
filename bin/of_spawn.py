@@ -119,7 +119,9 @@ def work_dir(p, systems, org_paths, exists=os.path.isdir):
 def place(p, want_workspace):
     """(workspace label, tab label): the position's workspace and a tab named by its system (as `of apply` names
     tabs; it moves the pane into its final tab when the layout differs)."""
-    return want_workspace(p), str(p.get("system") or p.get("role") or p["name"])
+    s = p.get("system")
+    label = ((p.get("_systems") or {}).get(s) or {}).get("label") if s else None  # as bin/of's system_label
+    return want_workspace(p), str(label or s or p.get("role") or p["name"])
 
 
 def _stem(pattern):

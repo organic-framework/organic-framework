@@ -8,6 +8,7 @@ import importlib.util
 import os
 import subprocess
 import tempfile
+import yaml
 import textwrap
 import unittest
 
@@ -573,6 +574,41 @@ class ApplyTest(unittest.TestCase):
         self.assertNotIn(["tab", "rename", "w3:t4", "biz"], cmds)
         self.assertIn(["workspace", "rename", "w3", "organic-framework"], cmds)
         self.assertEqual(notes, [])
+
+    def test_a_systems_label_is_what_herdr_shows(self):
+        """The founder, prompt 01a2052f-9cc2: the OF organization's names in herdr read `of` (hand-over 2b154964)."""
+        systems = {"organic-framework": {"label": "of"}}
+        positions = [pos("of_a", "organic-framework", "architect", "s1", _workspace="of", _systems=systems)]
+        agents = [agent("w3:p2", "s1", name="of_a", tokens={"system": "organic-framework", "role": "architect"},
+                        ws="w3")]
+        cmds, _ = of.plan_apply(positions, agents, [{"tab_id": "w3:t2", "pane_count": 1, "label": "architect"}],
+                                [{"workspace_id": "w3", "label": "organic-framework-build"}], {"w3:p2": "■ of_a ■"})
+        self.assertIn(["pane", "report-metadata", "w3:p2", "--source", "of:registry",
+                       "--token", "system=of", "--token", "role=architect"], cmds)
+        self.assertIn(["workspace", "rename", "w3", "of"], cmds)
+        self.assertEqual(of.system_label({"system": "of-herdr", "_systems": systems}), "of-herdr")  # no label: its id
+
+    def test_the_registrys_label_names_the_workspace_unless_orgs_yaml_does(self):
+        with tempfile.TemporaryDirectory() as d:
+            for org, ws in (("build", None), ("acme", "acme-ws")):
+                os.makedirs(os.path.join(d, org, "registry"))
+                with open(os.path.join(d, org, "registry", "positions.yaml"), "w") as fh:
+                    yaml.safe_dump({"organization": org, "label": "short",
+                                    "positions": [{"name": f"{org}_a", "system": "x", "role": "a"}]}, fh)
+            orgs = os.path.join(d, "orgs.yaml")
+            with open(orgs, "w") as fh:
+                yaml.safe_dump({"orgs": [{"name": "build", "path": os.path.join(d, "build")},
+                                         {"name": "acme", "path": os.path.join(d, "acme"), "workspace": "acme-ws"}]}, fh)
+            got = {p["name"]: p["_workspace"] for p in of.load_positions(orgs)[0]}
+            self.assertEqual(got, {"build_a": "short", "acme_a": "acme-ws"})  # the owner's orgs.yaml wins
+            for bad, why in (("desk", "desk"), ("acme", "another organization"), ("acme-ws", "another organization"),
+                             ("two words", "one word")):
+                with open(os.path.join(d, "build", "registry", "positions.yaml"), "w") as fh:
+                    yaml.safe_dump({"organization": "build", "label": bad,
+                                    "positions": [{"name": "build_a", "system": "x", "role": "a"}]}, fh)
+                positions, problems = of.load_positions(orgs)
+                self.assertEqual({p["name"]: p["_workspace"] for p in positions}["build_a"], "build", bad)
+                self.assertTrue(any(why in x and "label" in x for x in problems), (bad, problems))
 
     def test_idempotent(self):
         positions = [pos("of_a", "of", "a", "s1", summary="d", _workspace="of")]

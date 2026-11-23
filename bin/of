@@ -109,6 +109,7 @@ def committed_registry(path, timeout=5):
     except Exception:  # noqa: BLE001 - OSError, a timeout, YAML, of_protected.Refused (no system git): no stand-in
         return None
 ORG_SHORT = {}  # organization -> short name for unit workspace labels (`short:` in orgs.yaml)
+ORG_WS_SET = set()  # organizations whose orgs.yaml entry names its workspace label; the others take the registry's `label:`
 ORGS_FILE = os.environ.get("OF_ORGS") or os.path.join(os.environ.get("OF_CONFIG_DIR") or os.path.expanduser("~/.config/of"), "orgs.yaml")
 HERDR = os.environ.get("OF_HERDR", "herdr")
 
@@ -164,6 +165,8 @@ def org_registries(orgs_file=ORGS_FILE):
         name = o.get("name") or os.path.basename(root)
         out.append((name, os.path.join(root, "registry", "positions.yaml"), o.get("workspace") or name))
         ORG_SHORT[name] = str(o.get("short") or o.get("workspace") or name)
+        if o.get("workspace"):
+            ORG_WS_SET.add(name)
         if o.get("hold"):
             HELD.add(name)
     return out
@@ -176,7 +179,9 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
     # keeper's write half done: of inbox died on a user organization's registry that parsed a moment later
     # (2026-11-13).
     docs = {}
-    for org, path, workspace in org_registries(orgs_file):
+    regs = org_registries(orgs_file)
+    taken = {DESK} | {o for o, _, _ in regs} | {w for _, _, w in regs}  # names, and the labels orgs.yaml gives
+    for org, path, workspace in regs:
         rel = f"{org}:registry/positions.yaml"
         if not os.path.exists(path):
             problems.append(f"{rel}: missing ({path})")
@@ -206,6 +211,15 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
             docs[org] = copy.deepcopy(doc)
         else:
             docs[org] = {k: v for k, v in doc.items() if k != "positions"}
+        why = label_problem(doc.get("label"), taken - {org, workspace}) if doc.get("label") else None
+        if why:
+            problems.append(f"{rel}: label {doc['label']!r} {why}; herdr shows {workspace!r}")
+        elif org not in ORG_WS_SET and doc.get("label"):
+            # the registry's own display label in herdr (docs/registry.md, `label:`): one value on every machine
+            workspace = str(doc["label"])
+            taken.add(workspace)
+            if ORG_SHORT.get(org) == org:  # no `short:` of its own either: units read `<label>·<unit>`
+                ORG_SHORT[org] = workspace
         for p in doc.get("positions") or []:
             name = p.get("name", "")
             if not isinstance(p, dict):
@@ -1823,7 +1837,7 @@ def plan_apply(positions, agents, tabs, workspaces, labels=None):
                 cmds.append(["agent", "rename", pane, p["name"]])
         if base_label(labels.get(pane) or "") != pane_label(p["name"]):
             cmds.append(["pane", "rename", pane, pane_label(p["name"])])
-        want = {k: str(p[k]) for k in TOKENS if p.get(k) not in (None, "")}
+        want = {k: str(system_label(p) if k == "system" else p[k]) for k in TOKENS if p.get(k) not in (None, "")}
         have = {k: v for k, v in (a.get("tokens") or {}).items() if k in TOKENS}
         if want != have:
             args = ["pane", "report-metadata", pane, "--source", SOURCE]
@@ -1873,6 +1887,29 @@ def plan_apply(positions, agents, tabs, workspaces, labels=None):
         notes.append(f"no position: pane {a['pane_id']} name={a.get('name') or '-'} "
                      f"agent={a.get('agent')} session={agent_session(a) or '-'} cwd={a.get('cwd')}")
     return cmds, notes
+
+
+LABEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._·-]{0,31}")
+
+
+def label_problem(label, taken):
+    """Why a workspace label cannot be used, or None. The desk's own workspace, or another organization's name or label,
+    would put two organizations' panes in one workspace (of_review on organic-framework PR 570). The registry follows
+    agents' pushes, so its `label:` is checked, and the loader falls back to the name."""
+    label = str(label)
+    if not LABEL_RE.fullmatch(label):
+        return "is not one word of at most 32 letters, digits, . _ · -"
+    if label in taken:
+        return "is the desk's workspace" if label == DESK else "is another organization's name or workspace label"
+    return None
+
+
+def system_label(p):
+    """What herdr shows for a position's system: the system's `label:` in the registry, else its id (docs/registry.md;
+    the founder, prompt 01a2052f-9cc2: the OF organization's names in herdr read `of`)."""
+    sid = p.get("system")
+    s = (p.get("_systems") or {}).get(sid) if sid else None
+    return str((s or {}).get("label") or sid or "") or None
 
 
 def want_workspace(p):
@@ -1949,7 +1986,7 @@ def plan_layout(positions, agents, tabs, workspaces, renamed=None, layouts=None,
         # a position placed in a unit by `unit:` whose system is not one of the unit's: the `owner` tab
         outside = p.get("unit") and p.get("system") not in (((p.get("_units") or {}).get(p["unit"]) or {})
                                                             .get("systems") or [])
-        groups.setdefault((want_workspace(p), "owner" if outside else p.get("system")), []).append((p, a))
+        groups.setdefault((want_workspace(p), "owner" if outside else system_label(p)), []).append((p, a))
     tab_by_id = {t["tab_id"]: t for t in tabs}
     plan = []
     k = cfg["max_per_tab"]
@@ -2844,7 +2881,8 @@ def cmd_org(args):
                                                                    ".git/commondir holding '.')")
                      if o.get("work_clone") else "")
                   + (f", work_root {o['work_root']} (each position in <work_root>/<position>)"
-                     if o.get("work_root") else ""))
+                     if o.get("work_root") else "")
+                  + (f", workspace {o['workspace']}" if o.get("workspace") else ""))
         return 0
     if args.action == "folder":
         # a position's own folder under the work_root, with its clones (of_review on PR 608): the owner's, as work_root
@@ -2863,13 +2901,23 @@ def cmd_org(args):
               f"terminal); of spawn {args.key} then starts the position there and writes its CLAUDE.md")
         return 0
     usage = ("of org set <org> hold on|off | of org set <org> path <its repository's folder> | "
-             "of org set <org> work_clone <a clone of it>|none | of org set <org> work_root <folder>|none")
+             "of org set <org> work_clone <a clone of it>|none | of org set <org> work_root <folder>|none | "
+             "of org set <org> workspace <label>|none")
     if not args.org or args.key not in of_init.ORG_KEYS or not args.value:
         raise OfError(usage)
     if args.key == "hold":
         if args.value not in ("on", "off"):
             raise OfError(usage)
         value, shown_value = (True if args.value == "on" else None), args.value
+    elif args.key == "workspace":
+        # a display label, as hold: a setting of herdr's look, so agents set it through this command too (G33)
+        if args.value == "none":
+            value, shown_value = None, "none (the registry's label:, else the name)"
+        elif not LABEL_RE.fullmatch(args.value) or args.value == DESK:
+            raise OfError(f"{args.value!r}: a workspace label is one word of at most 32 letters, digits, . _ · -, "
+                          f"and not {DESK!r}")
+        else:
+            value = shown_value = args.value
     elif args.key == "work_clone":
         # a clone sessions may write from their sandbox (card OF-265; hand-over ab9ed07b): the owner's alone, as path
         import of_asks_answer
@@ -8756,7 +8804,7 @@ def main(argv=None):
                         "<its repository's folder>")
     og.add_argument("action", choices=["show", "set", "folder"])
     og.add_argument("org", nargs="?")
-    og.add_argument("key", nargs="?", help="hold, path, work_clone or work_root; for folder, the position's name")
+    og.add_argument("key", nargs="?", help="hold, path, work_clone, work_root or workspace; for folder, the position's name")
     og.add_argument("value", nargs="?")
     og.add_argument("--clone", action="append", default=[], help="folder: a repository to clone into the position's "
                     "folder (repeat)")
