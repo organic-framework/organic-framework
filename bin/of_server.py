@@ -157,8 +157,12 @@ MIGRATIONS = (
 
 
 def load_config(path=None):
+    """server.yaml: PATH, else $OF_SERVER_CONFIG, as `of_server.py --config` takes it, else ~/.config/of/server.yaml.
+    Every `of server` command reads it here (2026-11-23: `of server enroll-machine` ignored OF_SERVER_CONFIG, so a lab
+    test that pointed it at a scratch server re-keyed this machine on its live server, and the machine's positions got
+    401 from it once their cached token expired)."""
     cfg = dict(DEFAULTS)
-    path = path or os.path.expanduser("~/.config/of/server.yaml")
+    path = path or os.environ.get("OF_SERVER_CONFIG") or os.path.expanduser("~/.config/of/server.yaml")
     if os.path.exists(path):
         import yaml
         with open(path) as fh:
