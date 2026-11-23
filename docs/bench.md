@@ -84,10 +84,12 @@ user (a laptop), a session could ask another organization's hook about a card of
 have no sandbox and can run Bench themselves: an agent that runs `of bench` evaluates the organization's Lua in its
 session, inside Bench's `sandbox-exec` (`of_server`'s review).
 
-The first package is `of-asks` (`organic-framework/of-asks`, kept by `of_bench`). With `of_asks`'s change
-(organic-framework PR 574, open; `bin/of_asks_package.py`), `of ask` calls the hooks before the module "file", and a
-bare `ask_unanswered` rule rises after the setting `escalate_after`, only where the organization's `Benchfile.lock`
-names the package; until it merges, only `of bench` and a request to the hooks door evaluate through Bench.
+The first package is `of-asks` (`organic-framework/of-asks`, kept by `of_bench`). Where an organization's
+`Benchfile.lock` names it (`bin/of_asks_package.py`), `of ask` calls the hooks before the module "file": from a Claude
+Code session through the hooks door, from a terminal or the listener in its own process; a hook that stops the card,
+or a gate that cannot be read or reached, files nothing and records `of.ask_stopped`. A bare `ask_unanswered` rule
+rises after the package's setting `escalate_after`, read by the pulse in the listener (2h by default, and on any error
+reading it). Where no `Benchfile.lock` names the package, `of ask` reads nothing from Bench and files as before.
 
 ## Code
 
