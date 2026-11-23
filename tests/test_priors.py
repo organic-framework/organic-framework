@@ -101,6 +101,13 @@ class TallyTest(unittest.TestCase):
         self.assertIn('{"default":0.5}', text)
         self.assertIn("too few", text)
 
+    def test_peak_memory_in_mib_on_linux_and_macos(self):
+        class RU:
+            ru_maxrss = 2000355328   # the first user organization's run, in bytes on macOS
+        self.assertEqual(of_priors.peak_mib(RU, "darwin"), 1907)
+        RU.ru_maxrss = 64512        # kibibytes on Linux
+        self.assertEqual(of_priors.peak_mib(RU, "linux"), 63)
+
 
 class MainTest(unittest.TestCase):
     """main over a scratch store and two organizations: only --org's labels count, a carried label is replayed against

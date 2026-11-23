@@ -28,6 +28,7 @@ of the 9 days a page reads, slid forward from sitting to sitting, so memory hold
 goes to stderr, and the footer gives the CPU seconds and the peak memory.
 """
 import argparse
+import gc
 import json
 import math
 import os
@@ -166,6 +167,12 @@ def table(out, meta):
     return "\n".join(lines)
 
 
+def peak_mib(ru, platform=sys.platform):
+    """ru_maxrss in MiB: kibibytes on Linux, bytes on macOS (the first user organization's run printed 1953472 MiB for
+    1.86 GiB; of_architect, message 01a20606-59b6)."""
+    return ru.ru_maxrss // (1024 * 1024 if platform == "darwin" else 1024)
+
+
 def model_kinds(of_studio):
     """The kinds Studio's model reads beside the rules' (of_studio.kinds() without of_diagnose.kinds_needed())."""
     import of_asks
@@ -217,14 +224,15 @@ def main(argv=None):
         d = of_diagnose.diagnose(m, rows, b - WINDOW_D * 86400, b, cat=dict(cat, rules={n: cat["rules"][n] for n in rules}),
                                  context=ctx)
         results[b] = replayed(d)
-        del m, rows, d
+        del m, rows, d, fresh
+        gc.collect()   # the model's cycles go before the next window is read
         ru = resource.getrusage(resource.RUSAGE_SELF)
         print(f"replay {len(results)}/{len(plan)}: {len(window)} rows, {len(rules)} rules, "
-              f"{round(ru.ru_utime + ru.ru_stime, 1)} CPU s, peak {ru.ru_maxrss // 1024} MiB", file=sys.stderr, flush=True)
+              f"{round(ru.ru_utime + ru.ru_stime, 1)} CPU s, peak {peak_mib(ru)} MiB", file=sys.stderr, flush=True)
     out, meta = tally(labels, cat, results.__getitem__, end_of)
     ru = resource.getrusage(resource.RUSAGE_SELF)
     meta.update(org=a.org, replays=len(results), at=of_model.iso(time.time()),
-                cpu_s=round(ru.ru_utime + ru.ru_stime, 1), peak_mib=ru.ru_maxrss // 1024)
+                cpu_s=round(ru.ru_utime + ru.ru_stime, 1), peak_mib=peak_mib(ru))
     print(json.dumps({"rules": out, **meta}, indent=1) if a.json else table(out, meta))
     return 0
 
