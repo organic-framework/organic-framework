@@ -3693,13 +3693,13 @@ def resume(name, sid, target, pane, extra_note=None, log=print, of_bin=None, dry
     cmd = launch_command(cwd, target, sid, name, note_path, write=False, **launch)  # written right before the start
     log(f"{name}: resume session {sid} on {short(target)} ({account_of(target)}) in herdr pane {pane}")
     log(f"  context model {model}, effort {effort}, permission mode {'bypass' if bypass else 'default'}")
-    key = os.path.basename(os.path.dirname(transcript))
-    mem_src, mem_dst = os.path.join(src or target, "projects", key, "memory"), os.path.join(target, "projects", key, "memory")
-    mem_base = os.path.join(STATE_DIR, "capacity", "memory-base", short(target).strip("~/"), key)
+    proj = os.path.basename(os.path.dirname(transcript))
+    mem_src, mem_dst = os.path.join(src or target, "projects", proj, "memory"), os.path.join(target, "projects", proj, "memory")
+    mem_base = os.path.join(STATE_DIR, "capacity", "memory-base", short(target).strip("~/"), proj)
     if src:
         log(f"  carried first from {short(src)} ({account_of(src)}): {', '.join(session_paths(src, sid))}")
         if not mem_dir:
-            log(f"  memory {key}: "
+            log(f"  memory {proj}: "
                 f"{[x for x in merge_memory(mem_src, mem_dst, mem_base, '/nonexistent', dry_run=True) if x[1] != 'same']}")
     if stale:
         log("  a stale folder trust dialog holds the pane: closed with \"No, exit\" first (grants nothing)")
@@ -3715,7 +3715,7 @@ def resume(name, sid, target, pane, extra_note=None, log=print, of_bin=None, dry
     if src:  # the session is closed, so its transcript is final; carried as a move carries it
         files = copy_session(src, target, sid, backup)
         mark_copied([os.path.join(target, rel) for kind, rel in files if kind == "copy"])
-        mark_copied(rekey_session(target, sid, key, backup))
+        mark_copied(rekey_session(target, sid, proj, backup))
         if not mem_dir:
             mem = merge_memory(mem_src, mem_dst, mem_base, os.path.join(work, "conflicts"))
         log(f"  carried {len([f for f in files if f[0] == 'copy'])} path(s); memory: "
