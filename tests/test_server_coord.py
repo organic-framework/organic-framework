@@ -115,6 +115,11 @@ class CoordFeedTest(unittest.TestCase):
                        host="of-server")["data"]
         cut = event("d2", "ofb", "of.decision_cutover", {"org": "ofb"})["data"]
         self.assertEqual(of_server_coord.copy(self.app.store, "ofb", [forged, cut]), 0)
+        r = self.machine("a", ["ofb"]).send_batch([event("d1", "ofb", "of.decision_accepted", host="of-server"),
+                                                    event("d2", "ofb", "of.decision_cutover")])
+        self.assertEqual(r["accepted"], 0)                                   # and the batch path refuses them
+        self.assertEqual([x["index"] for x in r["rejected"]], [0, 1])
+        self.assertIn("written only by the server", r["rejected"][0]["reason"])
 
     def test_old_events_leave_the_feed(self):
         store = self.app.store

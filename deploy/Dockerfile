@@ -53,6 +53,8 @@ COPY bin/of_access.py bin/of_classify.py ./
 COPY bin/of_server_passkey.py bin/of_diff.py bin/of_passkey.py ./
 # The secrets broker (docs/agent-secrets.md §5.3), the catalogue it reads and its protected_code entries.
 COPY bin/of_server_secrets.py bin/of_credentials.py bin/of_protected.py ./
+# Decisions accepted once per card version, in the organization's order (docs/server.md, Decisions).
+COPY bin/of_server_decisions.py ./
 # Studio (of_studio's modules), served under /studio/ when present.
 COPY bin/of_studio.py bin/of_studio.css bin/of_model.py bin/of_measures.py bin/of_asks.py bin/of_diagnose.py \
      bin/of_diagnose_rules.py ./

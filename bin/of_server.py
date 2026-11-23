@@ -580,6 +580,12 @@ def accept(store, buffer, router, machine, batch, body_sha, served=None, redacti
         if rec["type"] == "event" and rec["data"].get("name") == of_server_finance.FINANCE and not finance:
             rejected.append({"index": i, "reason": "a finance fact goes only through POST /v1/finance_facts"})
             continue
+        if rec["type"] == "event" and rec["data"].get("name") in of_server_coord.SERVER_ONLY:
+            # only this server's accept and switch write them (docs/server.md, Decisions); a machine's copy, forged or
+            # the server's own record shipped back, is no decision of this server's (of_review on PR 613)
+            rejected.append({"index": i, "reason": "an accepted decision or a cutover is written only by the server "
+                                                   "(POST /v1/decisions)"})
+            continue
         d = dict(rec["data"])
         if served is not None:
             org = d.get("org_id") or None

@@ -34,7 +34,8 @@ EVENTS = frozenset({
     "of.spend_hours",
     # decisions the organization's server accepted once, and the switch that turned them on (event store step 1,
     # organic-framework-build reports/framework/event-store/04-design.md §2): the server writes both into the feed
-    # at the accept itself; a machine's own copies travel the same way
+    # at the accept itself; a machine's own copy is refused at intake and never copied into the feed
+    # (of_server_coord.SERVER_ONLY)
     "of.decision_accepted", "of.decision_cutover",
 })
 PREFIXES = ("of.handover_", "of.diff_")
