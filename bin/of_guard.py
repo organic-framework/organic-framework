@@ -2213,7 +2213,7 @@ POD_SPEC_MODE = {"describe pod": "warn", "workload": "warn"}
 # (of_secrets-review on PR 599). 18 calls of 21 days (2026-11-23), all allowed until now, most a CA's data taken out
 # with --minify and a template, or a file written; it denies once those have moved.
 CONFIG_VIEW_RAW_MODE = "warn"
-_GO_TRUE = ("1", "t", "T", "TRUE", "true", "True")  # strconv.ParseBool's true; any other value is an error to kubectl
+_GO_FALSE = ("0", "f", "false")  # strconv.ParseBool's false, lowered (0, f, F, FALSE, false, False)
 CONFIG_VIEW_RAW_NOTE = ("kubectl config view --raw and --flatten print the clusters' credentials in full: read the "
                         "redacted view, or a committed script that takes one field and prints no credential; it will "
                         "deny once these flows have moved (docs/guard.md G6.2)")
@@ -2537,10 +2537,10 @@ def _kubectl_secret_deny(args, line_vars=None):
     nonopt = _positional(args, _KUBECTL_VALUE)
     sub = nonopt[0] if nonopt else None
     if sub == "config" and nonopt[1:2] == ["view"]:  # G6.2: --raw and --flatten print the kubeconfig unredacted
-        # a boolean flag alone, or with a value Go's strconv.ParseBool reads as true, as kubectl's flags do (of_review
-        # on PR 599: --raw=t and --raw=T printed unwarned)
+        # a boolean flag alone, or with any value but a false one: kubectl reads it with Go's strconv.ParseBool, and a
+        # value that is neither is an error that prints nothing (of_review on PR 599: --raw=t and --raw=T unwarned)
         flag = next((f for f in ("--raw", "--flatten") if any(a == f or (a.startswith(f + "=") and a.split("=", 1)[1]
-                                                                          in _GO_TRUE) for a in args)), None)
+                                                                          .lower() not in _GO_FALSE) for a in args)), None)
         if flag and CONFIG_VIEW_RAW_MODE == "deny":
             return _prints(f"kubectl config view {flag}")
         if flag:
