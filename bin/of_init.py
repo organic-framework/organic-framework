@@ -1186,7 +1186,7 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
     import of_client
     import of_events
     import of_server
-    srv_cfg = of_events.config_path("server.yaml")
+    srv_cfg = of_server.config_file()  # the file load_config() reads below (of_secrets-review on PR 590)
     if not os.path.exists(srv_cfg):
         with open(os.open(srv_cfg, os.O_WRONLY | os.O_CREAT, 0o600), "w") as fh:
             fh.write("# of-server plugins (docs/server.md, Profiles)\nplugins:\n  storage: sqlite\n  buffer: disk\n"
@@ -1200,9 +1200,16 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
         set_config_key(srv_cfg, "port", int(server_port))
         out(f"  this contour's server: 127.0.0.1:{int(server_port)} (server.yaml, and its orgs.yaml entry)")
     store = of_server.Store(of_server.load_config()["state_dir"])
-    of_server.enroll(store, of_events.machine_id(), of_client.ensure_key(), [o["name"] for o in lst],
-                     [o["name"] for o in lst], tenant=True)
-    out(f"  this machine is enrolled as the tenant ({of_events.machine_id()})")
+    try:
+        of_server.enroll(store, of_events.machine_id(), of_client.ensure_key(), [o["name"] for o in lst],
+                         [o["name"] for o in lst], tenant=True)
+        out(f"  this machine is enrolled as the tenant ({of_events.machine_id()})")
+    except of_server.EnrollError:
+        # Its record there has another key: never replaced unasked (2026-11-23, a scratch key took a live server's
+        # record of this machine). The steps after this one still run (of_secrets-review on PR 590).
+        out(f"  not enrolled: this machine ({of_events.machine_id()}) is enrolled on the server in {store.dir} with "
+            "another key, left as it is. If this machine's key really changed, run `of server enroll-machine "
+            "--tenant --replace-key`; if this is a scratch setup, give it its own OF_STATE and HOME")
     if service:
         out("  " + install_service(int(server_port) if server_port else of_server.load_config().get("port", 18200)))
     else:

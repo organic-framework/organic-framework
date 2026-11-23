@@ -646,6 +646,23 @@ class SandboxBlock(unittest.TestCase):
         box = of_spawn.sandbox_settings([], platform="linux")
         self.assertIn(os.path.expanduser("~/.config/of/tenant.key"), box["filesystem"]["denyRead"])
 
+    def test_the_servers_keys_come_from_the_server_yaml_the_server_reads(self):
+        """of_secrets-review on PR 590: a server run on OF_SERVER_CONFIG names key files ~/.config/of's file does not."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            y = os.path.join(d, "named.yaml")
+            with open(y, "w") as fh:
+                fh.write("tenant_key_file: /home/alex/srv/tenant.key\n")
+            saved = os.environ.get("OF_SERVER_CONFIG")
+            os.environ["OF_SERVER_CONFIG"] = y
+            try:
+                keys = of_spawn._server_keys()
+            finally:
+                os.environ.pop("OF_SERVER_CONFIG")
+                if saved is not None:
+                    os.environ["OF_SERVER_CONFIG"] = saved
+        self.assertEqual(keys, ["/home/alex/srv/tenant.key"])
+
     def test_a_glob_is_its_matches_when_the_session_starts(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
