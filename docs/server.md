@@ -101,7 +101,7 @@ Built 2026-11-05 by `of_server` (`bin/of_server_relay.py`), accepted by `of_arch
 
 Built 2026-11-10 (`bin/of_coord.py`, `bin/of_server_coord.py`; plan [`server-several-machines.md`](server-several-machines.md) §4.2, accepted by `of_architect`). Asks, declared states, hand-overs and holder changes are projections of each machine's own event store; this feed lets every machine of an organization see them.
 - **What is shared**: the events in `of_coord.EVENTS` and the `of.handover_*` and `of.diff_*` families. Everything else a projection reads is in `of_coord.LOCAL_ONLY` (prompts, turns, pane-level facts): only the machine that holds a pane acts on it. `tests/test_server_coord.py` fails when a projection reads an event name that is on neither list.
-- **No new write path.** When the writer has written a batch's events into an organization's database, it copies that organization's coordination events (masked: the rows the organization got; shape copies of other organizations' events left out) into `server.db` table `coord`, idempotent by event id. The delay is the queue's drain time. Kept 30 days.
+- **One write path, and the decisions'.** When the writer has written a batch's events into an organization's database, it copies that organization's coordination events (masked: the rows the organization got; shape copies of other organizations' events left out) into `server.db` table `coord`, idempotent by event id. The delay is the queue's drain time. Kept 30 days.
 - **`GET /v1/coord?org=<org>&after=<seq>&wait=<s ≤ 30>`** → `{"events": [{"seq", "event_id", "name", "ts", "host_id", "record"}], "next", "last"}`, oldest first, at most 500: only for a machine that joined the organization (the tenant reads all; `403` otherwise). `last` is the newest sequence number held: a cursor past it means the server started over, and the client reads again from 0.
 - **The relay pulls it**: one thread per server reads each of its organizations every 10 s (at once again after events came), stores the events other machines wrote as they are, with `raw_ref` `coord:<org>:<seq>`, and keeps its cursor in `coord-cursor.json`. The store skips an event id it holds. `of ship` never sends a pulled event back.
 
@@ -126,6 +126,54 @@ A session id proves only what the relay trusts elsewhere (`queued`, `take`): a m
   The server host undoes a drop with `relay-requeue --state expired --msg-id M`.
 
 **Events** in the recipient organization: `of.message_sent` (masked text, authority, sender machine and person), `of.message_delivered`, `of.message_failed`, `of.message_expired`, `of.message_moved`. When the sender's organization is also served by this server and differs, it gets a slim `of.message_sent` without the text.
+
+### Decisions (event store step 1, 2026-11-23, `of_server`)
+
+An answer to a card is accepted once, by the organization's server, in the organization's order (the founder's
+choice on card OF-294, option B with no off-host copy; design organic-framework-build
+`reports/framework/event-store/04-design.md` §2 and §6 step 1; wire contract `step1-accept-contract.md` beside it,
+agreed with `of_platform`; `bin/of_server_decisions.py`). A machine proposes; the server accepts the first proposal that
+keeps the stream's rule and refuses the others with the accepted one; every machine folds accepted decisions in the
+server's sequence. The coordination feed gets them from a second write path: the accept writes them into `coord`
+itself, in its own transaction, rather than after the batch writer.
+
+- **`POST /v1/decisions`** `{"v": 1, "id", "org", "kind": "answer", "stream": "<ask id>@v<version>", "payload",
+  "proposer", "signature": null, "restore": null}`. The stream is one card at one version; its one step is open →
+  answered. The payload holds the answer and its fields as the client records them today, and any further key of
+  the client's own (the chat's proof, a status's note): at most 32 lowercase keys, never one the server sets.
+  `via` is `asks-ui`, `conductor`, `cli`, `unit` or `status`. The machine is the authenticated one. Answers: `200
+  {"state": "accepted", "decision": <record>}`; `409 {"type": "refused", "accepted": <record>}` when the stream is
+  decided; the same `id` again gets its first answer, and with other content `409 conflict`; `404 decisions_off`
+  until the switch (below); `503` while the organization is moving; `403` for an organization the machine has not
+  joined.
+- **One transaction, durable.** The check and the append are one `BEGIN IMMEDIATE` at `synchronous = FULL`, with
+  `fullfsync` and `checkpoint_fullfsync` on macOS, where fsync alone leaves the drive's cache unflushed. The answer
+  goes out after the commit. Every text in the payload is masked first, as a relay message's is at post, and the
+  findings go to the vault.
+- **The accepted record** is `of.decision_accepted`, written by the server (`host_id: of-server`), id
+  `uuid5(of_events.STABLE_NS, "decision:" + <proposal id>)`, payload: the masked payload's fields, `proposal`, `org`,
+  `kind`, `stream`, `stream_version`, `seq` (one counter per organization, from 1), `step`, `machine`, `proposer`,
+  `signed` (false for an owner's answer, null for a position's step), `accepted_at`, `restored`, `supersedes`. It
+  enters the feed in the accept's transaction, so every machine gets it, the proposer included, and goes to the
+  organization's database through the writer.
+- **Signed and unsigned.** A person's step will be signed by a key the agents' OS users cannot read; until the agents
+  leave the owner's OS user, `signature` must be null and an owner's answer is recorded `signed: false`, no worse
+  than before.
+- **Restoration.** The founder chose no off-host copy, so a lost disk loses the decisions since the last backup. A
+  client resends a receipt with `restore: {seq, stream_version, accepted_at}`; it is accepted with its own seq and
+  version, wins over a later decision on its stream that is no restoration (that one becomes `superseded`, named in
+  `supersedes`), and raises the counter above its seq. No new proposal waits for it.
+- **The switch.** Decisions are off for an organization until its machines run the client that proposes. Then the
+  server's keeper or the owner runs `of_server.py decisions --org <org> on` on the server's host, which writes
+  `of.decision_cutover` (its time and the first seq) into the feed; `of_server.py decisions status` shows each
+  organization's counter, decisions and refusals. Before the cutover the fold keeps the earlier rule (the first
+  eligible answer by time and row).
+- **Kept whole.** The tables `decisions`, `proposals` and `decision_orgs` do not share the feed's 30 days, and
+  `of server export` and `import` carry them with the counter, so a move keeps the order (and the sent headers of
+  organic-framework PR 593 too). Each machine's relay reads each organization's feed in a long-poll of its own (30 s),
+  so an accepted decision reaches it as soon as it is written.
+- Tests: `tests/test_server_decisions.py`, `tests/test_relay_watchdog.py` (a loop per organization),
+  `tests/test_server_export.py` (the tables carried).
 
 ### Secrets broker (2026-11-11, `of_server`; [`agent-secrets.md`](agent-secrets.md) §5.3)
 

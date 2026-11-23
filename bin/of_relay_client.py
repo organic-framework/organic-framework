@@ -1231,7 +1231,8 @@ def deliver_joined(conn, msgs, local, deliverer=herdr_deliver):
 
 # ------------------------------------------------------------ coordination across machines
 
-COORD_EVERY = 10  # seconds between reads of a server's coordination feed when the last read brought nothing
+COORD_EVERY = 10  # seconds before a coordination feed is read again after a failed read
+COORD_WAIT = 30   # each read is a long-poll: the server answers when something comes, or after this
 COORD_LOG_EVERY = 3600  # one log line per organization and error kind an hour
 
 
@@ -1249,6 +1250,17 @@ def read_coord_cursor():
         return {}
 
 
+_CURSOR_LOCK = threading.Lock()   # one thread per organization writes this one file
+
+
+def update_coord_cursor(key, value):
+    """Set one organization's place in the cursor file, the others' as they are on disk now."""
+    with _CURSOR_LOCK:
+        cursor = read_coord_cursor()
+        cursor[key] = value
+        write_coord_cursor(cursor)
+
+
 def write_coord_cursor(cursor):
     try:
         tmp = _coord_cursor_path() + _tmp_suffix()
@@ -1259,7 +1271,7 @@ def write_coord_cursor(cursor):
         pass
 
 
-def pull_coord(client, url, org, conn, cursor, me):
+def pull_coord(client, url, org, conn, cursor, me, wait=0):
     """Read one organization's coordination feed (docs/server-several-machines.md §4.2) after this machine's
     cursor and store the events other machines wrote, as they are (masked by the server), with raw_ref
     `coord:<org>:<seq>` so `of ship` never sends them back. The store skips an event id it already holds.
@@ -1267,7 +1279,7 @@ def pull_coord(client, url, org, conn, cursor, me):
     import of_coord
     key = f"{url}|{org}"
     after = int(cursor.get(key) or 0)
-    r = client.coord(org, after)
+    r = client.coord(org, after, wait=wait) if wait else client.coord(org, after)
     if after > int(r.get("last") or 0):  # the server's feed started over: read it again from the start
         cursor[key] = 0
         return 0
@@ -1552,29 +1564,31 @@ def run(load, client_for, servers, default, log=print, stop=None, deliverer=herd
                 log(f"poll {url}: {type(e).__name__}: {e}")
                 stop.wait(5)
 
-    def coord_loop(url, orgs):
+    def coord_loop(url, org):
+        # one organization of one server, in a long-poll of its own (COORD_WAIT): an accepted decision reaches this
+        # machine as soon as the server writes it, and a quiet organization holds no other one up (event store step
+        # 1; organic-framework-build reports/framework/event-store/04-design.md, "Delivery at once")
         c = client_for(url)
         own = of_store.connect()
         me = of_events.machine_id()
         logged = {}
+        key = f"{url}|{org}"
         while not stop.is_set():
-            ticks[f"coord {url}"] = time.time()
-            cursor, got = read_coord_cursor(), 0
-            before = dict(cursor)
-            for org in orgs:
-                # per organization: each pull is bounded (of_client's tries), but two of them on a hung server
-                # take longer than STALE_S together (of_review on organic-framework PR 142)
-                ticks[f"coord {url}"] = time.time()
-                try:
-                    got += pull_coord(c, url, org, own, cursor, me)
-                except Exception as e:  # noqa: BLE001 - 403 (not joined there), a busy store, a restart
-                    k = (org, type(e).__name__, getattr(e, "status", None))
-                    if time.time() - logged.get(k, 0) >= COORD_LOG_EVERY:
-                        logged[k] = time.time()
-                        log(f"coord {org} at {url}: {type(e).__name__}: {str(e)[:200]}")
-            if cursor != before:
-                write_coord_cursor(cursor)
-            stop.wait(0.2 if got else COORD_EVERY)
+            ticks[f"coord {key}"] = time.time()
+            cursor = read_coord_cursor()
+            before = cursor.get(key)
+            try:
+                got = pull_coord(c, url, org, own, cursor, me, wait=COORD_WAIT)
+            except Exception as e:  # noqa: BLE001 - 403 (not joined there), a busy store, a restart
+                k = (type(e).__name__, getattr(e, "status", None))
+                if time.time() - logged.get(k, 0) >= COORD_LOG_EVERY:
+                    logged[k] = time.time()
+                    log(f"coord {org} at {url}: {type(e).__name__}: {str(e)[:200]}")
+                stop.wait(COORD_EVERY)
+                continue
+            if cursor.get(key) != before:
+                update_coord_cursor(key, cursor.get(key))
+            stop.wait(0.2 if got else 0)   # the long-poll itself waited for something to come
 
     try:
         drained = {u for us in org_drains(default).values() for u in us}
@@ -1583,8 +1597,8 @@ def run(load, client_for, servers, default, log=print, stop=None, deliverer=herd
     urls = set(servers.values()) | {default} | drained
     threads = [threading.Thread(target=presence_loop, daemon=True)]
     threads += [threading.Thread(target=poll_loop, args=(u,), daemon=True) for u in urls]
-    threads += [threading.Thread(target=coord_loop, args=(u, sorted(o for o, s in servers.items() if s == u)),
-                                 daemon=True) for u in urls if any(s == u for s in servers.values())]
+    threads += [threading.Thread(target=coord_loop, args=(u, o), daemon=True)
+                for u in urls for o in sorted(o for o, s in servers.items() if s == u)]
     for t in threads:
         t.start()
     return stop, threads

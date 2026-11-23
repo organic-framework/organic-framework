@@ -1761,6 +1761,22 @@ def make_handler(app):
                     if self._moving(ends):
                         return None
                     return self._relay(lambda: app.relay.post(m, json.loads(raw or b"{}")), status=202)
+                if u.path == "/v1/decisions":  # a decision proposed, accepted once (docs/server.md, Decisions)
+                    import of_server_decisions as D
+                    try:
+                        prop = json.loads(raw or b"{}")
+                    except ValueError:
+                        return self._problem(400, "bad_request", "body is not JSON")
+                    org = prop.get("org") if isinstance(prop, dict) else None
+                    if isinstance(org, str) and self._moving([org]):
+                        return None
+                    served = isinstance(org, str) and (org in app.served if app.served is not None
+                                                       else org in app.router().db_by_org)
+                    try:
+                        status, out = D.propose(app, m, prop, set(json.loads(m["orgs"])), served)
+                    except D.DecisionError as e:
+                        return self._problem(e.status, e.typ, e.title, e.extra)
+                    return self._send(status, out)
                 if u.path == "/v1/messages/sent":  # the header of a message posted to another server (docs/server.md)
                     try:
                         sent = json.loads(raw or b"{}")
@@ -3412,6 +3428,11 @@ if __name__ == "__main__":  # the container entry point: python3 of_server.py --
     rd = sub.add_parser("relay-drop", help="drop queued relay messages nobody can take (expired, reason dropped)")
     rd.add_argument("--msg-id", action="append", required=True)
     rd.add_argument("--reason", required=True)
+    dc = sub.add_parser("decisions", help="decisions accepted once per card version: turn them on for an "
+                                          "organization once its machines run the client that proposes (docs/server.md,"
+                                          " Decisions), or show their state")
+    dc.add_argument("action", choices=("on", "status"))
+    dc.add_argument("--org", help="the organization (on: required)")
     cs = sub.add_parser("card-seed", help="seed an organization's card ids with the highest number given before "
                                           "(docs/server.md, Card ids)")
     cs.add_argument("--org", required=True)
@@ -3484,6 +3505,17 @@ if __name__ == "__main__":  # the container entry point: python3 of_server.py --
             held = card_seed(st, a.org, a.prefix, max(a.highest), by="card-seed")
             print(f"card ids of {a.org}, prefix {a.prefix}: seeded at {held}; the next is {a.prefix}-{held + 1}, or above "
                   "a higher number already given")
+        elif a.cmd == "decisions":
+            import of_server_decisions as D
+            if a.action == "on":
+                if not a.org:
+                    raise SystemExit("decisions on: --org is required")
+                # the full app (not started): the cutover's event goes to the queue the running server drains
+                rec, turned = D.turn_on(App(c, config_path=a.config), a.org)
+                print(("turned on" if turned else "already on") + f": {a.org} since {rec['of.payload']['on_at']}, "
+                      f"first seq {rec['of.payload']['first_seq']}")
+            else:
+                print(json.dumps(D.status(st, a.org), indent=2))
         elif a.cmd == "relay-drop":
             # the full app (not started): the drop's events go to the disk queue the running server drains
             dropped = App(c, config_path=a.config).relay.drop(a.msg_id, a.reason)

@@ -45,6 +45,13 @@ STORE = {
     "finance_facts": ("org = :org", "created_at", ("event_id",)),
     "secret_sightings": ("org = :org", "detected_at", ("batch_id", "kind", "hmac", "org", "tbl")),
     "passkey_enrollments": ("org = :org", "enrolled_at", ("credential_id",)),
+    # the headers of messages it sent to other servers (organic-framework PR 593): a reply to one comes here
+    "sent_across": ("from_org = :org", "created", ("msg_id",)),
+    # its decisions, kept whole with their counter, so a move keeps the order its machines fold by (event store step
+    # 1; organic-framework-build reports/framework/event-store/04-design.md, "Sequence per organization")
+    "decision_orgs": ("org = :org", "on_at", ("org",)),
+    "decisions": ("org = :org", "accepted_at", ("proposal",)),
+    "proposals": ("org = :org", "at", ("proposal",)),
 }
 
 
@@ -91,12 +98,13 @@ def ensure_schema(conn):
     """The tables a server's modules make when they first serve (the feed, finance facts, passkeys, sightings): a new
     server that has served nothing yet lacks some of them (of_review on organic-framework PR 425)."""
     import of_server_coord
+    import of_server_decisions
     import of_server_finance
     import of_server_passkey
     import of_server_relay
     import of_server_secrets
     for ddl in (of_server_relay.DDL, of_server_coord.DDL, of_server_finance.DDL, of_server_passkey.DDL,
-                of_server_secrets.DDL):
+                of_server_secrets.DDL, of_server_decisions.DDL):
         conn.executescript(ddl)
     of_server_relay.migrate(conn)
     if "account" not in _columns(conn, "finance_facts"):  # of_server_finance._ensure's migration of an older store
@@ -346,6 +354,8 @@ def _belongs(table, row, org):
     """Whether ROW is ORG's by its table's own rule (STORE's predicate), read from the row itself."""
     if table == "messages":
         return org in (row.get("to_org"), row.get("from_org"))
+    if table == "sent_across":
+        return row.get("from_org") == org
     return row.get("org") == org
 
 
@@ -601,8 +611,9 @@ def _serves_another(conn, org):
     """Whether this store holds another organization's own records: then a message between the two, carried in both
     bundles, would replace that organization's copy here (the user organization's sec_keeper, msg 01a1f638-5862)."""
     have = _tables(conn)
-    checks = [("messages", "to_org != :org AND from_org != :org")] + \
-        [(t, "org != :org") for t in STORE if t != "messages"]   # all seven (sec_keeper, msg 01a1f645-eae4)
+    checks = [("messages", "to_org != :org AND from_org != :org"), ("sent_across", "from_org != :org")] + \
+        [(t, "org != :org") for t in STORE if t not in ("messages", "sent_across")]   # every table (sec_keeper,
+    # msg 01a1f645-eae4)
     return any(conn.execute(f"SELECT 1 FROM {t} WHERE {w} LIMIT 1", {"org": org}).fetchone()
                for t, w in checks if t in have)
 
