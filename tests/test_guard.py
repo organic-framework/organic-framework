@@ -1062,6 +1062,27 @@ class ParserSlipTest(unittest.TestCase):
             got = of_guard.critical_deny("Bash", {"command": 'echo x > ~/.config/of/orgs.yaml\necho "'}, "/tmp")
             self.assertTrue(got and "could not read whole" in got[0], got)       # the text match still names it
 
+    def test_a_bench_value_that_is_no_path_is_unreadable(self):
+        """of_review on PR 575: a value that raised in the Bench reader dropped the shell's write rules for that call;
+        now an owner.yaml that is there and cannot be read, or whose bench: is no path, is recorded, so the hook
+        denies the call."""
+        from unittest import mock
+        import of_events
+        with tempfile.TemporaryDirectory() as conf:
+            with open(os.path.join(conf, "owner.yaml"), "w") as fh:
+                fh.write("bench: '/tmp/a\x00b'\n")
+            del of_guard.UNREADABLE[:]
+            with mock.patch.object(of_events, "CONFIG_DIR", conf):
+                of_guard._bench_home()
+            self.assertTrue(of_guard.UNREADABLE, "a NUL in bench: is recorded, so the hook denies")
+            del of_guard.UNREADABLE[:]
+            os.remove(os.path.join(conf, "owner.yaml"))
+            os.mkdir(os.path.join(conf, "owner.yaml"))                      # there, and no regular file
+            with mock.patch.object(of_events, "CONFIG_DIR", conf):
+                self.assertEqual(of_guard._bench_home(), os.path.realpath(os.path.expanduser("~/.local/share/bench")))
+            self.assertTrue(of_guard.UNREADABLE, "a folder in owner.yaml's place is recorded too")
+            del of_guard.UNREADABLE[:]
+
 
 if __name__ == "__main__":
     unittest.main()
