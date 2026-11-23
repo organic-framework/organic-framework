@@ -6488,11 +6488,31 @@ UNREAD_COMMAND = ("a command the guard could not read whole ({kind}), so it cann
                   "write it more simply, one command at a time, and report it to of_server if it is plain")
 # a quote that never closes, over several lines: bash too stops at it, after running every line before it, so the
 # reason says where to look (a user organization's structure keeper, message 01a2096b-dc11: an apostrophe inside a
-# single-quoted python3 -c body)
+# single-quoted python3 -c body). Said only when bash -n refuses the text too: the guard's own reader can also lose a
+# quote bash keeps (message 01a20975-02e4: an apostrophe in a comment), and then the reason asks for a report instead.
 UNCLOSED_QUOTE = ("a command whose quote never closes, so the guard cannot tell what it writes, and bash would stop "
                   "there too, after running the lines before it: an apostrophe inside a single-quoted text ends that "
                   "text (write it as '\\'' or put the text in a file first); write it more simply, one command at "
                   "a time")
+
+
+GUARD_LOST_QUOTE = "a quote the guard's reader could not close, though bash reads the command whole"
+
+
+def _bash_reads_whole(cmd):
+    """True when bash -n parses CMD, False when it refuses it, None when that cannot be told. -n reads and runs
+    nothing; the text goes on stdin to a bash with an empty environment, so no profile, alias or BASH_ENV joins in.
+    Used only to word a deny's reason, never to allow."""
+    import subprocess
+    for sh in ("/bin/bash", "/usr/bin/bash"):
+        if os.path.exists(sh):
+            try:
+                r = subprocess.run([sh, "--noprofile", "--norc", "-n"], input=cmd.encode("utf-8", "surrogateescape"),
+                                   capture_output=True, timeout=2, env={}, cwd="/")
+            except (OSError, subprocess.SubprocessError):
+                return None
+            return r.returncode == 0
+    return None
 
 
 def critical_deny(tool, tool_input, cwd=None):
@@ -6523,8 +6543,11 @@ def critical_deny(tool, tool_input, cwd=None):
             # form here
             if not hit and not (isinstance(e, ValueError) and str(e) == "No closing quotation"
                                 and "\n" not in cmd and "\r" not in cmd):
-                hit = ((UNCLOSED_QUOTE,) if isinstance(e, ValueError) and str(e) == "No closing quotation"
-                       else (UNREAD_COMMAND.format(kind=type(e).__name__),))
+                whole = (_bash_reads_whole(cmd) if isinstance(e, ValueError) and str(e) == "No closing quotation"
+                         else None)
+                hit = ((UNCLOSED_QUOTE,) if whole is False else
+                       (UNREAD_COMMAND.format(kind=GUARD_LOST_QUOTE),) if whole else
+                       (UNREAD_COMMAND.format(kind=type(e).__name__),))
         if not hit:
             hit = targets_deny(cmd, cwd)  # G26, G27
         if not hit:
