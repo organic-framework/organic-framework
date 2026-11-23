@@ -137,6 +137,35 @@ class RefsTest(CatalogueBase):
         self.assertEqual(self.refs(f"ssh -i {key} gw cat {h}"), [key])                 # the key is used here
 
 
+class BrokenRegistryTest(CatalogueBase):
+    """of_server, 2026-11-23: a registry that does not read, or is gone, kept the organization out of the guard's
+    catalogue, and with it every protection it lists; on the agent host any session's push moves a registry."""
+
+    def reg(self):
+        return os.path.join(self.tmp.name, "acme", "registry", "positions.yaml")
+
+    def test_a_broken_or_gone_registry_keeps_its_last_reading(self):
+        good = self.cat["acme"]
+        for broken in ("positions: [\n  - name: x\n", "- just\n- a list\n", "\t: tab\n"):
+            with open(self.reg(), "w") as fh:
+                fh.write(broken)
+            self.assertEqual(of_credentials.load(self.orgs, previous=self.cat)["acme"], good, broken)
+            with self.assertRaises(of_credentials.Unreadable):
+                of_credentials.load(self.orgs)                          # never read whole: unknown, not empty
+        os.unlink(self.reg())
+        self.assertEqual(of_credentials.load(self.orgs, previous=self.cat)["acme"], good)
+        self.assertNotIn("acme", of_credentials.load(self.orgs))       # never read and not there: nothing to keep
+
+    def test_the_cache_keeps_the_last_reading_across_a_broken_push(self):
+        state = os.path.join(self.tmp.name, "state")
+        first = of_credentials.cached(state, self.orgs)
+        with open(self.reg(), "w") as fh:
+            fh.write("positions: [\n")
+        st = os.stat(self.reg())
+        os.utime(self.reg(), ns=(st.st_atime_ns, st.st_mtime_ns + 10 ** 9))
+        self.assertEqual(of_credentials.cached(state, self.orgs)["acme"], first["acme"])
+
+
 class CheckTest(CatalogueBase):
     def test_the_catalogue_as_written_is_clean(self):
         self.assertEqual(of_credentials.check(self.orgs), [])

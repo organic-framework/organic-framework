@@ -718,6 +718,27 @@ class HandleTest(unittest.TestCase):
             self.fire("PreToolUse", tool_name="Bash", tool_input={"command": "ls"})
         self.assertNotIn("permissionDecision", out.getvalue())
 
+    def test_a_registry_never_read_whole_denies(self):
+        """of_server, 2026-11-23: unknown protections never read as none."""
+        import contextlib
+        import io
+        from unittest import mock
+        import of_credentials
+        of_hook.OUTPUT, of_hook.GUARD_DECIDED = None, False
+        out = io.StringIO()
+        with mock.patch.object(of_credentials, "guard_protection", side_effect=of_credentials.Unreadable("acme")), \
+                contextlib.redirect_stdout(out):
+            self.fire("PreToolUse", tool_name="Bash", tool_input={"command": "ls"})
+        decision = json.loads(out.getvalue())["hookSpecificOutput"]
+        self.assertEqual(decision["permissionDecision"], "deny")
+        self.assertIn("guard failed (Unreadable)", decision["permissionDecisionReason"])
+        of_hook.OUTPUT = None
+        out = io.StringIO()
+        with mock.patch.object(of_credentials, "guard_protection", side_effect=OSError("no cache")), \
+                contextlib.redirect_stdout(out):                  # any other failure there: as before
+            self.fire("PreToolUse", tool_name="Bash", tool_input={"command": "ls"})
+        self.assertNotIn("permissionDecision", out.getvalue())
+
     def test_a_system_exit_or_a_failure_before_the_guard_answers_denies(self):
         """of_secrets-review on organic-framework PR 469: SystemExit escaped except Exception, and an error before the
         guard ran fell into main's catch-all, both letting the call run."""

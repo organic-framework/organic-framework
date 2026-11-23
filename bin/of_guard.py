@@ -6419,6 +6419,10 @@ def escape_deny(cmd):
     return None
 
 
+UNREAD_COMMAND = ("a command the guard could not read whole ({kind}), so it cannot tell what the command writes; "
+                  "write it more simply, one command at a time, and report it to of_server if it is plain")
+
+
 def critical_deny(tool, tool_input, cwd=None):
     """(reason, subject) for a call to deny, or None. Examples (.env.example, *.pub) stay allowed."""
     ti = tool_input or {}
@@ -6436,10 +6440,18 @@ def critical_deny(tool, tool_input, cwd=None):
         _DENY_CWD[0] = cwd
         try:
             hit = _actor_line_deny(cmd) or _bash_deny(cmd)
-        except Exception:  # a parser slip must not deny every command: the old, stricter text match
+        except Exception as e:  # a parser slip: the old text match first, then a deny unless the shell would refuse
+            # the line itself (of_review on PR 575)
             bare = _strip_quoted(cmd)
             m = CRITICAL_DENY_BASH.search(bare)
             hit = _prints(m.group(0).strip(" ;&|(")) if m else _reads(READERS.search(bare) and _loose_secret_path(bare))
+            # a one-line command with an unbalanced quote is one the shell refuses too, so nothing of it runs; a
+            # trailing escape is not (bash runs it: of_review), bash runs every complete line before a broken one
+            # (of_secrets-review), and any other error came from a rule's own reading: the write rules have no text
+            # form here
+            if not hit and not (isinstance(e, ValueError) and str(e) == "No closing quotation"
+                                and "\n" not in cmd and "\r" not in cmd):
+                hit = (UNREAD_COMMAND.format(kind=type(e).__name__),)
         if not hit:
             hit = targets_deny(cmd, cwd)  # G26, G27
         if not hit:

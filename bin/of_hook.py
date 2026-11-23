@@ -1381,8 +1381,9 @@ def _guard_one(hook, sess):
         import of_credentials
         of_guard.use_protection(*of_credentials.guard_protection(
             STATE, os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml")))
-    except Exception:  # noqa: BLE001 - no cache yet: the framework's rules still apply; the catalogue step rebuilds it
-        pass
+    except Exception as e:  # noqa: BLE001 - no cache yet: the framework's rules still apply; the catalogue step rebuilds it
+        if type(e).__name__ == "Unreadable":   # a registry never read whole: its protections are unknown, so _guard
+            raise                              # denies the call until it reads (of_server, 2026-11-23)
     hit = critical_deny(hook.get("tool_name"), hook.get("tool_input"), hook.get("cwd"))
     if not hit and (_authority_guard(hook, sess) or _release_guard(hook, sess)):
         return
