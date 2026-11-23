@@ -16,10 +16,14 @@ What the pulse does with this module:
 - tells an organization's structure keeper once, in its pane when it is idle, when its own organization's live
   sessions in one project folder together pass PROJECT_CAP (2026-11-14, a user organization's structure keeper: 24 GiB in one project, every session under the quota), with each
   session's position and size; again only after the project fell under it;
-- sizes the worktrees inside each organization's checkouts (`<path>/.claude/worktrees/*`, Claude Code's, and
-  `<path>/.worktrees/*`, the agents' own; each also one level down; from orgs.yaml `paths`) on the same cadence and budget, and tells an organization's structure keeper once
-  when its worktrees pass WORKTREE_CAP together (2026-11-14, of_capacity: ten such worktrees of about 1 GiB each took
-  free disk from 35.8 to 18.4 GB in five hours while every scratch folder stayed flat);
+- sizes the worktrees of each organization's checkouts (from orgs.yaml `paths`, each also one level down): the
+  folders inside them (`<path>/.claude/worktrees/*`, Claude Code's, and `<path>/.worktrees/*`, the agents' own) and
+  every linked worktree a checkout's `.git/worktrees/*/gitdir` names, wherever it lies, read without running git
+  (2026-11-23, of_capacity: a user organization's sessions kept most of theirs beside the checkouts and in scratch
+  folders, about 25 in three hours, while free disk fell about 10 GiB an hour); on the same cadence and budget, and
+  tells an organization's structure keeper once when its worktrees pass WORKTREE_CAP together (2026-11-14,
+  of_capacity: ten such worktrees of about 1 GiB each took free disk from 35.8 to 18.4 GB in five hours while every
+  scratch folder stayed flat). A worktree inside a live session's scratch folder is counted there, not twice;
 - files one card to the founder when free disk falls under CARD_BELOW, naming what takes the space (swap, OF's
   event store, the live sessions' temporary folders by project; 2026-11-14: swap swung free disk by about 9 GiB), and closes it
   itself once free disk is back above CARD_CLEAR.
@@ -30,6 +34,7 @@ import glob
 import json
 import os
 import shutil
+import stat
 import subprocess
 import time
 
@@ -40,7 +45,7 @@ GiB = 2 ** 30
 SCRATCH_CAP = 3 * GiB
 SCRATCH_QUOTA = 6 * GiB  # the hard line: the guard refuses new writes into a folder over it (docs/guard.md)
 PROJECT_CAP = 12 * GiB   # a project folder's live sessions together: its structure keeper is told
-WORKTREE_CAP = 12 * GiB  # an organization's worktrees inside its checkouts together
+WORKTREE_CAP = 12 * GiB  # the worktrees of an organization's checkouts together
 VM_DIR = "/System/Volumes/VM"  # macOS's swap files, on the same disk as everything else
 SIZE_EVERY_S = 1800
 OVER_EVERY_S = 300       # a folder over the cap is re-sized every pulse: a runaway grows GiBs in 30 minutes
@@ -104,11 +109,69 @@ def home_label(path):
 WORKTREE_ROOTS = ((".claude", "worktrees"), (".worktrees",))  # Claude Code's layout, and the agents' own
 
 
+def _small_text(path):
+    """The first line of a small regular file at PATH, never through a link and never waiting on a pipe, or None."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        data = os.read(fd, 4096)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    lines = data.decode("utf-8", "replace").splitlines()
+    return lines[0].strip() if lines else None
+
+
+def linked_worktrees(repo_dir):
+    """The linked worktrees a checkout's `.git/worktrees/*/gitdir` names, wherever they lie, read without git: each
+    one a real folder whose own `.git` file points back to that entry, so a stale or planted entry names nothing."""
+    admin_root = os.path.join(repo_dir, ".git", "worktrees")
+    if os.path.islink(os.path.join(repo_dir, ".git")) or os.path.islink(admin_root) or not os.path.isdir(admin_root):
+        return []
+    out = []
+    for admin in sorted(glob.glob(os.path.join(admin_root, "*"))):
+        if os.path.islink(admin) or not os.path.isdir(admin):
+            continue
+        target = _small_text(os.path.join(admin, "gitdir"))
+        if not target:
+            continue
+        dot_git = os.path.normpath(os.path.join(admin, target))  # relative under git's worktree.useRelativePaths
+        w = os.path.dirname(dot_git)
+        if os.path.basename(dot_git) != ".git" or os.path.islink(w) or not os.path.isdir(w):
+            continue
+        back = _small_text(dot_git)
+        if not back or not back.startswith("gitdir:"):
+            continue
+        back = os.path.normpath(os.path.join(w, back[len("gitdir:"):].strip()))
+        if os.path.realpath(back) == os.path.realpath(admin):
+            out.append(w)
+    return out
+
+
 def worktree_dirs(org_paths):
-    """[(org, repository as ~/…, worktree folder, its path in the repository)]: the worktrees inside each
-    organization's checkouts, `<path>/<root>/*` and `<path>/*/<root>/*` for each WORKTREE_ROOTS layout and each of its
-    orgs.yaml `paths` (of_review on PR 180: on the founder's Mac `.worktrees` held more than `.claude/worktrees`)."""
+    """[(org, repository as ~/…, worktree folder, its label)]: the worktrees of each organization's checkouts, from
+    each of its orgs.yaml `paths` and the repositories one level below it: `<repo>/<root>/*` for each WORKTREE_ROOTS
+    layout (of_review on PR 180: on the founder's Mac `.worktrees` held more than `.claude/worktrees`), and every
+    linked worktree the repository's git names, wherever it lies (2026-11-23, of_capacity). The label is the
+    worktree's path in the repository, or its own path with the home as ~ when it lies elsewhere. A folder that is or
+    holds a listed path, the home or the root is never one."""
+    home = os.path.realpath(os.path.expanduser("~"))
+    roots = {os.path.realpath(os.path.expanduser(str(p))) for ps in (org_paths or {}).values() for p in ps or []}
     out, seen = [], set()
+
+    def add(org, repo_dir, w):
+        real, repo_real = os.path.realpath(w), os.path.realpath(repo_dir)
+        if real in seen or real in (home, os.sep) or any(r == real or r.startswith(real + os.sep) for r in roots):
+            return
+        seen.add(real)
+        rel = os.path.relpath(real, repo_real) if real.startswith(repo_real + os.sep) else home_label(w)
+        out.append((org, home_label(repo_dir), w, rel))
+
     for org, paths in sorted((org_paths or {}).items()):
         for p in paths or []:
             root = os.path.expanduser(str(p))
@@ -117,9 +180,12 @@ def worktree_dirs(org_paths):
                                       + glob.glob(os.path.join(root, "*", *layout))):
                     repo_dir = wt_root[:-len(os.path.join(*layout)) - 1]
                     for w in sorted(glob.glob(os.path.join(wt_root, "*"))):
-                        if os.path.isdir(w) and not os.path.islink(w) and w not in seen:
-                            seen.add(w)
-                            out.append((org, home_label(repo_dir), w, os.path.relpath(w, repo_dir)))
+                        if os.path.isdir(w) and not os.path.islink(w):
+                            add(org, repo_dir, w)
+            for repo_dir in [root] + sorted(glob.glob(os.path.join(root, "*"))):
+                if os.path.isdir(repo_dir) and not os.path.islink(repo_dir):
+                    for w in linked_worktrees(repo_dir):
+                        add(org, repo_dir, w)
     return out
 
 
@@ -214,18 +280,19 @@ def project_note(keeper, project, total, sessions):
 
 def worktree_note(keeper, total, trees):
     """KEEPER's note: its own organization's worktrees [(repository, path in it, bytes)], which hold TOTAL together."""
-    lines = "; ".join(f"{repo}/{rel} {gib(b)} GiB" for repo, rel, b in sorted(trees, key=lambda x: -x[2])[:10])
-    return (f"Message from of_pulse (via of pulse, authority: none; worktrees in the checkouts)\n"
-            f"Your organization's worktrees inside its checkouts together hold {gib(total)} GiB, over the "
-            f"{gib(WORKTREE_CAP)} GiB they may take: {lines}. They live in the repositories, not in a session's scratch "
-            f"folder, so the per-session limits do not see them. As the structure keeper, ask the positions that made "
+    lines = "; ".join(f"{rel if rel.startswith('~') or os.path.isabs(rel) else repo + '/' + rel} {gib(b)} GiB"
+                      for repo, rel, b in sorted(trees, key=lambda x: -x[2])[:10])
+    return (f"Message from of_pulse (via of pulse, authority: none; the checkouts' worktrees)\n"
+            f"Your organization's checkouts have worktrees that together hold {gib(total)} GiB, over the "
+            f"{gib(WORKTREE_CAP)} GiB they may take: {lines}. They live in the repositories or beside them, not in a "
+            f"live session's scratch folder, so the per-session limits do not see them. As the structure keeper, ask the positions that made "
             f"them to remove the ones no open task uses (git worktree remove <path>). OF deletes nothing.\n"
             f"[to {keeper}, once while they stay over {gib(WORKTREE_CAP)} GiB]")
 
 
 def consumers(top_projects, swap=None, store=None, top_repos=()):
     """What takes this Mac's disk, as a person reads it, largest first: swap, OF's event store, the live sessions'
-    temporary folders and the worktrees inside the checkouts, each with its largest parts."""
+    temporary folders and the checkouts' worktrees, each with its largest parts."""
     parts = []
     if swap:
         parts.append((swap, tr("swap {gib} GiB (it grows when memory runs short: fewer live sessions shrink it)",
@@ -240,7 +307,7 @@ def consumers(top_projects, swap=None, store=None, top_repos=()):
     wt = sum(b for _, b in top_repos)
     if wt:
         lines = ", ".join(tr("{name} {gib} GiB", name=n, gib=gib(b)) for n, b in top_repos[:4])
-        parts.append((wt, tr("worktrees inside the checkouts {gib} GiB, most in {lines}", gib=gib(wt), lines=lines)))
+        parts.append((wt, tr("the checkouts' worktrees {gib} GiB, most in {lines}", gib=gib(wt), lines=lines)))
     return "; ".join(t for _, t in sorted(parts, key=lambda x: -x[0])) or tr("sizes not measured yet")
 
 
@@ -324,7 +391,9 @@ def check(positions, agents, bind, mem, now=None, prompt=None, log=print, free=N
     if over or read_quota():
         _write_quota(over, now)
     wt = mem.setdefault("worktrees", {})  # {worktree folder: {org, repo, at, bytes}}
-    found = worktree_dirs(org_paths) if org_paths else []
+    live = [os.path.realpath(x) + os.sep for e in st.values() for x in (e.get("sizes") or {})]
+    found = [f for f in (worktree_dirs(org_paths) if org_paths else [])
+             if not any(os.path.realpath(f[2]).startswith(x) for x in live)]  # counted in its session's folder
     for gone in set(wt) - {w for _, _, w, _ in found}:
         wt.pop(gone)  # removed: no longer on disk
     for org, repo, w, rel in found:
@@ -354,7 +423,7 @@ def check(positions, agents, bind, mem, now=None, prompt=None, log=print, free=N
 
 
 def _tell_worktree_keepers(positions, pairs, mem, wt, prompt, log, keeper=None):
-    """Tell an organization's structure keeper once per episode in which its worktrees inside its checkouts pass
+    """Tell an organization's structure keeper once per episode in which its checkouts' worktrees pass
     WORKTREE_CAP, listing only its own."""
     if keeper is None:
         import of_pulse
@@ -378,7 +447,7 @@ def _tell_worktree_keepers(positions, pairs, mem, wt, prompt, log, keeper=None):
             continue
         prompt(a["pane_id"], worktree_note(k, total, trees), "of_pulse")
         of_events.emit("nudge_sent", {"position": k, "from_position": "of_pulse", "to_position": k,
-                                      "about": f"worktrees in the checkouts {gib(total)} GiB",
+                                      "about": f"the checkouts' worktrees {gib(total)} GiB",
                                       "pane": a["pane_id"], "kind": "worktrees_over_cap"}, position=k, org=org)
         state[org] = True
         told.append(k)
