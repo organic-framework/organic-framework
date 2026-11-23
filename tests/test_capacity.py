@@ -5005,6 +5005,25 @@ class DryRunPastTheLimitWait(unittest.TestCase):
         self.assertEqual(of_capacity.failed_hold_s(err("x")), of_capacity.FAILED_RETRY_S)
         self.assertEqual(of_capacity.failed_hold_s(err("x", untrusted="/w")), 6 * 3600)
 
+    def test_an_untrusted_rest_ends_once_an_account_trusts_the_folder(self):
+        """2026-11-23: a move refused for an untrusted worktree at 23:33Z left its session resting six hours; the trust
+        read was fixed at 00:16Z, and the session, stopped on its limit from 02:20Z, still rested on a spent account."""
+        d = tempfile.mkdtemp()
+        folder = os.path.join(d, "repo")
+        os.makedirs(folder)
+        cfg = os.path.join(d, ".claude-a")
+        os.makedirs(cfg)
+        with open(os.path.join(cfg, ".claude.json"), "w") as fh:
+            json.dump({"projects": {folder: {"hasTrustDialogAccepted": True}}}, fh)
+        hold = of_capacity.UNTRUSTED_HOLD_S
+        sessions = {cfg: [{"session": "s1", "cwd": folder}]}
+        self.assertTrue(of_capacity.rest_lifted("s1", [0, hold, "fail", folder], sessions, [cfg]))
+        self.assertTrue(of_capacity.rest_lifted("s1", [0, hold, "fail"], sessions, [cfg]))       # an older mark
+        self.assertFalse(of_capacity.rest_lifted("s1", [0, hold, "fail", os.path.join(d, "other")], sessions, [cfg]))
+        self.assertFalse(of_capacity.rest_lifted("s1", [0, of_capacity.FAILED_RETRY_S, "fail"], sessions, [cfg]))
+        self.assertFalse(of_capacity.rest_lifted("s1", [0, 7200], sessions, [cfg]))               # a move's own rest
+        self.assertFalse(of_capacity.rest_lifted("s2", [0, hold, "fail"], sessions, [cfg]))      # not live, no folder
+
     def test_a_paste_not_yet_sent_is_retried_on_the_next_run(self):
         # 2026-11-15: the move read the box between the relay's paste of a 64-line message and its Enter, and the
         # stopped session then sat out FAILED_RETRY_S on a spent account
