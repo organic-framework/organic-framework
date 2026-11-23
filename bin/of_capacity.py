@@ -3625,14 +3625,27 @@ def resume(name, sid, target, pane, extra_note=None, log=print, of_bin=None, dry
     Nothing is typed into a pane undeclared (of_platform, 2026-11-07): runners_keeper's relaunch note at 12:41Z
     on 2026-11-06 was typed by hand and recorded as the owner's words. A claude process sitting on the folder
     trust dialog in that pane is closed with "No, exit" first (grants nothing); any other claude process there
-    is refused. The folder must already be trusted in `target`: the owner decides, never the tool."""
-    target = os.path.expanduser(target)
-    transcript = find_transcript(target, sid)
-    if not transcript:
-        raise MoveError(f"{name}: no transcript of session {sid} in {short(target)}")
+    is refused. The folder must already be trusted in `target`: the owner decides, never the tool.
+    A closed session whose freshest transcript lies on another account is carried to `target` first, as a move carries
+    it, and that account's copy goes to the backup once the session runs (2026-11-23, a user organization's structure
+    keeper: three closed sessions on spent accounts had no command that put them on an account with room)."""
+    target = os.path.abspath(os.path.expanduser(target))
     for d in config_dirs():
         if any(x["session"] == sid for x in live_sessions(d)):
             raise MoveError(f"{name}: session {sid[:8]} is live in {short(d)}; use `of capacity move`")
+    transcript = find_transcript(target, sid)
+    copies = [(t, d) for d in config_dirs() if os.path.realpath(d) != os.path.realpath(target)
+              for t in [find_transcript(d, sid)] if t]
+    newest = max(copies, key=lambda x: (_mtime(x[0]), x[0])) if copies else None
+    src = None
+    if newest and (not transcript or _mtime(newest[0]) > _mtime(transcript)):
+        if transcript and not _continues(newest[0], transcript):  # another history, not a later part of this one
+            raise MoveError(f"{name}: session {sid[:8]} has a newer copy on {short(newest[1])} that does not continue "
+                            f"the one on {short(target)}: {newest[0]} (newer) and {transcript}. Neither is taken; set "
+                            f"aside the one that is not the session's history, then resume again")
+        transcript, src = newest
+    if not transcript:
+        raise MoveError(f"{name}: no transcript of session {sid} in any config dir")
     cwd = last_field(transcript, "cwd")
     if not cwd or not os.path.isdir(cwd):
         raise MoveError(f"{name}: no working directory for session {sid[:8]} in its transcript")
@@ -3662,6 +3675,14 @@ def resume(name, sid, target, pane, extra_note=None, log=print, of_bin=None, dry
     cmd = launch_command(cwd, target, sid, name, note_path, write=False, **launch)  # written right before the start
     log(f"{name}: resume session {sid} on {short(target)} ({account_of(target)}) in herdr pane {pane}")
     log(f"  context model {model}, effort {effort}, permission mode {'bypass' if bypass else 'default'}")
+    key = os.path.basename(os.path.dirname(transcript))
+    mem_src, mem_dst = os.path.join(src or target, "projects", key, "memory"), os.path.join(target, "projects", key, "memory")
+    mem_base = os.path.join(STATE_DIR, "capacity", "memory-base", short(target).strip("~/"), key)
+    if src:
+        log(f"  carried first from {short(src)} ({account_of(src)}): {', '.join(session_paths(src, sid))}")
+        if not mem_dir:
+            log(f"  memory {key}: "
+                f"{[x for x in merge_memory(mem_src, mem_dst, mem_base, '/nonexistent', dry_run=True) if x[1] != 'same']}")
     if stale:
         log("  a stale folder trust dialog holds the pane: closed with \"No, exit\" first (grants nothing)")
     log(f"  resume: {cmd}")
@@ -3671,6 +3692,16 @@ def resume(name, sid, target, pane, extra_note=None, log=print, of_bin=None, dry
         _herdr("pane", "send-keys", pane, "esc")
         if not _wait(lambda: not claude_fg(), 15):
             raise MoveError(f"{name}: the claude process in {pane} did not exit after \"No, exit\"; read the pane")
+    backup = os.path.join(work, "backup")
+    files, mem = [], []
+    if src:  # the session is closed, so its transcript is final; carried as a move carries it
+        files = copy_session(src, target, sid, backup)
+        mark_copied([os.path.join(target, rel) for kind, rel in files if kind == "copy"])
+        mark_copied(rekey_session(target, sid, key, backup))
+        if not mem_dir:
+            mem = merge_memory(mem_src, mem_dst, mem_base, os.path.join(work, "conflicts"))
+        log(f"  carried {len([f for f in files if f[0] == 'copy'])} path(s); memory: "
+            f"{', '.join(f'{f}:{a}' for f, a in mem if a != 'same') or 'unchanged'}")
     if ensure_herdr_integration(target):
         log(f"  herdr's Claude integration installed in {short(target)}")
     if mem_dir:
@@ -3687,12 +3718,22 @@ def resume(name, sid, target, pane, extra_note=None, log=print, of_bin=None, dry
                         lambda: _run_in_pane(pane, cmd), lambda: _pane_lines(pane),
                         lambda k: _herdr("pane", "send-keys", pane, k.lower()), "account move: resume note", log=log)
     log(f"  resumed: pid {new['pid']}, session {new['session']}, pane {pane}")
+    if src:
+        try:
+            gone = set_source_aside(src, sid, os.path.join(backup, "source"))
+            if gone:
+                log(f"  the old account's copy ({len(gone)} path(s)) is in the backup until it is pruned")
+        except OSError as e:
+            log(f"  the old account's copy stays where it was: {e}")
     if bypass:
         check_bypass_after_start(pane, log)
     ws = {"config_dir": target, "account": account_of(target), "runtime": "herdr", "pane": pane}
+    carried = {"previous_workplace": {"config_dir": src, "account": account_of(src)},
+               "files": [r for _, r in files], "memory": mem} if src else {}
     of_events.emit("holder_changed", {"position": name, "previous_session": sid, "new_session": new["session"],
                                       "evidence": "of capacity resume", "workplace": ws, "model": model,
-                                      "effort": effort, "trust": {"state": "trusted", "path": trusted_key(target, cwd)}},
+                                      "effort": effort, "trust": {"state": "trusted", "path": trusted_key(target, cwd)},
+                                      **carried},
                    position=name, session=new["session"])
     try:
         log(f"  herdr name: {rename_agent(pane, name, new['session'])}")
