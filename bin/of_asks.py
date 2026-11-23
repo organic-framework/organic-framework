@@ -85,10 +85,11 @@ READS = ("of.agent_message_in", "of.agent_message_out", "of.agent_question", "of
          "of.ask_escalated", "of.ask_withdrawn", "of.human_prompt", "of.mandate_check", "of.permission_denied",
          "of.permission_request", "of.permission_resolved", "of.session_end", "of.session_start",
          "of.state_declared", "of.turn_end", "of.turn_error", "of.prompt_origin", "of.diff_approved", "of.diff_applied",
-         "of.agent_question_judged", "of.ask_amended", "of.ask_ref")
+         "of.agent_question_judged", "of.ask_amended", "of.ask_ref", "of.decision_accepted", "of.decision_cutover")
 ANY_SOURCE = ("of.ask_withdrawn", "of.agent_question_answered", "of.agent_question", "of.state_declared",
               "of.ask_escalated", "of.prompt_origin", "of.diff_approved", "of.diff_applied",
-              "of.agent_question_judged", "of.ask_amended", "of.ask_ref")  # written by tools (of ask, of status, the popup,
+              "of.agent_question_judged", "of.ask_amended", "of.ask_ref", "of.decision_accepted",
+              "of.decision_cutover")  # written by tools, and by the server (of ask, of status, the popup,
 # reconcile), not only by hooks
 
 # What `of ask --amend` may change (docs/events.md, of.ask_amended): the payload carries the new value under each name
@@ -132,7 +133,33 @@ def apply_prompt_origins(rows):
 def new_state():
     """Where project() keeps what it has seen, so a caller can feed it more rows later (the listener's asks view)."""
     return {"asks": [], "open_by_session": {}, "by_id": {}, "declared": {}, "by_position": {}, "declared_turn": {},
-            "waits_founder": {}}
+            "waits_founder": {}, **decision_state()}
+
+
+OF_CLOSURES = ("reconcile", "rule", "pulse")   # closures OF makes itself: of_asks_live, of_listen's rules, of_pulse
+
+
+def decision_state():
+    """The fold's part for decisions the server accepts (event store step 1; organic-framework-build
+    reports/framework/event-store/04-design.md §2): cutover {org: the server's time its decisions were turned on},
+    held {ask id: accepted decisions that came before their card}, seq {org: the last seq folded}."""
+    return {"cutover": {}, "held": {}, "seq": {}, "release": []}
+
+
+def decision_answer(r):
+    """An of.decision_accepted row as the answer it accepts: a row of today's of.agent_question_answered shape (its
+    ask, its version from the stream, the accepted fields), carrying the decision's seq and proposal; None for another
+    kind of decision."""
+    p = r.get("payload") or {}
+    if p.get("kind") != "answer":
+        return None
+    import of_decisions
+    ask_id, version = of_decisions.parse_stream(p.get("stream"))
+    if not ask_id:
+        return None
+    pl = {k: p[k] for k in ("answer", "via", "by", "verdict", "prompt") if p.get(k) is not None}
+    pl.update(ask_id=ask_id, ask_ids=[ask_id], version=version, decision=p.get("proposal"), seq=p.get("seq"))
+    return dict(r, name="of.agent_question_answered", payload=pl)
 
 
 def twins(conn, plain):
@@ -201,8 +228,51 @@ def project(rows, state=None):
     by_position = st["by_position"]  # position -> its asks in order: a declared status looks back only
     # DECLARE_AFTER_S (of_platform, 2026-11-11: a scan of every ask per status took 17 of 18 s of one projection)
     declared_turn, waits_founder = st["declared_turn"], st["waits_founder"]
-    for r in apply_prompt_origins(rows):
+    for k, v in decision_state().items():
+        st.setdefault(k, v)   # a state carried from before decisions (an older checkpoint)
+    cutover, held, seqs, release = st["cutover"], st["held"], st["seq"], st["release"]   # by name: the loop below
+    # reuses the name st for an answer's state
+
+    def ordered():
+        """The rows, each followed at once by the accepted decisions held for an ask it filed."""
+        for row in apply_prompt_origins(rows):
+            yield row
+            while release:
+                yield release.pop(0)
+
+    for r in ordered():
         sid, name = r["session_id"], r["name"]
+        if name == "of.decision_cutover":
+            # from its server's time on, only accepted decisions answer this organization's cards; earlier answers
+            # keep today's rule, so old cards keep their answers (04-design.md §2, the cutover)
+            o = (r["payload"] or {}).get("org") or r.get("org")
+            if o and o not in cutover:
+                cutover[o] = r["ts"]
+            continue
+        if name == "of.decision_accepted":
+            p_ = r["payload"] or {}
+            o = p_.get("org") or r.get("org")
+            if isinstance(p_.get("seq"), int) and o:
+                seqs[o] = max(seqs.get(o) or 0, p_["seq"])
+            a = decision_answer(r)
+            if a is None:
+                continue
+            if a["payload"]["ask_id"] not in by_id:
+                held.setdefault(a["payload"]["ask_id"], []).append(a)   # before its card: applied when it comes
+                continue
+            r = a
+            name = r["name"]
+        elif name == "of.agent_question_answered" and cutover and (r["payload"] or {}).get("via") not in OF_CLOSURES \
+                and not (r["payload"] or {}).get("decision") and not (r["payload"] or {}).get("decisions_off"):
+            # after the cutover a person's or a position's answer is a proposal the server accepts; a plain answer
+            # recorded then (an old client's) closes nothing. OF's own closures are nobody's answer and keep counting
+            # (a reconcile, a listener rule's, the pulse's), and so does today's answer the server sent back as
+            # decisions_off for an organization whose decisions were turned off again (of_asks, message 01a2089e-bc3a)
+            p_ = r["payload"] or {}
+            first = by_id.get((p_.get("ask_ids") or [p_.get("ask_id")])[0])
+            o = (first or {}).get("org") or r.get("org")
+            if o in cutover and (r["ts"] or "") >= cutover[o]:
+                continue
         if name == "of.state_declared":
             pl_ = r["payload"] or {}
             if not (pl_.get("state") == "waiting" and pl_.get("waiting_on") in ("founder", "owner")):
@@ -352,6 +422,7 @@ def project(rows, state=None):
             asks.append(ask)
             by_position.setdefault(ask["position"], []).append(ask)
             by_id[ask["event_id"]] = ask
+            release.extend(held.pop(ask["event_id"], []))
             continue
         if name == "of.agent_question" and (r["payload"] or {}).get("detected_by") == "declared":
             # declared with `of ask`: one position may hold several open asks; they never supersede
@@ -389,6 +460,7 @@ def project(rows, state=None):
             asks.append(ask)
             by_position.setdefault(ask["position"], []).append(ask)
             by_id[ask["event_id"]] = ask
+            release.extend(held.pop(ask["event_id"], []))
             declared.setdefault(r["position"], []).append(ask)
             continue
         if name in ASK_KINDS:
@@ -408,6 +480,7 @@ def project(rows, state=None):
             asks.append(ask)
             by_position.setdefault(ask["position"], []).append(ask)
             by_id[ask["event_id"]] = ask
+            release.extend(held.pop(ask["event_id"], []))
             open_by_session[sid] = ask
             continue
         if name == "of.human_prompt" and (r["payload"] or {}).get("origin") not in (None, "human", "paste"):
@@ -756,7 +829,10 @@ def fold_meta(state, rowid, fed):
     the view reflects (rowid, and the latest ts fed) and the indexes that are not in the asks themselves."""
     return {"rowid": rowid, "fed": fed, "at": time.time(),
             "open_by_session": {s: a["event_id"] for s, a in state["open_by_session"].items()},
-            "declared_turn": state["declared_turn"], "waits_founder": state["waits_founder"]}
+            "declared_turn": state["declared_turn"], "waits_founder": state["waits_founder"],
+            # the decisions' part: the cutovers, the decisions held for a card not yet here, the last seq per
+            # organization beside the time mark (04-design.md §2)
+            "cutover": state.get("cutover") or {}, "held": state.get("held") or {}, "seq": state.get("seq") or {}}
 
 
 def state_from(asks, meta):
@@ -774,6 +850,8 @@ def state_from(asks, meta):
                                   if e in st["by_id"]})
     st["declared_turn"].update(meta.get("declared_turn") or {})
     st["waits_founder"].update(meta.get("waits_founder") or {})
+    for k in ("cutover", "held", "seq"):
+        st[k].update(meta.get(k) or {})
     return st
 
 
