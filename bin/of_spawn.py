@@ -117,10 +117,13 @@ def work_dir(p, systems, org_paths, exists=os.path.isdir):
 
 
 def place(p, want_workspace):
-    """(workspace label, tab label): the position's workspace and a tab named by its system (as `of apply` names
-    tabs; it moves the pane into its final tab when the layout differs)."""
+    """(workspace label, tab label), as `of apply` names tabs: in a unit, a tab named by its system (its label, as
+    bin/of's system_label); otherwise a tab of its own, named by its role. Until 2026-11-23 every position went to its
+    system's tab, so one system's agents shared one tab with no room (the founder, prompt 01a20537-b8c3)."""
+    if not p.get("_unit"):
+        return want_workspace(p), str(p.get("role") or p.get("system") or p["name"])
     s = p.get("system")
-    label = ((p.get("_systems") or {}).get(s) or {}).get("label") if s else None  # as bin/of's system_label
+    label = ((p.get("_systems") or {}).get(s) or {}).get("label") if s else None
     return want_workspace(p), str(label or s or p.get("role") or p["name"])
 
 
