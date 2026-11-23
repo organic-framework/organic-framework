@@ -179,6 +179,10 @@ class OrgPathActByPosition(unittest.TestCase):
     def test_only_the_path_key_is_the_owners(self):
         import of_guard
         self.assertTrue(of_guard._org_path_act(["org", "set", "ofb", "path", "/r"]))
+        self.assertTrue(of_guard._org_path_act(["org", "set", "ofb", "work_clone", "/r"]))
+        self.assertTrue(of_guard._org_path_act(["org", "set", "ofb", "work_root", "/w"]))
+        self.assertTrue(of_guard._org_path_act(["org", "set", "ofb", "--", "work_root", "none"]))
+        self.assertFalse(of_guard._org_path_act(["org", "set", "work_root", "hold", "on"]))   # an organization so named
         self.assertFalse(of_guard._org_path_act(["org", "set", "path", "hold", "on"]))   # an organization named path
         self.assertTrue(of_guard._org_path_act(["owner", "set", "bench", "/b"]))         # the code OF imports
         self.assertTrue(of_guard._org_path_act(["owner", "--", "set", "bench", "/b"]))

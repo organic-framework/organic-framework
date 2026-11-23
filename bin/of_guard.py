@@ -3754,15 +3754,16 @@ def _server_route_act(words):
 
 
 def _org_path_act(words):
-    """`of org set <org> path <folder>` and `of org set <org> work_clone <folder>`: the owner's, by the positive test
-    (of_review on organic-framework PR 427 and PR 542)."""
+    """`of org set <org> path <folder>`, `of org set <org> work_clone <folder>` and `of org set <org> work_root
+    <folder>`: the owner's, by the positive test (of_review on organic-framework PR 427 and PR 542)."""
     # by position, so `of org set path hold on` (an organization named path) stays the agents' hold (of_server); a
     # double dash is no positional for argparse, so it is dropped before the places are read (of_review on PR 427 at
     # 0159efd: `of org -- set ofb path`, `of org set -- ofb path`, `of org set ofb -- path` ran the act)
     words = [w for w in words if w != "--"]
     # and `work_clone`, which makes a folder writable from every sandbox of its organization (of_review on PR 542),
+    # and `work_root`, under which every position of the organization gets a folder it writes (of_platform, 2026-11-23)
     # and `of owner set bench`, the folder OF imports Bench from outside any sandbox (of_secrets-review on PR 575)
-    return (words[:2] == ["org", "set"] and words[3:4] in (["path"], ["work_clone"])) or \
+    return (words[:2] == ["org", "set"] and words[3:4] in (["path"], ["work_clone"], ["work_root"])) or \
         (words[:3] == ["owner", "set", "bench"])
 
 
