@@ -1770,10 +1770,31 @@ class FolderTrust(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HOME": self.home.name}), \
                 mock.patch.object(of_capacity.subprocess, "run", lambda *a, **k: self.fail("git was run")):
             self.assertEqual(of_capacity.trust_candidates(sub), [sub, real(repo)])
-            self.assertEqual(of_capacity.trust_candidates(wt), [wt] if real(wt) == wt else [wt, real(wt)])
-            self.assertNotIn(real(repo), [real(c) for c in of_capacity.trust_candidates(wt)])
             self.assertEqual(of_capacity.trust_candidates(plain), [plain])
             self.assertIsNone(of_capacity.git_top(self.home.name))
+            # a linked worktree: its main repository too, as Claude Code keys its trust (2026-11-23)
+            self.assertEqual(of_capacity.trust_candidates(wt)[-1], real(repo))
+            # a .git file naming another worktree's admin folder: that folder names the other worktree back
+            fake = os.path.join(self.home.name, "work", "fake")
+            os.makedirs(fake)
+            with open(os.path.join(real(wt), ".git")) as fh:
+                pointer = fh.read()
+            with open(os.path.join(fake, ".git"), "w") as fh:
+                fh.write(pointer)
+            self.assertNotIn(real(repo), of_capacity.trust_candidates(fake))
+            # a folder whose admin folder's files are links, or whose common dir is not under the worktrees list
+            admin = pointer.split(":", 1)[1].strip()
+            lnk = os.path.join(self.home.name, "work", "lnk")
+            os.makedirs(os.path.join(lnk, "admin"))
+            os.symlink(os.path.join(admin, "commondir"), os.path.join(lnk, "admin", "commondir"))
+            with open(os.path.join(lnk, "admin", "gitdir"), "w") as fh:
+                fh.write(os.path.join(real(lnk), ".git") + "\n")
+            with open(os.path.join(lnk, ".git"), "w") as fh:
+                fh.write("gitdir: " + os.path.join(real(lnk), "admin") + "\n")
+            self.assertEqual(of_capacity.trust_candidates(lnk), [lnk] if real(lnk) == lnk else [lnk, real(lnk)])
+        # the home folder as the main repository: never a key
+        with mock.patch.dict(os.environ, {"HOME": os.path.join(self.home.name, "work", "repo")}):
+            self.assertEqual(of_capacity.worktree_main(wt), None)
 
 
 class ListenerProcessor(unittest.TestCase):

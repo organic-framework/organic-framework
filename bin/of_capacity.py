@@ -2658,15 +2658,64 @@ def git_top(cwd):
     return None
 
 
+def _plain_file(path):
+    """A regular file reached through no link: the folder above it is its real path and the file itself no link."""
+    import stat
+    try:
+        return (os.path.realpath(os.path.dirname(path)) == os.path.dirname(path)
+                and stat.S_ISREG(os.lstat(path).st_mode))
+    except OSError:
+        return False
+
+
+def worktree_main(top):
+    """The main repository of the linked worktree whose top level is `top`, read by names as Claude Code 2.1.330 reads
+    a worktree's canonical root, which its folder trust is keyed by: `top/.git` a file `gitdir: <admin>`, the admin
+    folder `<common>/worktrees/<name>` by its own `commondir`, and its `gitdir` pointing back to `top/.git`; each file a
+    regular one reached through no link. A worktree is read through its main repository only when Claude Code's own
+    checks hold, the main repository's own .git naming it back. A common dir not named .git (a bare repository) gives
+    none: stricter than Claude Code, never looser. Never the home folder or above it. None when any check fails."""
+    try:
+        top = os.path.realpath(top)
+        dotgit = os.path.join(top, ".git")
+        if not _plain_file(dotgit):
+            return None
+        with open(dotgit) as fh:
+            first = fh.read(4096).strip()
+        if not first.startswith("gitdir:"):
+            return None
+        admin = os.path.normpath(os.path.join(top, first[7:].strip()))
+        if os.path.realpath(admin) != admin or not _plain_file(os.path.join(admin, "commondir")) \
+                or not _plain_file(os.path.join(admin, "gitdir")):
+            return None
+        with open(os.path.join(admin, "commondir")) as fh:
+            common = os.path.normpath(os.path.join(admin, fh.read(4096).strip()))
+        if os.path.realpath(common) != common or os.path.dirname(admin) != os.path.join(common, "worktrees"):
+            return None
+        with open(os.path.join(admin, "gitdir")) as fh:
+            back = os.path.normpath(os.path.join(admin, fh.read(4096).strip()))
+        if back != dotgit or os.path.basename(common) != ".git":
+            return None
+        main, home = os.path.dirname(common), os.path.realpath(os.path.expanduser("~"))
+        if main == home or home.startswith(main.rstrip(os.sep) + os.sep) or main == top:
+            return None
+        return main
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+
+
 def trust_candidates(cwd):
-    """The keys a folder's trust is read from: the folder and its own git top level. Never a key taken from a common
-    dir, which a session can point anywhere through a .git file or commondir (of_server, message 01a20540-997d), so
-    a linked worktree trusted only through its main repository counts as untrusted: stricter than Claude Code, never
-    looser."""
+    """The keys a folder's trust is read from: the folder, its own git top level, and for a linked worktree its main
+    repository, by the checks Claude Code makes before it keys a worktree's trust by it (worktree_main). 2026-11-23:
+    without the main repository, every session of a user organization working in a worktree of a trusted repository
+    read as untrusted, so no move, resume or rescue would take it, while Claude Code itself starts it there."""
     out = [cwd]
     top = git_top(cwd)
     if top and top not in out:
         out.append(top)
+    main = worktree_main(top) if top else None
+    if main and main not in out:
+        out.append(main)
     return out
 
 
