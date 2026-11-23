@@ -2072,6 +2072,61 @@ class Resume(unittest.TestCase):
         self.assertEqual(r["session"], "s1")
         self.assertEqual(set(orgs), {"team"})
 
+    def _on_another_account(self):
+        """The session's transcript and subagents on a second account, none on the target."""
+        from unittest import mock
+        src = os.path.join(self.home.name, ".claude-s")
+        os.makedirs(os.path.join(src, "projects"))
+        with open(os.path.join(src, ".claude.json"), "w") as fh:
+            json.dump({"oauthAccount": {"emailAddress": "spent@x"}}, fh)
+        os.replace(os.path.join(self.cfg, "projects", "-acme"), os.path.join(src, "projects", "-acme"))
+        os.makedirs(os.path.join(src, "projects", "-acme", "s1", "subagents"))
+        p = mock.patch.object(of_capacity, "config_dirs", lambda *a: [self.cfg, src])
+        p.start()
+        self.addCleanup(p.stop)
+        return src
+
+    def test_a_closed_session_on_another_account_is_carried_to_the_target_first(self):
+        """2026-11-23, a user organization's structure keeper: three closed sessions whose transcripts lay on spent
+        accounts had no command that put them on one with room; resume said no transcript on the target, move said
+        not live. Resume now carries them as a move does, and the spent account's copy goes to the backup."""
+        src = self._on_another_account()
+        logs = []
+        r = of_capacity.resume("runners_keeper", "s1", self.cfg, "w6:p18", log=logs.append, dry_run=True)
+        self.assertTrue(r["dry_run"])
+        self.assertFalse(os.path.exists(os.path.join(self.cfg, "projects", "-acme", "s1.jsonl")))  # a dry run carries nothing
+        self.assertTrue(any("carried first from" in x for x in logs))
+        r = self.resume()
+        self.assertEqual(r["session"], "s1")
+        self.assertTrue(os.path.exists(os.path.join(self.cfg, "projects", "-acme", "s1.jsonl")))
+        self.assertTrue(os.path.isdir(os.path.join(self.cfg, "projects", "-acme", "s1", "subagents")))
+        self.assertFalse(os.path.exists(os.path.join(src, "projects", "-acme", "s1.jsonl")))  # set aside, not deleted
+        self.assertTrue(os.path.exists(os.path.join(r["work"], "backup", "source", "projects", "-acme", "s1.jsonl")))
+        held = next(c for c in self.calls if c[:2] == ("emit", "holder_changed"))[2]
+        self.assertEqual(held["previous_workplace"]["config_dir"], src)
+        self.assertIn("projects/-acme/s1.jsonl", held["files"])
+        run = next(c for c in self.calls if c[:2] == ("pane", "run"))
+        self.assertIn(self.cfg, run[3])
+
+    def test_a_resume_refuses_a_newer_copy_elsewhere_that_is_another_history(self):
+        """A copy on the target and a newer one elsewhere that does not hold its last record: neither is taken (as
+        a restore refuses it, of_review on PR 538). A newer one that continues it is carried."""
+        src = self._on_another_account()
+        os.makedirs(os.path.join(self.cfg, "projects", "-acme"))
+        old = os.path.join(self.cfg, "projects", "-acme", "s1.jsonl")
+        with open(old, "w") as fh:
+            fh.write(json.dumps({"type": "user", "uuid": "u-other", "cwd": self.cwd}) + "\n")
+        os.utime(old, (1, 1))
+        with self.assertRaisesRegex(of_capacity.MoveError, "does not continue"):
+            self.resume()
+        self.assertFalse(any(c[:2] == ("pane", "run") for c in self.calls))
+        with open(os.path.join(src, "projects", "-acme", "s1.jsonl"), "a") as fh:
+            fh.write(json.dumps({"type": "user", "uuid": "u-other", "cwd": self.cwd}) + "\n")
+        os.utime(old, (1, 1))
+        self.assertEqual(self.resume()["session"], "s1")
+        with open(old) as fh:
+            self.assertIn("claude-opus-5-5", fh.read())  # the carried copy, not the old one
+
     def test_a_move_stopped_at_the_exit_leaves_the_settings_file_and_records_nothing(self):
         """of_review on PR 516: the move wrote the live session's settings file before the exit, so a move stopped
         there left it changed against the record of the session's launch."""

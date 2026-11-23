@@ -9016,7 +9016,8 @@ def main(argv=None):
                          "gives it now (its tool profile, deny rules, memory directory)")
     cp.add_argument("position", nargs="?", help="move: the position (canonical name or alias); "
                                                 "reboot: prepare, restore, cancel or status")
-    cp.add_argument("--to", help="move: the target config dir, e.g. ~/.claude-e; resume: the config dir that holds the session")
+    cp.add_argument("--to", help="move: the target config dir, e.g. ~/.claude-e; resume: the config dir to start the "
+                    "session on (a closed session on another account is carried there first)")
     cp.add_argument("--dry-run", "-n", action="store_true", help="move: checks and the plan only")
     cp.add_argument("--allow-shells", action="store_true", help="move: stop the session's background shells")
     cp.add_argument("--for", dest="for_h", type=float,
