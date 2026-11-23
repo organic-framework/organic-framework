@@ -158,7 +158,8 @@ itself, in its own transaction, rather than after the batch writer.
 - **The accepted record** is `of.decision_accepted`, written by the server (`host_id: of-server`), id
   `uuid5(of_events.STABLE_NS, "decision:" + <proposal id>)`, payload: the masked payload's fields, `proposal`, `org`,
   `kind`, `stream`, `stream_version`, `seq` (one counter per organization, from 1), `step`, `machine`, `proposer`,
-  `signed` (false for an owner's answer, null for a position's step), `accepted_at`, `restored`, `supersedes`,
+  `signed` (false for an owner's answer, null for a position's step), `accepted_at`, `restored`, `supersedes` (null
+  in step 1),
   `receipt` (below), and on a restoration `restored_at` and `receipt_seq`. A refused proposal keeps no copy of the
   winner: its 409 is the stream's accepted decision as it stands at each ask. It
   enters the feed in the accept's transaction, so every machine gets it, the proposer included, and goes to the
@@ -179,10 +180,12 @@ itself, in its own transaction, rather than after the batch writer.
   Without a receipt this server issued for exactly that proposal and those values, the answer is `400 bad_receipt`.
   So a machine can restore only a decision the server made, and only as it was made. A restoration keeps its seq
   when no decision of the organization holds it. Otherwise it takes the next one and records the receipt's as
-  `receipt_seq`, so `(org, seq)` stays unique and the organization keeps one order. It wins over a later decision on
-  its stream that is no restoration: that one becomes `superseded`, is named in `supersedes`, and its proposer's
-  resend gets the 409. No new proposal waits for a restoration. A resend of a proposal the server still holds gets
-  its first answer.
+  `receipt_seq`, so `(org, seq)` stays unique and the organization keeps one order. It fills only a stream with no
+  decision: a stream decided again after the loss refuses it with the decision it holds, as any proposal, so the
+  server and every machine's reader keep one answer per stream (of_review on PR 614). Whether a restoration should
+  win over a decision made after the loss waits for the client's resend and readers that apply `supersedes`, which
+  stays null until then. No new proposal waits for a restoration. A resend of a proposal the server still holds
+  gets its first answer.
 - **The switch.** Decisions are off for an organization until its machines run the client that proposes. Then the
   server's keeper or the owner runs `of_server.py decisions --org <org> on` on the server's host, which writes
   `of.decision_cutover` (its time and the first seq) into the feed, and gives the same record again when run once

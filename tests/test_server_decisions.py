@@ -136,20 +136,23 @@ class DecisionsTest(ServerBase):
             c.execute("DELETE FROM proposals")
             c.execute("UPDATE decision_orgs SET next_seq = 1")
 
-    def test_a_restoration_needs_the_servers_receipt_and_wins_over_a_later_decision(self):
-        """of_secrets-review on PR 614: a restore counts only with a receipt this server issued for that very
-        proposal; its seq stays unique in the organization."""
+    def test_a_restoration_needs_the_servers_receipt_and_fills_only_an_undecided_stream(self):
+        """of_secrets-review and of_review on PR 614: a restore counts only with a receipt this server issued for that
+        very proposal, never over a decided stream (PR 613's readers keep one answer per stream), and its seq stays
+        unique in the organization."""
         D.turn_on(self.app, "ofb")
         first = proposal()
         _, out = self.post(first)
         got = out["decision"]["of.payload"]
         restore = {k: got[k] for k in ("seq", "stream_version", "accepted_at", "receipt")}
         self.assertEqual(self.post(dict(first, restore=restore)), (200, out))   # no loss: its first answer
+        forged = proposal(answer="yes, apply it")
+        status, why = self.post(dict(forged, restore={"seq": 1, "stream_version": 1, "accepted_at": got["accepted_at"],
+                                                      "receipt": "0" * 64}))
+        self.assertEqual((status, why["type"]), (400, "bad_receipt"))       # of_review's probe: nothing overturned
         self.lose_the_disk()
-        later = proposal(answer="No")
-        _, out2 = self.post(later)
-        self.assertEqual(out2["decision"]["of.payload"]["seq"], 1)         # the number is given again
-        forged = proposal(answer="Mine")
+        other = proposal(stream=f"{ASK2}@v1")
+        self.assertEqual(self.post(other)[1]["decision"]["of.payload"]["seq"], 1)   # the number is given again
         for bad in (dict(forged, restore=dict(restore, receipt="0" * 64)),                     # made up
                     dict(forged, restore=restore),                                             # another proposal's
                     dict(first, payload=dict(first["payload"], answer="Other"), restore=restore),  # other content
@@ -159,17 +162,26 @@ class DecisionsTest(ServerBase):
         status, out3 = self.post(dict(first, restore=restore))
         self.assertEqual(status, 200)
         p = out3["decision"]["of.payload"]
-        self.assertEqual((p["restored"], p["supersedes"], p["accepted_at"]), (True, later["id"], got["accepted_at"]))
+        self.assertEqual((p["restored"], p["supersedes"], p["accepted_at"]), (True, None, got["accepted_at"]))
         self.assertEqual((p["seq"], p["receipt_seq"]), (2, 1))              # 1 is held: the next, one order kept
         self.assertNotEqual(p["receipt"], got["receipt"])                    # a new receipt for its new seq
         with self.app.store.conn() as c:
-            self.assertEqual(c.execute("SELECT state FROM decisions WHERE proposal = ?", (later["id"],)).fetchone()[0],
-                             "superseded")
             self.assertEqual(c.execute("SELECT next_seq FROM decision_orgs").fetchone()[0], 3)
         status, out4 = self.post(proposal(answer="Again"))                 # it holds the stream from then on
         self.assertEqual((status, out4["accepted"]["of.payload"]["proposal"]), (409, first["id"]))
-        status, out5 = self.post(later)                                    # a resend of the superseded one
-        self.assertEqual((status, out5["accepted"]["of.payload"]["proposal"]), (409, first["id"]))
+
+    def test_a_restoration_over_a_decided_stream_is_refused(self):
+        D.turn_on(self.app, "ofb")
+        first = proposal()
+        got = self.post(first)[1]["decision"]["of.payload"]
+        self.lose_the_disk()
+        later = proposal(answer="No, do not apply it")
+        self.assertEqual(self.post(later)[0], 200)                          # decided again after the loss
+        status, out = self.post(dict(first, restore={k: got[k] for k in ("seq", "stream_version", "accepted_at",
+                                                                         "receipt")}))
+        self.assertEqual((status, out["accepted"]["of.payload"]["proposal"]), (409, later["id"]))
+        with self.app.store.conn() as c:
+            self.assertEqual(c.execute("SELECT count(*) FROM decisions WHERE state = 'accepted'").fetchone()[0], 1)
 
     def test_a_restoration_with_a_free_seq_keeps_it(self):
         D.turn_on(self.app, "ofb")

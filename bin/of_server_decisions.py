@@ -18,8 +18,10 @@ server's sequence for the organization. Step 1 has one kind, `answer`: the strea
   version, the time and the proposal's content. A restoration (a proposal resent after this server lost its disk)
   counts only with a receipt this server issued for exactly that proposal (of_secrets-review on PR 614: an unproven
   restore let any machine supersede an accepted answer and set seq at will). It keeps its seq unless another
-  decision of the organization holds that number, then takes the next one; it wins over a later decision on its
-  stream that is no restoration. No new proposal waits for it.
+  decision of the organization holds that number, then takes the next one. It fills only a stream with no
+  decision: a decided stream refuses it with the decision it holds, as any proposal, so the server and every
+  machine's reader keep one answer per stream (of_review on PR 614). Whether a restoration should win over a later
+  decision waits for the client's resend and readers that apply it. No new proposal waits for it.
 - Decisions are off for an organization until `of_server.py decisions --org <org> on` writes its cutover.
 - The answer's text is masked before it is stored, as a relay message is at post.
 """
@@ -327,20 +329,15 @@ def propose(app, m, body, joined, served):
                 raise DecisionError(409, "conflict", "proposal id reused with other content")
             if had[3] == "refused":   # kept without the winner's copy; the stream's accepted one now
                 return 409, _refusal(c, org, had[4])
-            if c.execute("SELECT 1 FROM decisions WHERE proposal = ? AND state = 'superseded'", (pid,)).fetchone():
-                return 409, _refusal(c, org, had[4])   # a restoration took its stream since
             return had[1], json.loads(had[2])
-        cur = c.execute("SELECT proposal, restored FROM decisions WHERE org = ? AND stream = ? AND "
-                        "state = 'accepted'", (org, stream)).fetchone()
-        supersedes = None
-        if cur and not (restore and not cur[1]):
-            # the stream is decided (a restoration loses only to an earlier restoration): refused, with the accepted
+        if c.execute("SELECT 1 FROM decisions WHERE org = ? AND stream = ? AND state = 'accepted'",
+                     (org, stream)).fetchone():
+            # the stream is decided, a restoration's too: refused, with the accepted (one answer per stream, the
+            # same on the server and in every reader)
             c.execute("INSERT INTO proposals VALUES (?,?,?,?,?,?,?,?,?)",
                       (pid, org, stream, sha, "refused", 409, "{}", m["machine_id"], of_events.now_iso()))
             return 409, _refusal(c, org, stream)
-        if cur:   # a restoration wins over a later decision on its stream that is no restoration
-            supersedes = cur[0]
-            c.execute("UPDATE decisions SET state = 'superseded' WHERE proposal = ?", (cur[0],))
+        supersedes = None   # kept in the record's shape; no decision supersedes another in step 1
         nxt = c.execute("SELECT next_seq FROM decision_orgs WHERE org = ?", (org,)).fetchone()[0]
         held_seq = None
         if restore:
