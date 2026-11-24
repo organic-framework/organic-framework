@@ -353,6 +353,14 @@ class HereWordTest(unittest.TestCase):
         self.assertEqual([h[2] for h in of_guard._heredoc_opens(text).values()], ["EOF"])
 
 
+class AnsiHereWordTest(unittest.TestCase):
+    """of_review on PR 637: an ANSI-C part of a heredoc's word is decoded as bash decodes it."""
+
+    def test_an_ansi_c_part_of_a_heredoc_word_is_decoded(self):
+        self.assertEqual(of_guard._here_word("cat <<$'A\\tB'", 4)[:3], (False, True, "A\tB"))
+        self.assertEqual(of_guard._here_word('cat <<$"EOF"', 4)[:3], (False, True, "EOF"))
+
+
 class SplitCommentTest(unittest.TestCase):
     """G-parse (hand-over 6f336a7c; a user organization's structure keeper, message 01a20975-02e4): _split read an
     apostrophe in a comment as a quote's opening, so a later single-quoted text holding a pipe was one unclosed quote
