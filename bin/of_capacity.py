@@ -5281,7 +5281,10 @@ def without_auto_continue(lines):
 
 
 def has_limit_dialog(lines):
-    return LIMIT_DIALOG in " ".join(ANSI.sub("", line).strip() for line in lines)
+    """True when the live dialog at the bottom of the pane contains the stop-and-wait option.
+    On 2026-11-24 a move mistook dialog options quoted in the pane's history for a live limit dialog."""
+    block = live_dialog(lines)
+    return block is not None and any(LIMIT_DIALOG in line for line in block)
 
 
 def live_dialog(lines):
