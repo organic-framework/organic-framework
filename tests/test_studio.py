@@ -734,6 +734,8 @@ class DiagnoseTest(unittest.TestCase):
         named = of_diagnose.label_issue(dict(i, affected=["new_k"]), [lab("new_k", 250)], kf, 300)
         self.assertEqual(named["state"], "open")
         self.assertIn("names new_k, the position it routes to", named["owner_labels_only"])
+        self.assertIn("tells the rule's keeper", named["owner_labels_only"])        # of_architect, 2026-11-24
+        self.assertIn("never asked for", named["owner_labels_only"])
         self.assertNotIn("owner_labels_only", of_diagnose.label_issue(dict(i), [], kf, 300))
 
     def test_a_label_older_than_the_rows_still_holds(self):
