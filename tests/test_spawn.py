@@ -514,6 +514,9 @@ class PositionFolderTest(unittest.TestCase):
             for q in (os.path.dirname(login), login):
                 self.assertEqual(oct(os.stat(q).st_mode & 0o777), "0o700")      # each level made 0700
             self.assertFalse(os.path.exists(os.path.join(state, "a-file.txt")))
+            both = os.path.join(state, "grant.key")   # a denied file not there yet: both rule forms, never a folder
+            self.assertEqual(of_spawn.make_denied_folders([f"Read(/{both})", f"Read(/{both}/**)"], base=state), [])
+            self.assertFalse(os.path.exists(both))
             self.assertFalse(os.path.exists(os.path.join(os.path.realpath(t), "config")))   # outside OF's state
             settings = json.dumps({"sandbox": {"enabled": True},
                                    "permissions": {"deny": [f"Read(/{state}/later/**)"]}})

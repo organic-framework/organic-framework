@@ -756,10 +756,16 @@ def make_denied_folders(deny, extra=(), base=None):
         import of_events
         base = of_events.STATE_DIR
     base = os.path.realpath(base)
-    want = []
+    want, bare = [], set()
+    for r in deny or []:
+        m = re.fullmatch(r"Read\(/(/[^*?\[\]]+?)\)", r or "")
+        if m:
+            bare.add(os.path.normpath(m.group(1)))
     for r in deny or []:
         m = re.fullmatch(r"Read\(/(/[^*?\[\]]+?)/\*\*\)", r or "")
-        if m:
+        # a folder only when no rule names the path itself too: a path not there yet takes both forms, and may be a
+        # file (of_server on PR 642: a denied file that did not exist was made a folder)
+        if m and os.path.normpath(m.group(1)) not in bare:
             want.append(m.group(1))
     want += [x for x in extra or () if x]
     made = []
