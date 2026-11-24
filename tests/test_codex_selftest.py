@@ -45,11 +45,13 @@ class GuardProbeTest(unittest.TestCase):
         seen = {}
 
         def run(argv, input=None, env=None, **kw):
-            seen.update(session=json.loads(input)["session_id"], state=env.get("OF_STATE"))
+            seen.update(session=json.loads(input)["session_id"], state=env.get("OF_STATE"),
+                        detach=env.get("OF_NO_DETACH"))
             return subprocess.CompletedProcess(argv, 0, stdout='{"decision": "deny"}', stderr="")
         self.assertTrue(st.check_guard(DOOR, "/of", run=run)[0])
         self.assertNotEqual(seen["session"], DOOR["session"])
         self.assertTrue(seen["state"] and not os.path.exists(seen["state"]))          # a private state, removed
+        self.assertEqual(seen["detach"], "1")                                         # and no child left writing it
 
 
 class SelftestTest(unittest.TestCase):

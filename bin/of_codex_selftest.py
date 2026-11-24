@@ -179,7 +179,9 @@ def check_guard(door, of_bin, run=subprocess.run, timeout=60):
                                                "sessions/2026/01/01/rollout-of-selftest.jsonl")}
     try:
         r = run([sys.executable, of_bin, "hook", "PreToolUse"], input=json.dumps(payload), capture_output=True,
-                text=True, timeout=timeout, env=dict(os.environ, OF_STATE=state))
+                text=True, timeout=timeout, env=dict(os.environ, OF_STATE=state, OF_NO_DETACH="1"))
+        # OF_NO_DETACH: the hook starts no background ingest or ship, which would write into that folder after it is
+        # removed and leave it in the temp root (of_review on PR 640)
     finally:
         import shutil
         shutil.rmtree(state, ignore_errors=True)
