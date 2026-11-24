@@ -207,6 +207,21 @@ class CodexSeatsTest(unittest.TestCase):
                                         {"home": os.path.join(h, ".codex")}])
         self.assertEqual(roots, [os.path.join(h, ".codex", "sessions"), os.path.join(h, ".codex-b", "sessions")])
 
+    def test_a_seat_is_named_under_home_as_written_even_through_a_link(self):
+        """of_review on PR 638: a seat's resolved path against an unresolved HOME put its copy outside raw/files."""
+        import tempfile
+        from unittest import mock
+        import of_archive
+        with tempfile.TemporaryDirectory() as t:
+            real = os.path.join(t, "real-home")
+            os.makedirs(os.path.join(real, ".codex-b"))
+            link = os.path.join(t, "home")
+            os.symlink(real, link)
+            with mock.patch.object(of_archive, "HOME", link):
+                roots = of_archive.codex_roots([{"home": os.path.join(link, ".codex-b")}])
+            self.assertIn(os.path.join(link, ".codex-b", "sessions"), roots)
+            self.assertFalse(os.path.relpath(roots[-1], link).startswith(".."))
+
     def test_a_rollout_is_codexs_in_whichever_seat_it_lies(self):
         import of_archive
         self.assertEqual(of_archive.harness_of("/h/.codex-b/sessions/2026/11/24/rollout-2026-11-24T10-00-00-a.jsonl"),

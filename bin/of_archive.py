@@ -51,10 +51,13 @@ def codex_roots(seats=None):
         if seats is None:
             import of_accounts
             seats = of_accounts.codex_seats()
+        real_home = os.path.realpath(HOME)
         for s in seats or []:
             home = os.path.realpath(os.path.expanduser(str(s.get("home") or "")))
-            if home.startswith(os.path.realpath(HOME) + os.sep):
-                out.append(os.path.join(home, "sessions"))
+            if home.startswith(real_home + os.sep):
+                # under HOME as it is written, never its resolved form: a copy is kept at the path relative to HOME,
+                # and a resolved one against an unresolved HOME lay outside raw/files (of_review on PR 638)
+                out.append(os.path.join(HOME, os.path.relpath(home, real_home), "sessions"))
     except Exception:  # noqa: BLE001 - no seat list: ~/.codex alone, as before
         pass
     seen, roots = set(), []
