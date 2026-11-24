@@ -1246,10 +1246,10 @@ def continued_in(path):
 
 
 def continuation(dirs, sid, find=find_transcript, hops=5):
-    """Follow terminal handoff records up to the last distinct session, keeping the evidence in order."""
+    """Return the last distinct session, evidence, and whether the chain ended there, or None for no handoff."""
     dirs = tuple(dirs)
     seen, evidence = {sid}, []
-    for _ in range(hops):
+    for step in range(hops + 1):
         paths = [path for d in dirs if (path := find(d, sid))]
         if not paths:
             break
@@ -1259,12 +1259,14 @@ def continuation(dirs, sid, find=find_transcript, hops=5):
         link = continued_in(path)
         if not link:
             break
-        if link[0] in seen:
-            break
-        sid = link[0]
+        successor, _ = link
+        record = f"{path}: continued-in {successor}"
+        if step == hops or successor in seen:
+            return sid, evidence or [record], False
+        sid = successor
         seen.add(sid)
-        evidence.append(f"{path}: continued-in {sid}")
-    return (sid, evidence) if evidence else None
+        evidence.append(record)
+    return (sid, evidence, True) if evidence else None
 
 
 def _mtime(path):
@@ -2652,7 +2654,7 @@ def workplace_edit(text, name, account):
     return out, changed
 
 
-def _registry_session_edit(text, name, session, previous_session):
+def _registry_session_edit(text, name, session, previous_session, on_no_edit=lambda _: None):
     import yaml
 
     def field(node, key):
@@ -2663,37 +2665,61 @@ def _registry_session_edit(text, name, session, previous_session):
         return None, None
 
     _, positions = field(yaml.compose(text, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader)), "positions")
-    for pos in positions.value if isinstance(positions, yaml.SequenceNode) else ():
+    entries = positions.value if isinstance(positions, yaml.SequenceNode) else ()
+    reason = "position is missing from the registry"
+    for i, pos in enumerate(entries):
         _, label = field(pos, "name")
         if label is None or label.value != name:
             continue
         holder_key, holder = field(pos, "holder")
         key, old = field(holder, "session")
-        if not isinstance(old, yaml.ScalarNode) or old.value == session:
+        if not isinstance(old, yaml.ScalarNode) or not old.value or old.tag == "tag:yaml.org,2002:null":
+            reason = "no holder.session value"
+            break
+        if old.value == session:
+            reason = "holder.session already names the successor"
             break
         if previous_session is not None and old.value != previous_session:
-            break  # the keeper has already rebound this position
-        lines = text.split("\n")
-        i = old.start_mark.line
-        prefix = lines[i][:old.start_mark.column]
-        # An alias points back to its definition. Only edit a value written here in the holder block.
-        if (holder_key.start_mark.line < key.start_mark.line == i == old.end_mark.line
-                and _re.fullmatch(r"\s+session:\s*", prefix)):
-            lines[i] = f"{prefix}{session}  # continued-in from {old.value[:8]} (of_capacity)"
-            return "\n".join(lines)
-        break
+            reason = "holder.session has changed"
+            break
+        # Composed aliases point to the definition, which can belong to another field or position.
+        holder_line = text.split("\n")[holder_key.start_mark.line]
+        next_line = entries[i + 1].start_mark.line if i + 1 < len(entries) else float("inf")
+        start, end = old.start_mark.index, old.end_mark.index
+        if (any(field(other, "holder")[1] is holder for j, other in enumerate(entries) if j != i)
+                or "&" in holder_line or "*" in holder_line
+                or not holder_key.start_mark.line <= old.start_mark.line < next_line
+                or not key.end_mark.index <= start < end <= holder.end_mark.index):
+            reason = "holder or session uses an anchor or alias"
+            break
+        # Keep flow delimiters outside the scalar's span. A block value's comment described the old session: it is
+        # replaced by where the new one came from.
+        trailing_newline = "\n" if text[end - 1] == "\n" else ""
+        rest = "" if trailing_newline else text[end:].partition("\n")[0]
+        if not holder.flow_style and (not rest.strip() or rest.lstrip().startswith("#")):
+            return (text[:start] + session + f"  # continued-in from {old.value[:8]} (of_capacity)" + trailing_newline
+                    + text[end + len(rest):])
+        return text[:start] + session + trailing_newline + text[end:]
+    on_no_edit(reason)
     return text
 
 
+def _registry_diff(text, new, rel):
+    import difflib
+
+    # Unified diff needs a marker when a context or changed line has no line ending.
+    lines = difflib.unified_diff(text.splitlines(True), new.splitlines(True), f"a/{rel}", f"b/{rel}")
+    return "".join(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n" for line in lines)
+
+
 def propose_registry(registry_file, name, account=None, workplace=None, out_dir=None, session=None,
-                     previous_session=None):
+                     previous_session=None, on_no_edit=lambda _: None):
     """The registry change a move implies, as a unified diff for the organization's structure keeper
     (single writer, of_architect 2026-11-06): `of capacity` never edits a registry. `workplace` replaces
     the holder.workplace value (a new runtime or pane). `session` replaces holder.session if it still matches
     `previous_session` when supplied. The account is runtime state, not structure (both
     registries dropped it on 2026-11-06): an account-only move implies no registry change. Returns
     (diff text, path written or None); empty diff when nothing changes or the result is not valid YAML."""
-    import difflib
     with open(registry_file) as fh:
         text = fh.read()
     new = text
@@ -2713,12 +2739,14 @@ def propose_registry(registry_file, name, account=None, workplace=None, out_dir=
         try:
             import yaml
             if session:
-                new = _registry_session_edit(new, name, session, previous_session)
+                new = _registry_session_edit(new, name, session, previous_session, on_no_edit)
             yaml.safe_load(new)
-        except Exception:
+        except Exception as e:
             new = text
+            if session:
+                on_no_edit(f"could not validate registry YAML: {e}")
     rel = "registry/positions.yaml" if registry_file.endswith("registry/positions.yaml") else os.path.basename(registry_file)
-    diff = "".join(difflib.unified_diff(text.splitlines(True), new.splitlines(True), f"a/{rel}", f"b/{rel}"))
+    diff = _registry_diff(text, new, rel)
     path = None
     if diff and out_dir:
         of_events.own_dir(out_dir)
@@ -3526,13 +3554,24 @@ def move(*args, **kwargs):
             undo()
 
 
-def _check_pane_session(name, sid, sessions):
+def _check_pane_session(name, sid, sessions, exited=False):
     followed = continuation(sessions, sid)
     if followed:
-        successor, evidence = followed
-        raise MoveError(f"{name}: session {sid[:8]} continued in {successor} ({'; '.join(evidence)})")
-    if any(s.get("kind") == "bg" and s["session"] == sid for xs in sessions.values() for s in xs):
-        raise MoveError(f"{name}: session {sid[:8]} runs in the background daemon (kind bg), outside the pane")
+        successor, evidence, resolved = followed
+        if not resolved:
+            prefix = "the old pane has exited. " if exited else ""
+            raise MoveError(f"{name}: {prefix}the continuation of session {sid[:8]} is unresolved at {successor} "
+                            f"({'; '.join(evidence)})")
+        detail = f"session {sid[:8]} continued in {successor} ({'; '.join(evidence)})"
+    elif any(s.get("kind") == "bg" and s["session"] == sid for xs in sessions.values() for s in xs):
+        successor = sid
+        detail = f"session {sid[:8]} runs in the background daemon (kind bg), outside the pane"
+    else:
+        return
+    if exited:
+        raise MoveError(f"{name}: the old pane has exited and the conversation goes on in {successor}. "
+                        "Nothing was lost and nothing is to be resumed.")
+    raise MoveError(f"{name}: {detail}")
 
 
 def _move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, registry_file=None, place=None,
@@ -3801,7 +3840,7 @@ def _move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, 
     except MoveError as e:
         raise MoveError(f"{name}: {e} ({pane}); the hand-over note was not used", stuck=e.stuck)
     # The pane could have handed off during the move. Check its final transcript before copying or resuming.
-    _check_pane_session(name, sid, sessions)
+    _check_pane_session(name, sid, {d: live_sessions(d) for d in config_dirs()}, exited=True)
     # 2. the pane to resume in
     if runtime == "herdr" or (runtime == "zellij" and not place):
         new_pane = pane
@@ -4671,8 +4710,8 @@ def stray_holder(e, live_dir, args, started_ms, prepared):
 
 def reboot_restore(positions, only=None, dry_run=False, log=print, of_bin=None, plan_path=None, place_of=None,
                    transcript_sources=None):
-    """Put /private/tmp back and resume every recorded session that is not live, one after another, production
-    first. A session that fails is reported and the rest go on; run it again to retry the failed ones.
+    """Put /private/tmp back and resume recorded conversations that are down, following any handoffs.
+    A session that fails is reported and the rest go on; run it again to retry the failed ones.
     place_of(position) -> (workspace label, tab label): where a position's new pane goes when herdr did not bring
     its pane back (its unit's workspace and its system's tab, as `of spawn` places it); `of apply` tidies after."""
     plan = load_reboot_plan(plan_path)
@@ -4683,14 +4722,49 @@ def reboot_restore(positions, only=None, dry_run=False, log=print, of_bin=None, 
         r = put_back_tree(keep, plan.get("tmp_root") or agent_tmp_root())
         log(f"{plan.get('tmp_root')}: {r['restored']} file(s) put back, {r['there']} were still there")
     by_name = {p["name"]: p for p in positions}
-    live = {x["session"]: (d, x) for d in config_dirs() for x in live_sessions(d)}
+    dirs = config_dirs()
+    live = {x["session"]: (d, x) for d in dirs for x in live_sessions(d)}
+    entries = [e for e in plan["entries"] if not only or e["name"] in only or (e.get("position") or "") in only]
+    carry = plan.get("kind") == "carry"
+    by_session = {e["session"]: e for e in (entries if carry else plan["entries"])}
+    # Carry's selection also excludes entries that failed its account and organization checks.
+    excluded = {e["session"] for e in plan["entries"]} - by_session.keys() if carry else set()
+    handoffs, places = {}, {}
+    for e in entries:
+        if followed := continuation(dirs, e["session"]):
+            handoffs[e["session"]] = followed
+            successor, _, resolved = followed
+            if resolved and (successor not in places or (e.get("pane") and not places[successor].get("pane"))):
+                places[successor] = e  # The successor may appear earlier in the plan.
     prepared = calendar.timegm(time.strptime(plan["prepared_at"][:19], "%Y-%m-%dT%H:%M:%S"))
-    ts, done, claimed = _iso(time.time()), [], set()
-    for e in plan["entries"]:
-        if only and e["name"] not in only and (e.get("position") or "") not in only:
-            continue
-        if e["session"] in live and plan.get("kind") == "carry":  # never stopped for a carry: the original may be
-            d, _ = live[e["session"]]                                # this one (a rehearsal's copy coming back)
+    ts, done, claimed, handled = _iso(time.time()), [], set(), set()
+    for e in entries:
+        if followed := handoffs.get(e["session"]):
+            successor, evidence, resolved = followed
+            detail = f"session {e['session'][:8]} continued in {successor[:8]} ({evidence[0]})"
+            if not resolved:
+                reason = f"{detail}; continuation unresolved at {successor}"
+                log(f"{e['name']}: NOT resumed: {reason}")
+                done.append((e["name"], "failed", reason))
+                continue
+            if successor in excluded:
+                reason = f"{detail}; successor is outside the selected carry entries"
+                log(f"{e['name']}: NOT resumed: {reason}")
+                done.append((e["name"], "failed", reason))
+                continue
+            log(f"{e['name']}: {detail}; {successor[:8]} is resumed instead")
+            done.append((e["name"], "continued", successor))
+            e = by_session.get(successor) or dict(e, session=successor)
+        if source := places.get(e["session"]):
+            if e["session"] in handled:
+                continue
+            handled.add(e["session"])
+            if not e.get("pane"):
+                e = dict(e, **{k: source[k] for k in ("pane", "workspace", "tab") if source.get(k)})
+            if not e.get("position") and source.get("position"):
+                e = dict(e, position=source["position"])   # the daemon's own entry names no position: it is the pane's
+        if e["session"] in live and carry:  # A carry leaves the original running, which may be the one already here.
+            d, _ = live[e["session"]]
             log(f"{e['name']}: session {e['session'][:8]} already runs here on {short(d)}; left alone")
             done.append((e["name"], "running", None))
             continue
@@ -4728,7 +4802,7 @@ def reboot_restore(positions, only=None, dry_run=False, log=print, of_bin=None, 
         run_of_apply(of_bin, log, timeout=180)
     failed = [n for n, s, _ in done if s == "failed"]
     if not dry_run:
-        of_events.emit("capacity_carry_restored" if plan.get("kind") == "carry" else "capacity_reboot_restored",
+        of_events.emit("capacity_carry_restored" if carry else "capacity_reboot_restored",
                        {"resumed": sum(1 for _, s, _ in done if s == "resumed"), "failed": failed}, position=actor())
         if not failed and not only and plan_path is None:  # a restart's own plan; a carry bundle stays as it is
             if plan.get("herdr_resume_before") is not False and "herdr_resume_before" in plan:
@@ -4736,7 +4810,8 @@ def reboot_restore(positions, only=None, dry_run=False, log=print, of_bin=None, 
                 log("herdr: resume_agents_on_restore back on")
             os.replace(_reboot_current(), os.path.join(REBOOT_DIR, f"done-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"))
     log(f"{sum(1 for _, s, _ in done if s == 'resumed')} resumed, {sum(1 for _, s, _ in done if s == 'running')} "
-        f"already running, {len(failed)} failed{': ' + ', '.join(failed) if failed else ''}")
+        f"already running, {sum(1 for _, s, _ in done if s == 'continued')} continued, "
+        f"{len(failed)} failed{': ' + ', '.join(failed) if failed else ''}")
     away = [f"{n} ({r['cwd']}, start folder {r['untrusted_start']})" for n, st, r in done
             if st == "resumed" and isinstance(r, dict) and r.get("untrusted_start")]
     if away:  # of_review on PR 524: the live checkout, the hand-over's incident, said only in the log above
@@ -7475,23 +7550,45 @@ def _movable_positions(positions, dirs, sessions, dry_run, log):
         sid = ((p.get("holder") or {}).get("session") or "").strip()
         followed = continuation(dirs, sid) if sid else None
         if followed:
-            successor, evidence = followed
+            successor, evidence, resolved = followed
+            if not resolved:
+                log(f"balance: {name}'s session {sid[:8]} has an unresolved continuation at {successor} "
+                    f"({evidence[0]}); not moved")
+                continue
             log(f"balance: {name}'s session {sid[:8]} continued in {successor[:8]} ({evidence[0]}); "
                 "not moved until the registry names it")
             if dry_run or successor not in live:
                 continue
             event_id = of_events.stable_id("holder_changed_continued_in", name, sid, successor)
-            of_events.emit("holder_changed", {"position": name, "previous_session": sid, "new_session": successor,
-                                             "evidence": "continued-in: " + "; ".join(evidence),
-                                             "reason": "continued-in"},
-                           event_id=event_id, position=name, session=successor, org=p.get("_org"))
+            # SessionStart can record the same handoff before balance sees the transcript.
+            try:
+                recorded = of_events._conn().execute(
+                    "SELECT 1 FROM event WHERE name = 'of.holder_changed' "
+                    "AND json_extract(payload, '$.previous_session') = ? "
+                    "AND json_extract(payload, '$.new_session') = ? LIMIT 1", (sid, successor)).fetchone()
+            except (OSError, sqlite3.Error) as e:
+                log(f"balance: {name}: could not check whether the handoff was recorded ({e})")
+            else:
+                if not recorded:
+                    of_events.emit("holder_changed", {"position": name, "previous_session": sid, "new_session": successor,
+                                                     "evidence": "continued-in: " + "; ".join(evidence),
+                                                     "reason": "continued-in"},
+                                   event_id=event_id, position=name, session=successor, org=p.get("_org"))
+
+            def no_proposal(reason):
+                log(f"balance: {name}: no registry proposal ({reason}); "
+                    f"the structure keeper rebinds holder.session to {successor}")
+
             if p.get("_root"):
                 registry = os.path.join(p["_root"], "registry", "positions.yaml")
                 work = os.path.join(STATE_DIR, "capacity", "moves", f"continued-in-{event_id}")
                 try:
-                    propose_registry(registry, name, out_dir=work, session=successor, previous_session=sid)
+                    propose_registry(registry, name, out_dir=work, session=successor, previous_session=sid,
+                                     on_no_edit=no_proposal)
                 except OSError as e:
-                    log(f"balance: could not propose the holder change for {name}: {e}")
+                    no_proposal(e)
+            else:
+                no_proposal("no registry path")
         elif sid in background:
             log(f"balance: {name}'s session {sid[:8]} runs in the background daemon (kind bg), outside the pane; "
                 "not moved")

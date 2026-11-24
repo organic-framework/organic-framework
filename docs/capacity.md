@@ -97,7 +97,9 @@ Plugins, MCP servers and hooks are per config dir. Before the first move to an a
 
 In Claude Code 2.1.331 (observed 2026-11-24), a session in a herdr pane can continue in the background daemon. The pane stays alive and shows the conversation, and the daemon writes to a new session's transcript. The old transcript ends with a `continued-in` record naming the new session.
 
-The balancer follows up to five such records. When the successor is live, it records one `of.holder_changed` event with the transcript evidence and writes a `registry.diff` under `capacity/moves/continued-in-<event id>/` in the OF state directory. The structure keeper can apply the proposed `holder.session` change. Capacity never moves or restarts the old session, which would create a second copy of the conversation. It also leaves a live `kind: bg` session in its daemon, outside the pane.
+The balancer follows up to five such records. When it reaches a live successor, it records an `of.holder_changed` event with the transcript evidence if the handoff is new to the event store. It proposes the `holder.session` change in `registry.diff` under `capacity/moves/continued-in-<event id>/` in the OF state directory. If it cannot propose the rebind, it logs the reason and the new session ID for the structure keeper. The balancer holds the old pane back and leaves a live `kind: bg` session in its daemon.
+
+Reboot and carry restores follow the same handoff. When the successor's transcript is available, they resume it once, using the old session's pane and placement when the successor has no pane of its own. The old session is never resumed. A cycle or a chain that continues past the hop limit is reported as unresolved and the restore skips it.
 
 ### From another terminal multiplexer
 
