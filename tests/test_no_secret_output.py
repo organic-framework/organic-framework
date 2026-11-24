@@ -28,6 +28,8 @@ REVIEWED = {
     ("of_server.py", 'fh.write(secret_key(dict(cfg, secret_key_file=None, tenant_key_create=False)).hex() + "\\n")'):
         "export-secret-key: into a new mode-600 file, never printed",
     ("of_server.py", 'fh.write(secrets.token_hex(32) + "\\n")'): "a new tenant key into a mode-600 file",
+    ("of_keychain.py", "fh.write(pw)"):
+        "Muse's keychain password: into a new mode-600 file made with O_EXCL and O_NOFOLLOW, never printed",
     ("of_server.py", 'fh.write(secrets.token_urlsafe(32) + "\\n")'):
         "clickhouse-init: a new password into a new mode-600 file, never printed",
     ("of_server.py", 'fh.write(secrets.token_hex(16) + "\\n")  # not a secret: it tells one setting from the next'):

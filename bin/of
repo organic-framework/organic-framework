@@ -3254,7 +3254,7 @@ def cmd_subagent(args):
             # 652, through of_server): the owner's act, in a plain terminal
             raise OfError("of subagent muse-login is the owner's: run it in a plain terminal")
         try:
-            return of_subagent.muse_login()
+            return of_subagent.muse_login(rekey=args.rekey)
         except of_subagent.SubagentError as e:
             raise OfError(str(e))
     if args.action == "selftest":
@@ -9060,6 +9060,7 @@ def build_parser():
     sa.add_argument("--work", help="the work the run serves, for its spend")
     sa.add_argument("--from", dest="from_", help="the calling position, when this session cannot tell")
     sa.add_argument("--json", action="store_true")
+    sa.add_argument("--rekey", action="store_true", help="muse-login: give Muse's own keychain a password of OF's")
     sa.set_defaults(fn=cmd_subagent)
     ft = sub.add_parser("fit", help="mandate fit: does the work a position hands out belong to the receiver? "
                         "(bin/of_fit.py; replay records nothing)")
