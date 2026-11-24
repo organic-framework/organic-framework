@@ -16,6 +16,7 @@ URL=https://github.com/organic-framework/organic-framework.git
 NET=https
 LIVE=$HOME/.local/share/of/live
 PY=${OF_PYTHON:?the Python OF runs on, set by the agent}
+SITE=$LIVE/.git/of-site   # PyYAML, copied there by of live setup
 UNITS="dev.organic-framework.server dev.organic-framework.relay dev.organic-framework.listen"
 
 g() {  # $1: the transports allowed, empty for none
@@ -121,10 +122,13 @@ main() {
   fi
 
   live file fetch -q --no-tags --no-write-fetch-head "$P" refs/heads/main
-  # -E: no PYTHON variables. Not -I: on a Mac, PyYAML lives in the user's site folder, which every hook already
-  # imports from (of_review on PR 628). -P: not the current folder first. The cache prefix, an empty private folder: a
-  # .pyc planted in a __pycache__ of the checkout is never loaded (-B alone only stops writing them)
-  "$PY" -E -P -B -X pycache_prefix="$P/pycache" "$LIVE/bin/of" protected ff "$LIVE" --to "$tip" 2>&1 || rc=$?
+  # -I: no user site (a folder sessions may write) and no PYTHON variables. On a Mac PyYAML lives in that user site, so
+  # `of live setup` copies it into $SITE, inside the checkout's .git, which G40 keeps; only that folder is added to the
+  # path (of_secrets-review on PR 629). The cache prefix, an empty private folder: a .pyc planted in a __pycache__ of
+  # the checkout is never loaded (-B alone only stops writing them)
+  "$PY" -I -B -X pycache_prefix="$P/pycache" -c \
+    'import runpy, sys; sys.path.insert(0, sys.argv[1]); sys.argv = sys.argv[2:]; runpy.run_path(sys.argv[0], run_name="__main__")' \
+    "$SITE" "$LIVE/bin/of" protected ff "$LIVE" --to "$tip" 2>&1 || rc=$?
   now=$(live '' rev-parse --verify 'HEAD^{commit}')
   if [ "$now" = "$old" ]; then
     echo "UPDATE: not moved, at $old (of protected ff ended $rc, above)"
