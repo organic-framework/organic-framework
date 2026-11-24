@@ -7763,7 +7763,10 @@ def cmd_live(args):
     import of_live
     if args.action in ("setup", "switch"):
         import of_asks_answer
-        if of_asks_answer.not_the_owner():   # it writes every account's hooks and OF's units: the owner's alone
+        # it writes every account's hooks and OF's units: the owner's alone. OF_AUTOMATION marks a process OF or an
+        # agent started, never the owner's own terminal (of_review on PR 628, through of_server); G31 refuses both acts
+        # from agents as well
+        if of_asks_answer.not_the_owner() or os.environ.get("OF_AUTOMATION"):
             raise OfError(f"of live {args.action} is the owner's: it rewrites every account's hooks and OF's services. "
                           f"The owner runs `of live {args.action}` in a plain terminal")
     try:

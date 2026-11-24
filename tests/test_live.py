@@ -127,6 +127,21 @@ class Switch(unittest.TestCase):
         moved.assert_not_called()          # ~/.local/bin/of is left as it was
 
 
+class Owner(unittest.TestCase):
+    def test_setup_and_switch_refuse_a_process_of_automation_started(self):
+        env = dict(os.environ, OF_AUTOMATION="1")
+        for k in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "OF_POSITION"):
+            env.pop(k, None)
+        for act in ("setup", "switch"):
+            # with a terminal on stdin, which the owner's test takes as his (script gives it one)
+            cmd = [sys.executable, os.path.join(ROOT, "bin", "of"), "live", act]
+            cmd = (["script", "-q", "/dev/null"] + cmd) if sys.platform == "darwin" else \
+                ["script", "-qec", " ".join(cmd), "/dev/null"]
+            r = subprocess.run(cmd, env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+            self.assertNotEqual(r.returncode, 0, act)
+            self.assertIn("is the owner's", r.stdout + r.stderr, act)
+
+
 class Request(unittest.TestCase):
     def test_a_request_never_follows_a_link_or_waits_on_a_fifo(self):
         with tempfile.TemporaryDirectory() as t:
