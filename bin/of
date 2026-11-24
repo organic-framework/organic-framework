@@ -8928,7 +8928,8 @@ def cmd_capacity(args):
         training.update(of_capacity.training_readings_by_seat())
     except Exception:  # noqa: BLE001 - a store that cannot be read: the lines say "not read"
         training = {}
-    other = of_capacity.format_other(seats, of_capacity.muse_status(), training)
+    other = of_capacity.format_other(seats, of_capacity.muse_status(probe=not args.no_probe, fresh=args.fresh),
+                                     training)
     if other:
         print(other)
     for r in rows:

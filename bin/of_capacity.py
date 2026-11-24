@@ -880,9 +880,99 @@ def codex_seat_for(rows, public=True, training=None):
     return best
 
 
-def muse_status(path=None):
-    """Muse (Meta): its model and contributor mode, from its settings; None when it is not installed. Muse reports no
-    limits, so there is nothing to probe: a run that hits one is the first sign."""
+def muse_usage(runner=subprocess.run, timeout=60):
+    """Muse's subscription allowance from `muse usage --json` (no model turn): {plan, windows: {window|weekly:
+    {utilization, resets_at}}, observed_at}, {"error": …} when it gives none, None off macOS. It runs the way a Muse run
+    does (of_subagent.command and sandbox_profile): a fresh home whose keychain is Muse's own login, inside the run's
+    outer sandbox, so the owner's keychain is never reached; on another system a Muse run is refused, so is this.
+    "window" is Muse's own name for its short window (it read 4h 37m to its reset on 2026-11-24): no length is assumed
+    (of_architect, 2026-11-24: Muse as review overflow, "a run goes to it only with headroom")."""
+    if sys.platform != "darwin":
+        return None
+    import of_subagent
+    try:
+        with tempfile.TemporaryDirectory(prefix="of-muse-usage-") as run_dir:
+            work = os.path.join(run_dir, "work")
+            os.makedirs(work)
+            prompt = os.path.join(run_dir, "prompt.md")
+            with open(prompt, "w") as fh:
+                fh.write("usage\n")
+            argv, env, reads, writes = of_subagent.command("muse", "read", run_dir, work, prompt,
+                                                           os.path.join(run_dir, "answer.txt"), None, None, None, None)
+            prof = os.path.join(run_dir, "sandbox.sb")
+            with open(prof, "w") as fh:
+                fh.write(of_subagent.sandbox_profile(run_dir, reads, writes))
+            r = runner(["/usr/bin/sandbox-exec", "-f", prof, argv[0], "usage", "--json"], env=env, capture_output=True,
+                       text=True, timeout=timeout, cwd=work, stdin=subprocess.DEVNULL)
+    except (of_subagent.SubagentError, OSError, subprocess.SubprocessError) as e:
+        return {"error": str(e)[:300]}
+    try:
+        d = json.loads(r.stdout or "")
+        a = d["allowance"]
+        if not isinstance(a, dict):
+            raise TypeError
+    except (ValueError, KeyError, TypeError):
+        return {"error": ((r.stderr or r.stdout or "").strip() or f"muse usage: exit {r.returncode}")[-300:]}
+    windows = {}
+    for k in ("window", "weekly"):
+        w = a.get(k) or {}
+        if isinstance(w, dict) and isinstance(w.get("usedPercent"), (int, float)):
+            at = w.get("resetsAtMs")
+            windows[k] = {"utilization": round(w["usedPercent"]),
+                          "resets_at": _iso(at / 1000) if isinstance(at, (int, float)) else None}
+    seen = a.get("asOfMs")
+    return {"plan": a.get("tier"), "windows": windows, "reason": d.get("reason"),
+            "observed_at": _iso(seen / 1000 if isinstance(seen, (int, float)) else time.time())}
+
+
+def _muse_usage_path():
+    return os.path.join(STATE_DIR, "capacity", "muse-usage.json")
+
+
+def muse_reading(probe=True, fresh=False, now=None, usage=None):
+    """Muse's last allowance reading, read again when older than PROBE_EVERY_MIN or `fresh`; kept in a file of its own
+    beside the cache (not in it: the balancer's pass saves the cache whole), as the other state files are written."""
+    now = now or time.time()
+    try:
+        last = json.loads(of_events.read_own(_muse_usage_path(), cap=1 << 20))
+    except (OSError, ValueError):
+        last = None
+    seen = _ts((last or {}).get("observed_at") or "") or 0
+    if probe and (fresh or now - seen >= PROBE_EVERY_MIN * 60):
+        got = (usage or muse_usage)()
+        if got and not got.get("error"):
+            of_events.own_dir(os.path.dirname(_muse_usage_path()))
+            of_events.write_new(_muse_usage_path(), json.dumps(got))
+            return got
+        if got and not last:
+            return got
+    return last
+
+
+def muse_room(reading=None, now=None, window_pct=95, week_pct=90):
+    """True when Muse's reading leaves room in both its windows (under the thresholds the Claude accounts' asks use:
+    95% of the short window, 90% of the week), False when either is at or past it, None with no usable reading (none,
+    an error, or one older than two probe periods): the caller then sends no run there on this reading."""
+    now = now or time.time()
+    r = reading if reading is not None else muse_reading(probe=False)
+    if not r or r.get("error"):
+        return None
+    if now - (_ts(r.get("observed_at") or "") or 0) > 2 * PROBE_EVERY_MIN * 60:
+        return None
+    w = r.get("windows") or {}
+    if not w:
+        return None
+    for k, cap in (("window", window_pct), ("weekly", week_pct)):
+        x = w.get(k) or {}
+        reset = _ts(x.get("resets_at") or "")
+        if x.get("utilization") is not None and x["utilization"] >= cap and not (reset and reset <= now):
+            return False
+    return True
+
+
+def muse_status(path=None, probe=False, fresh=False, usage=None):
+    """Muse (Meta): its model and contributor mode, from its settings, and its last allowance reading (muse_reading;
+    read again only with `probe`, as `of capacity status` does); None when it is not installed."""
     path = path or os.path.expanduser("~/.config/muse/settings.json")
     if not shutil.which("muse") and not os.path.isfile(path):
         return None
@@ -891,7 +981,11 @@ def muse_status(path=None):
             s = json.load(fh) or {}
     except (OSError, ValueError):
         s = {}
-    return {"model": s.get("model") or "default", "contributor_mode": s.get("contributor_mode_enabled")}
+    out = {"model": s.get("model") or "default", "contributor_mode": s.get("contributor_mode_enabled")}
+    r = muse_reading(probe=probe, fresh=fresh, usage=usage)
+    if r:
+        out.update({k: r.get(k) for k in ("plan", "windows", "observed_at", "error") if r.get(k) is not None})
+    return out
 
 
 TRAINING_HARNESSES = ("codex", "muse")
@@ -1143,7 +1237,7 @@ def training_verified(harness, readings=None, cards=None, docs=None, org=None, s
 def sync_muse_training(latest=None, path=None, emit=None):
     """Record Muse's reading when its settings' contributor mode (Meta trains on the sessions) differs from the latest
     one recorded; the balancer runs it. Returns what it recorded, or None."""
-    m = muse_status(path)
+    m = muse_status(path, probe=False)
     if not m or m.get("contributor_mode") not in (True, False):
         return None
     want = "on" if m["contributor_mode"] else "off"
@@ -1183,7 +1277,14 @@ def format_other(codex, muse, training=None):
     if muse is not None:
         mode = {True: "contributor mode ON: its sessions go to Meta for training",
                 False: "contributor mode off"}.get(muse.get("contributor_mode"), "contributor mode unknown")
-        out.append(f"{'muse':<18} {str(muse.get('model')):<36} limits not reported; {mode}"
+        w = muse.get("windows") or {}
+        if w:
+            limits = ", ".join(f"{name} {_pct_text(w[k].get('utilization'))} (resets {_local(w[k].get('resets_at'), True)})"
+                               for k, name in (("window", "window"), ("weekly", "week")) if k in w)
+            limits += f"  (read {_local(muse.get('observed_at'), True)} local)"
+        else:
+            limits = f"no limits read: {muse['error']}" if muse.get("error") else "limits not read"
+        out.append(f"{'muse':<18} {str(muse.get('plan') or muse.get('model')):<36} {limits}; {mode}"
                    + _training_text((training or {}).get("muse")))
     if out:
         out.insert(0, "other harnesses (not targets for Claude sessions):")
