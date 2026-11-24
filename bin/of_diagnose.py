@@ -118,7 +118,7 @@ def labels(rows):
 
 def unlabelled(i):
     """Issue I as a rule raised it, before any label: open, with no label, wrong remedy or uncounted label."""
-    for k in ("label", "wrong_remedy", "label_not_counted"):
+    for k in ("label", "wrong_remedy", "label_not_counted", "owner_labels_only"):
         i.pop(k, None)
     i["state"] = "open"
     return i
@@ -131,7 +131,12 @@ def label_issue(i, history, keeper, now, carry=()):
     apply_label(i, lab, now, carry)
     if skipped:
         i["label_not_counted"] = {"by": skipped.get("by"), "label": skipped.get("label"), "ts": skipped.get("ts"),
-                                  "why": may_label(skipped.get("by"), i, keeper)}
+                                  "why": may_label(skipped.get("by"), i, _keeper_of(keeper, skipped))}
+    why = owner_only(i)
+    if why:
+        i["owner_labels_only"] = why
+    else:
+        i.pop("owner_labels_only", None)
     return i
 
 
@@ -171,6 +176,24 @@ def label_history(rows, sessions=None):
     return out
 
 
+def keeper_then(model, context, keeper):
+    """fn(label) -> the structure keeper when the label was written: context's keeper_at(system, t) on the creating
+    system, else (history unknown) the keeper now, KEEPER."""
+    at = (context or {}).get("keeper_at")
+    creating = next((sid for sid, s in (model.get("systems") or {}).items()
+                     if s.get("kind") == "creating" and s.get("keeper")), None)
+    memo = {}
+
+    def keeper_for(lab):
+        if not (at and creating):
+            return keeper
+        t = epoch(lab.get("ts")) or 0
+        if t not in memo:
+            memo[t] = at(creating, t) or keeper
+        return memo[t]
+    return keeper_for
+
+
 def session_writer(model, rows):
     """fn(session id) -> the position holding it: the registry's holders first, then the sessions the rows name with a
     registered position (of_model.session_positions), read only when a label names a session the holders do not."""
@@ -198,17 +221,35 @@ def may_label(by, i, keeper):
         return None
     if by in (i.get("affected") or []):
         return f"the issue names {by}, so only the owner labels it"
-    if by in (keeper, i.get("decider_position")):
+    if by == keeper or by in deciders(i):
         return None
     return (f"{by} is neither the owner, the structure keeper ({keeper or 'none'}) nor the position the issue routes to"
             f" ({i.get('decider_position') or 'none'})")
 
 
+def deciders(i):
+    """The positions issue I routes to: `decider_position`, which joins a shared work's doers with ", "."""
+    return [x for x in str(i.get("decider_position") or "").split(", ") if x]
+
+
+def owner_only(i):
+    """Why only the owner can label issue I though it routes to a position (the issue names its decider), or None.
+    Its routing stays: the decider still brings the remedy as a diff, which reaches the owner anyway."""
+    named = [x for x in deciders(i) if x in (i.get("affected") or [])]
+    return f"it names {', '.join(named)}, the position it routes to" if named and i.get("decider") != "owner" else None
+
+
+def _keeper_of(keeper, x):
+    """KEEPER: a name, or fn(label) -> the structure keeper when label X was written (diagnose's keeper_for)."""
+    return keeper(x) if callable(keeper) else keeper
+
+
 def counted_label(history, i, keeper):
-    """(the latest label in HISTORY that counts on issue I, or None; the latest that does not, when newer than it)."""
+    """(the latest label in HISTORY that counts on issue I, or None; the latest that does not, when newer than it).
+    KEEPER: the structure keeper, or fn(label) -> the keeper when it was written."""
     lab = skipped = None
     for x in history or ():
-        if may_label(x.get("by"), i, keeper) is None:
+        if may_label(x.get("by"), i, _keeper_of(keeper, x)) is None:
             lab, skipped = x, None
         else:
             skipped = x
@@ -314,6 +355,7 @@ def diagnose(model, rows, a, b, cat=None, context=None, label_rows=None):
                          session_writer(model, rows))
     issues, status = [], []
     keeper = structure_keeper(model)
+    keeper_for = keeper_then(model, context, keeper)
     for name, spec in (cat.get("rules") or {}).items():
         needs = spec.get("needs") or []
         if isinstance(needs, dict):   # a rule in parts: run the parts whose inputs are present
@@ -354,7 +396,7 @@ def diagnose(model, rows, a, b, cat=None, context=None, label_rows=None):
                 i["decider_position"] = decider_position(model, i, keeper)
                 route_to_unit(model, i, keeper)
                 mark_unconfirmed(model, i)
-                label_issue(i, labs.get(i["issue_id"]), keeper, b, carry)   # after routing: who decides it may label
+                label_issue(i, labs.get(i["issue_id"]), keeper_for, b, carry)   # after routing: who decides it may label
             row["issues"] = sum(i["state"] == "open" for i in found)
             row["status"] = "fired" if row["issues"] else ("blocked" if extra else "quiet")
             row["missing"] = extra

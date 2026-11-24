@@ -890,6 +890,7 @@ class Data:
                        if p in names or not unit}
         repo = getattr(self, "repo", None)
         ctx = {"keeper_since": lambda sysid, k: of_model.keeper_since(repo, sysid, k),
+               "keeper_at": of_model.keeper_reader(repo),   # a label's keeper, at its time
                "code_activity": self.code_activity} if repo else {"code_activity": self.code_activity}   # RFC 0007
         diag = of_diagnose.diagnose(full, self.rows, self.a, self.b, context=ctx,
                                     label_rows=self.history(("of.issue_labelled",)))

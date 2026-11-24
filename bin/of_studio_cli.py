@@ -244,6 +244,7 @@ def _open_issues(args, org_name, rows, b):
     org, m, rows = _model(argparse.Namespace(org=org_name, at=of_model.iso(b)), rows)
     code = {}
     ctx = {"keeper_since": lambda sysid, k: of_model.keeper_since(org["repo"], sysid, k),
+           "keeper_at": of_model.keeper_reader(org["repo"]),
            "code_activity": lambda: code["a"] if "a" in code else code.setdefault("a", _code_activity(org, m, b))}
     d = of_diagnose.diagnose(m, rows, b - 7 * 86400, b, context=ctx, label_rows=_labels_of(org))
     issues = [dict(i, org=org["name"]) for i in d["issues"] if i["state"] == "open" and _decided_by(args, i)]
@@ -299,11 +300,14 @@ def _rendered_issues(args, names, ids, b):
         labs = _labels_of(cfgs[n]) if n in cfgs else None
         if labs is None:
             return None, "the labels could not be read" if n in cfgs else f"{n} is not in orgs.yaml"
-        hist, keeper = of_diagnose.label_history(labs, _holders(cfgs[n], b)), doc.get("structure_keeper")
+        reg = _registry_view(cfgs[n], b)
+        hist, keeper = of_diagnose.label_history(labs, reg.session), doc.get("structure_keeper")
+        keeper_for = reg.keeper_for(keeper)
         moved = {}
         issues = []
         for i in doc.get("issues") or []:
-            j = of_diagnose.label_issue(of_diagnose.unlabelled(dict(i, org=n)), hist.get(i["issue_id"]), keeper, b, carry(i))
+            j = of_diagnose.label_issue(of_diagnose.unlabelled(dict(i, org=n)), hist.get(i["issue_id"]), keeper_for, b,
+                                        carry(i))
             d = (j["state"] == "open") - (i.get("state") == "open")
             moved[i.get("rule_version")] = moved.get(i.get("rule_version"), 0) + d
             issues.append(j)
@@ -313,20 +317,38 @@ def _rendered_issues(args, names, ids, b):
     return out, None
 
 
-def _holders(org, b):
-    """fn(session id) -> the position the organization's registry at B gives that session (of_model.session_index),
-    read only when a label records a session: the list's label_writer (the run also reads the window's rows)."""
-    memo = {}
+class _registry_view:
+    """The organization's registry at B for the list's labels, read only when a label needs it: the position a session
+    holds (of_model.session_index; the run also reads the window's rows) and the structure keeper when a label was
+    written (of_model.keeper_at on the creating system), as diagnose gives them (label_writer, keeper_then)."""
 
-    def who(sid):
-        if "idx" not in memo:
+    def __init__(self, org, b):
+        self.org, self.b, self._m = org, b, None
+
+    def _model(self):
+        if self._m is None:
             try:
-                doc, rev = of_model.registry_at(org["repo"], b)
-                memo["idx"] = of_model.session_index(of_model.build(doc, [], at=b, org=org["name"], rev=rev)["positions"])
-            except Exception:  # noqa: BLE001 - no registry: no session resolves, the event's position stands
-                memo["idx"] = {}
-        return memo["idx"].get(sid)
-    return who
+                doc, rev = of_model.registry_at(self.org["repo"], self.b)
+                self._m = of_model.build(doc, [], at=self.b, org=self.org["name"], rev=rev)
+            except Exception:  # noqa: BLE001 - no registry: no session resolves, the keeper now stands
+                self._m = {"positions": {}, "systems": {}}
+        return self._m
+
+    def session(self, sid):
+        return of_model.session_index(self._model()["positions"]).get(sid)
+
+    def keeper_for(self, keeper):
+        import of_diagnose
+        memo = {}
+
+        def kf(lab):
+            if not self.org.get("repo"):
+                return keeper
+            if "f" not in memo:
+                memo["f"] = of_diagnose.keeper_then(self._model(), {"keeper_at": of_model.keeper_reader(self.org["repo"])},
+                                                    keeper)
+            return memo["f"](lab)
+        return kf
 
 
 def _recount(r, moved):
@@ -347,6 +369,8 @@ def _print_issue(i):
         print(f"  affected: {', '.join(map(str, i['affected']))}")
     for r in i.get("remedies") or []:
         print(f"  remedy: {r if isinstance(r, str) else json.dumps(r, ensure_ascii=False)}")
+    if i.get("owner_labels_only"):
+        print(f"  only the owner labels it: {i['owner_labels_only']}")
     if i.get("label_not_counted"):
         x = i["label_not_counted"]
         print(f"  label not counted: {x.get('label')} by {x.get('by')} at {str(x.get('ts'))[:16]}Z: {x.get('why')}")
@@ -1036,7 +1060,8 @@ def cmd_escalations(args):
     else:
         _, m, rows = _model(args, _rows(of_model.iso(b - 9 * 86400), names=of_studio.kinds()))
         diag = of_diagnose.diagnose(m, rows, b - 7 * 86400, b,
-                                    context={"keeper_since": lambda sysid, k: of_model.keeper_since(org["repo"], sysid, k)},
+                                    context={"keeper_since": lambda sysid, k: of_model.keeper_since(org["repo"], sysid, k),
+                                             "keeper_at": of_model.keeper_reader(org["repo"])},
                                     label_rows=_labels_of(org))
         esc = of_diagnose.escalations(m, diag, of_studio.budget_used(m, rows, b, refresh_usage=True))
     # both paths read what was told over ESCALATION_KEEP_S, not the 9 days --fresh loads (of_review on PR 522)
