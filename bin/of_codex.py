@@ -205,12 +205,16 @@ def org_repos(orgs_file=None):
         base = os.path.dirname(os.path.abspath(path))
     except Exception:  # noqa: BLE001
         return []
-    out = []
+    out, broad = [], {"/", os.path.realpath(os.path.expanduser("~"))}
     for o in doc.get("orgs") or []:
         if isinstance(o, dict):
-            for p in [o.get("path")] + list(o.get("paths") or []):
-                if p:
-                    out.append(os.path.join(base, os.path.expanduser(str(p))))
+            paths = o.get("paths") or []
+            paths = [paths] if isinstance(paths, str) else list(paths) if isinstance(paths, list) else []
+            for p in [o.get("path")] + paths:   # one string is one path, never its characters (of_review on PR 475)
+                if p and isinstance(p, str):
+                    full = os.path.join(base, os.path.expanduser(p))
+                    if os.path.realpath(full) not in broad:   # a repository is never the root or the home
+                        out.append(full)
     return out
 
 
@@ -237,7 +241,9 @@ PROTECTED = (".codex", ".agents")
 # declare an injected prompt (of event injected_prompt, of spawn): no position that types into another's pane runs on
 # Codex.
 GUARD_INPUTS = ("index.json", "guard-credentials.json", "guard-grants.json", "passkey-revoked.json",
-                "injections.jsonl", "scratch-quota.json")   # the last: a session would lift its own disk refusal   # guard-grants.json and passkey-revoked.json: of_grants trusts them (of_server, PR 475)
+                "injections.jsonl", "scratch-quota.json")
+# guard-grants.json and passkey-revoked.json: of_grants trusts them (of_server, PR 475); scratch-quota.json: a session
+# would lift its own disk refusal
 GUARD_DIRS = ("sessions",)
 
 
@@ -254,6 +260,10 @@ def filesystem(cwd, deny_rules=None, checkout_bin=None, codex_home=None):
     import of_spawn
     box = of_spawn.sandbox_settings(deny_rules or [], platform="linux") or {}
     denied = set((box.get("filesystem") or {}).get("denyRead") or [])
+    if not denied:   # as the docstring says: never a map without the deny list (of_review on PR 475)
+        raise ValueError("no deny list from of_spawn.sandbox_settings: no permission profile without it")
+    if codex_home and _real(os.path.expanduser(codex_home)) == _real(cwd):
+        raise ValueError("the working folder is the seat's CODEX_HOME: its write would lift the seat's deny")
     denied |= set(seat_homes())
     if codex_home:
         denied.add(os.path.abspath(os.path.expanduser(codex_home)))
@@ -315,6 +325,12 @@ def layer(position, cwd, model=None, instructions=None, tool_tables=None, deny_r
     command environment filtered to ENV_INCLUDE, the start context whole as developer_instructions (W5), and of_tools'
     tool tables (features, web_search, mcp_servers, apps, plugins; W7) merged in, W3's features last so no tool table
     turns them back on."""
+    if deny_rules is None:   # the position's own credential rules, never a profile without them (of_review on PR 475)
+        import of_credentials
+        import of_spawn
+        name = position.get("name") if isinstance(position, dict) else position
+        org = position.get("_org") if isinstance(position, dict) else None
+        deny_rules = of_spawn.deny_rules(name, org, of_credentials.load()) or []
     tables = dict(tool_tables or {})
     named = sorted(set(tables) & PROTECTED_KEYS)
     if named:   # of_server on PR 475: doc.update(tables) after them let a tool profile replace the position's protection

@@ -628,10 +628,24 @@ class SubagentTest(unittest.TestCase):
 
     def test_the_hooks_folder_is_the_checkouts_bin(self):
         import of_codex
-        d = of_subagent.hook_dirs()
+        from unittest import mock
+        with mock.patch.object(of_codex, "installed_of_bin", return_value=None):   # never the machine's own file
+            d = of_subagent.hook_dirs()
         self.assertEqual(d, [os.path.dirname(of_codex.default_of_bin())])
         self.assertTrue(os.path.isfile(os.path.join(d[0], "of_hook.py")))
         self.assertEqual(os.path.realpath(of_codex.default_of_bin()), of_codex.default_of_bin())   # never a link
+
+    def test_a_launcher_in_a_broad_folder_is_bound_alone(self):
+        import tempfile
+        import of_codex
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as t:
+            launcher = os.path.join(t, "of")
+            open(launcher, "w").close()
+            with mock.patch.object(of_codex, "installed_of_bin", return_value=launcher):
+                d = of_subagent.hook_dirs()
+        self.assertIn(os.path.realpath(launcher), d)
+        self.assertNotIn(os.path.realpath(t), d)
 
     def test_the_runs_home_links_the_users_of_for_the_managed_hooks(self):
         import tempfile
