@@ -1083,7 +1083,15 @@ class LiveCheckoutTest(unittest.TestCase):
                     + "y" * 4050 + "\n    'stamp')\nEOF",   # of_review on PR 629: a long comment before the destination
                     f"python3 -c \"import os; make_link = os.symlink; make_link('/tmp/source', '{live}/bin/x.py')\"",
                     f"cd {live}/bin && node -e \"const fs = require('fs'), path = require('path'); "
-                    "fs.copyFileSync(path.join('/tmp', 'source'), 'stamp')\""):
+                    "fs.copyFileSync(path.join('/tmp', 'source'), 'stamp')\"",
+                    f"python3 -c \"import os; os.renames('{live}/bin/a.py', '{live}/bin/b.py')\"",   # of_review, 629
+                    f"python3 -c \"import os; os.removedirs('{live}/bin/emptydir')\"",
+                    f"cd {live}/bin && python3 <<'EOF'\nimport os, shutil\n'''It's a note.'''\n"
+                    "shutil.copyfile(os.path.join('/var/fixture', 'source'), 'stamp')\nEOF",
+                    f"cd {live}/bin && node -e \"require('fs').cpSync('/var/fixture/source', 'stamp')\"",
+                    f"cd {live}/bin && node -e \"require('fs').linkSync('/var/fixture/source', 'stamp')\"",
+                    f"cd {live}/bin && python3 -c \"import os; make_link = os.symlink; make_link('/var/fixture/source', 'stamp')\"",
+                    f"python3 <<'EOF'\nimport os\n'''it's'''\nos.open('{live}/bin/x', os.O_WRONLY | os.O_CREAT)\nEOF"):
             self.assertTrue(self.deny(cmd), cmd)
         self.assertFalse(self.deny(f"cd {live}/bin && python3 -c \"import pathlib; pathlib.Path('/tmp/q').open('w')\""))
         self.assertFalse(self.deny(f"python3 -c \"import os; os.open('{live}/bin/of', os.O_RDONLY); print(os.O_CREAT)\""))
