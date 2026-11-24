@@ -1307,6 +1307,30 @@ class UnitsTest(unittest.TestCase):
         desk = [{"workspace_id": "wD", "label": of.DESK}]
         self.assertEqual(of.plan_layout(positions, agents, tabs, desk), [])  # the desk is never touched
 
+    def test_a_tab_built_beside_an_older_one_of_its_label_is_laid_out(self):
+        """of_architect, 2026-11-24: an older tab of the same label kept another pane, the plan took it first, and
+        every apply built the tab again, moving running panes."""
+        of.ORG_SHORT["acme"] = "ac"
+        positions = [pos("h", system="storefront-hosts", session="sh", _org="acme", _workspace="acme", _unit="shop")]
+        agents = [agent("wD:p9", "sh", ws="wD", tab="wD:t7")]
+        workspaces = [{"workspace_id": "wD", "label": "ac·shop"}]
+        tabs = [{"tab_id": "wD:t2", "workspace_id": "wD", "pane_count": 1, "label": "storefront-hosts"},   # older
+                {"tab_id": "wD:t7", "workspace_id": "wD", "pane_count": 1, "label": "storefront-hosts"}]   # built
+        area = {"x": 0, "y": 0, "width": 340, "height": 98}
+        layouts = {"wD:t2": {"area": area, "panes": [{"pane_id": "wD:p3", "rect": dict(area)}]},
+                   "wD:t7": {"area": area, "panes": [{"pane_id": "wD:p9", "rect": dict(area)}]}}
+        plan = of.plan_layout(positions, agents, tabs, workspaces, layouts=layouts)
+        self.assertEqual([(lab, ok) for _, lab, _, ok in plan], [("storefront-hosts", True)])
+
+    def test_build_steps_are_the_moves_a_dry_run_prints(self):
+        chunk = [("wD:p1", "a"), ("wD:p2", "b"), ("wD:p3", "c")]
+        steps = of.build_steps("ac·shop", "storefront", chunk, "wD")
+        self.assertEqual(steps[0], ["pane", "move", "wD:p1", "--new-tab", "--workspace", "wD", "--label", "storefront",
+                                    "--no-focus"])
+        self.assertEqual([c[2] for c in steps[1:]], ["wD:p2", "wD:p3"])
+        self.assertTrue(all(c[c.index("--tab") + 1] == "<the new tab>" for c in steps[1:]))
+        self.assertIn("--new-workspace", of.build_steps("ac·new", "x", chunk[:1], None)[0])
+
     def test_balanced(self):
         area = {"x": 0, "y": 0, "width": 340, "height": 98}
         rects = of.expected_rects(4, area)
