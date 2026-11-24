@@ -162,11 +162,21 @@ class SecondReview(unittest.TestCase):
             exits.append(code)
             raise Exit()
         with mock.patch.object(of_hook.os, "fork", side_effect=OSError("no memory")), \
-                mock.patch.object(of_hook.os, "_exit", side_effect=fake_exit), contextlib.redirect_stderr(io.StringIO()):
+                mock.patch.object(of_hook.os, "_exit", side_effect=fake_exit), contextlib.redirect_stderr(io.StringIO()), \
+                mock.patch.dict(os.environ, {"OF_NO_DETACH": ""}):   # the fork path, as in a live session
             ans.write(json.dumps({"decision": "block", "reason": "no"}))
             with self.assertRaises(Exit):
                 ans.flush()
         self.assertEqual(exits, [2])
+
+    def test_under_no_detach_a_deny_forks_no_recorder(self):
+        """of_review on PR 640: the forked recorder wrote into the selftest probe's state after it was removed."""
+        ans = of_hook._CodexAnswer(io.StringIO())
+        with mock.patch.object(of_hook.os, "fork", side_effect=AssertionError("no fork under OF_NO_DETACH")), \
+                contextlib.redirect_stderr(io.StringIO()), mock.patch.dict(os.environ, {"OF_NO_DETACH": "1"}):
+            ans.write(json.dumps({"decision": "block", "reason": "no"}))
+            ans.flush()
+        self.assertEqual(ans.code, 2)
 
     def test_a_prompt_whose_guard_failed_is_refused(self):
         payload = {"session_id": "codex-thread-1", "cwd": "/w", "turn_id": "t1", "model": "gpt",
