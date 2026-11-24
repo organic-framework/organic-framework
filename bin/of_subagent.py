@@ -105,6 +105,69 @@ DEFAULT_MODEL = {"codex": "gpt-6.2-astra",
                  # Muse's own default in a fresh config is muse-wonder-1.0 (of_capacity, 2026-11-18)
                  "muse": "muse-wonder-full-1.0"}
 DEFAULT_EFFORT = {"codex": "xhigh"}
+
+
+def chosen(registry, harness):
+    """(model, effort) the organization chose for HARNESS (`subagent_harnesses.<harness>.model` and `.effort` in its
+    registry; RFC 0008 §5, each organization chooses), else the framework's default: of subagent run and a Codex
+    position's layer read it, and --model overrides the model (of_architect, message 01a20e1f-9faf: the founder's
+    choice for OF's work, prompt 01a20e1d-1b9c)."""
+    h = (((registry or {}).get("subagent_harnesses") or {}).get(harness) or {})
+    h = h if isinstance(h, dict) else {}
+    model = h.get("model") if isinstance(h.get("model"), str) and h.get("model") else DEFAULT_MODEL.get(harness)
+    effort = h.get("effort") if isinstance(h.get("effort"), str) and h.get("effort") else DEFAULT_EFFORT.get(harness)
+    return model, effort
+
+
+EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+
+
+def codex_known_models(homes=None):
+    """The model ids the machine's Codex seats know (each seat's models_cache.json), or None when none can be read."""
+    if homes is None:
+        try:
+            import of_accounts
+            homes = [s["home"] for s in of_accounts.codex_seats()]
+        except Exception:  # noqa: BLE001
+            homes = []
+    known, read = set(), False
+    for h in homes or []:
+        try:
+            with open(os.path.join(os.path.expanduser(h), "models_cache.json")) as fh:
+                doc = json.load(fh) or {}
+        except (OSError, ValueError):
+            continue
+        read = True
+        for m in (doc.get("models") if isinstance(doc, dict) else None) or []:
+            if isinstance(m, dict) and (m.get("slug") or m.get("id")):
+                known.add(m.get("slug") or m.get("id"))
+    return known if read else None
+
+
+def choice_problems(docs, known=None, warn="warning: "):
+    """of registry check's lines for each organization's `subagent_harnesses.<harness>.model` and `.effort`: a model
+    is a string, Codex's one its seats know (their models cache; a warning when none can be read), an effort one of
+    EFFORTS."""
+    out = []
+    known = codex_known_models() if known is None else known
+    for org, doc in (docs or {}).items():
+        entry = ((doc or {}).get("subagent_harnesses") or {}) if isinstance(doc, dict) else {}
+        for harness in HARNESSES:
+            h = entry.get(harness) if isinstance(entry, dict) else None
+            if not isinstance(h, dict):
+                continue
+            where = f"{org}:registry/positions.yaml: subagent_harnesses.{harness}"
+            model, effort = h.get("model"), h.get("effort")
+            if model is not None and (not isinstance(model, str) or not model):
+                out.append(f"{where}.model: a model id")
+            elif isinstance(model, str) and harness == "codex":
+                if known is None:
+                    out.append(f"{warn}{where}.model {model!r}: no Codex seat's models cache to check it against")
+                elif model not in known:
+                    out.append(f"{where}.model {model!r}: no Codex seat here knows it ({', '.join(sorted(known)[:8])}…)")
+            if effort is not None and effort not in EFFORTS:
+                out.append(f"{where}.effort {effort!r}: one of {', '.join(EFFORTS)}")
+    return out
 # Codex loads the workspace's AGENTS.md and answered in the language it names for chat (of_capacity, same message):
 # the run's prompt says the language first. The record keeps the position's prompt as given.
 PREAMBLE = "Answer in English. You run read-only: report what you find; change nothing.\n"
@@ -969,7 +1032,8 @@ def _snapshot_in(work_dir):
     return os.path.join(work_dir, subs[0])
 
 
-def command(harness, kind, run_dir, work_dir, prompt_file, answer_file, schema=None, model=None, binary=None):
+def command(harness, kind, run_dir, work_dir, prompt_file, answer_file, schema=None, model=None, binary=None,
+            effort=None):
     """(argv, environment, sandbox reads, sandbox writes) of one run."""
     home = os.path.expanduser("~")
     web = kind == "research"
@@ -1010,7 +1074,7 @@ def command(harness, kind, run_dir, work_dir, prompt_file, answer_file, schema=N
         if schema:
             argv += ["--output-schema", schema]
         argv += ["-m", model or DEFAULT_MODEL["codex"], "-c",
-                 f'model_reasoning_effort="{DEFAULT_EFFORT["codex"]}"']
+                 f'model_reasoning_effort="{effort or DEFAULT_EFFORT["codex"]}"']
         argv.append("-")
         fresh = os.path.join(run_dir, "home")
         # on Linux the program file alone, never its folder: a folder in the home would show the home and its login
@@ -1158,6 +1222,8 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
                             else "") + f" only; on {sys.platform} it refuses")
     if kind not in KINDS:
         raise SubagentError(f"--kind {kind!r}: one of {', '.join(KINDS)}")
+    org_model, effort = chosen(registry, harness)   # the organization's choice; --model still overrides the model
+    model = model or org_model
     if kind in WORKSPACE_KINDS and not checkout:
         raise SubagentError(f"a {kind} run names its material: --workspace <checkout> with --at or --diff")
     if kind == "research" and (checkout or at or diff):
@@ -1260,7 +1326,7 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
             shutil.copyfile(schema, run_schema)
         answer_file = os.path.join(run_dir, "answer.txt")
         argv, env, reads, writes = command(harness, kind, run_dir, work_dir, run_prompt, answer_file, run_schema, model,
-                                           binary)
+                                           binary, effort)
         outer = sandbox if sandbox is not None else OUTER_SANDBOX[harness]
         exposed = login_readable(harness, run_dir, work_dir, reads, outer) if gates else []
         if exposed:

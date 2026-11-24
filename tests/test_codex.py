@@ -147,6 +147,10 @@ class LayerTest(unittest.TestCase):
                                                            "review@openai-curated": {"enabled": True}}},
                                   checkout_bin="/home/alex/organic-framework/bin", **kw)
 
+    def test_the_layer_takes_the_organizations_effort(self):
+        self.assertEqual(self.doc(effort="xhigh")["model_reasoning_effort"], "xhigh")
+        self.assertNotIn("model_reasoning_effort", self.doc())
+
     def test_one_string_of_paths_is_one_path_and_never_the_root(self):
         """of_review on PR 475: `paths: /srv/team` gave its characters, and each / mapped the whole disk readable."""
         import tempfile

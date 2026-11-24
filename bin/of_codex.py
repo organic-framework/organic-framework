@@ -341,6 +341,7 @@ def filesystem(cwd, deny_rules=None, checkout_bin=None, codex_home=None, launch=
 
 
 def layer(position, cwd, model=None, instructions=None, tool_tables=None, deny_rules=None, domains=DEFAULT_DOMAINS,
+          effort=None,
           checkout_bin=None, codex_home=None, launch=None):
     """The session layer's tables: the model, approvals never, workspace-write under the position's permission
     profile, its network through the proxy with the allowed domains and every Unix socket, interactive exec off, the
@@ -363,6 +364,8 @@ def layer(position, cwd, model=None, instructions=None, tool_tables=None, deny_r
     doc = {}
     if model:
         doc["model"] = model
+    if effort:   # the organization's choice (subagent_harnesses.codex.effort), as its model
+        doc["model_reasoning_effort"] = effort
     doc.update({"approval_policy": "never", "sandbox_mode": "workspace-write", "default_permissions": PROFILE,
                 "project_doc_max_bytes": 0})
     if instructions:

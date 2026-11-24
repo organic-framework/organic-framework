@@ -67,7 +67,7 @@ def codex_home_of(sid, homes=None):
     return None
 
 
-def codex_command(sid, position, cwd=None, homes=None, model=None, deny=None, prepare=None, launch=None):
+def codex_command(sid, position, cwd=None, homes=None, model=None, deny=None, prepare=None, launch=None, effort=None):
     """The line that resumes Codex session SID as a position's (hand-over 9ee1db9f, W4): its seat, a fresh layer and a
     new launch's door, so it starts with what a start gives it now (its start context, its profile, its tools), in the
     folder the line runs in; `codex resume <id> -C <folder> -p of-<launch>`. None when no seat holds the session."""
@@ -87,7 +87,7 @@ def codex_command(sid, position, cwd=None, homes=None, model=None, deny=None, pr
         of_spawn.prepare_folder(cwd, org, of_spawn.repo_names(position or {}, _org_paths(org)))
     import uuid
     pl = {"harness": "codex", "position": (position or {}).get("name"), "org": org, "cwd": cwd, "config_dir": home,
-          "launch": launch or str(uuid.uuid4()), "model": model, "deny": list(deny or [])}
+          "launch": launch or str(uuid.uuid4()), "model": model, "effort": effort, "deny": list(deny or [])}
     (prepare or of_spawn.codex_prepare)(pl, log=lambda m: None)
     return of_spawn.codex_command(pl, resume=sid)
 

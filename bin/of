@@ -2620,10 +2620,13 @@ def _spawn_codex(args, p, positions, roots):
     except Exception:  # noqa: BLE001
         subagents = False
     try:
+        import of_subagent   # the organization's Codex model and effort (subagent_harnesses.codex), never its Claude one
+        codex_model, codex_effort = of_subagent.chosen(registry_docs().get(p["_org"]), "codex")
         pl = of_spawn.codex_plan(p, positions, live_agents(), bind, p.get("_systems") or {}, _org_paths().get(p["_org"]),
                                  roots.get(p["_org"], ""), want_workspace, seat=args.config_dir, cwd=args.cwd,
-                                 model=args.model or agents.get("model"), deny=deny, subagents=subagents,
+                                 model=args.model or codex_model, deny=deny, subagents=subagents,
                                  folders=_rules_folders(positions))
+        pl["effort"] = codex_effort
     except of_spawn.SpawnError as e:
         raise OfError(str(e))
     print(f"{pl['position']}: Codex, launch {pl['launch']}\n  seat {pl['config_dir']}\n  folder {pl['cwd']}\n"
@@ -3461,7 +3464,9 @@ def cmd_resume_command(args):
     deny = of_capacity.deny_for(p, log=lambda m: None) if p else None  # its credential deny rules, as of spawn
     import of_spawn
     if p and of_spawn.harness_of(p) == "codex":   # a Codex position's session (hand-over 9ee1db9f, W4)
-        line = of_resume.codex_command(args.session, p, model=org_agents(p.get("_org")).get("model"), deny=deny)
+        import of_subagent
+        codex_model, codex_effort = of_subagent.chosen(registry_docs().get(p.get("_org")), "codex")
+        line = of_resume.codex_command(args.session, p, model=codex_model, effort=codex_effort, deny=deny)
         if not line:
             return 1
         print(line)
@@ -3525,6 +3530,8 @@ def cmd_registry(args):
         problems += of_access.check_lists(ORGS_FILE)
         import of_capacity  # docs/registry.md, training_cards: a known harness to a task card of the organization
         problems += of_capacity.training_registry_problems()
+        import of_subagent   # each organization's Codex and Muse model and effort (subagent_harnesses.<harness>)
+        problems += [p_.replace("warning: ", WARN, 1) for p_ in of_subagent.choice_problems(registry_docs())]
         for pr in problems:
             print(pr)
         warnings = [p_ for p_ in problems if WARN in p_]
