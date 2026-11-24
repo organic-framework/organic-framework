@@ -19,7 +19,10 @@ tool call of every session on the laptop, both organizations', until the owner r
 organization that lists the checkout OF runs from now (`--org` names another): `of protected ff` moves only a path the
 owner lists there with `ff` (docs/registry.md, Protected code), here the public repository's `main`, its `unit` check
 green, `bin/of_protected.py` the owner's to change. It writes only when the file then reads as before with that key
-more, and leaves an entry that has `protected_code` already for the owner to extend by hand.
+more, and leaves an entry that has `protected_code` already for the owner to extend by hand. The first `protected_code` in
+`orgs.yaml` makes the owner's lists alone vouch on that machine, so every registry's fast-forward entry stops: when a
+registry has one, setup names it and writes nothing, and `of live setup --keep-registry-ff` lists those entries in
+their organizations' `orgs.yaml` entries, as written, beside the live checkout's.
 
 Setup also copies the PyYAML package the owner's Python imports into the live checkout's `.git/of-site`: the update
 runs Python with `-I`, so the user's site folder, which sessions may write, never loads, and on a Mac PyYAML lives
