@@ -1158,6 +1158,10 @@ class OrgChoiceTest(unittest.TestCase):
         self.assertEqual(of_subagent.chosen(reg, "codex"), ("gpt-6.2-sol", "high"))
         self.assertEqual(of_subagent.chosen({}, "codex"),
                          (of_subagent.DEFAULT_MODEL["codex"], of_subagent.DEFAULT_EFFORT["codex"]))
+        # a Codex position's layer takes only the organization's own choice: unset, Codex's own default (of_review on
+        # PR 646)
+        self.assertEqual(of_subagent.chosen({}, "codex", defaults=False), (None, None))
+        self.assertEqual(of_subagent.chosen(reg, "codex", defaults=False), ("gpt-6.2-sol", "high"))
 
     def test_the_codex_command_takes_the_effort(self):
         import tempfile

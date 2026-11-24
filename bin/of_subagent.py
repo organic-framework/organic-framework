@@ -107,15 +107,17 @@ DEFAULT_MODEL = {"codex": "gpt-6.2-astra",
 DEFAULT_EFFORT = {"codex": "xhigh"}
 
 
-def chosen(registry, harness):
+def chosen(registry, harness, defaults=True):
     """(model, effort) the organization chose for HARNESS (`subagent_harnesses.<harness>.model` and `.effort` in its
     registry; RFC 0008 §5, each organization chooses), else the framework's default: of subagent run and a Codex
     position's layer read it, and --model overrides the model (of_architect, message 01a20e1f-9faf: the founder's
     choice for OF's work, prompt 01a20e1d-1b9c)."""
     h = (((registry or {}).get("subagent_harnesses") or {}).get(harness) or {})
     h = h if isinstance(h, dict) else {}
-    model = h.get("model") if isinstance(h.get("model"), str) and h.get("model") else DEFAULT_MODEL.get(harness)
-    effort = h.get("effort") if isinstance(h.get("effort"), str) and h.get("effort") else DEFAULT_EFFORT.get(harness)
+    model = h.get("model") if isinstance(h.get("model"), str) and h.get("model") else None
+    effort = h.get("effort") if isinstance(h.get("effort"), str) and h.get("effort") else None
+    if defaults:   # of subagent run's own defaults; a Codex position's layer takes none (DEFAULTS False): Codex's own
+        model, effort = model or DEFAULT_MODEL.get(harness), effort or DEFAULT_EFFORT.get(harness)
     return model, effort
 
 
