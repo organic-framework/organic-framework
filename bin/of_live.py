@@ -17,6 +17,7 @@ by the launchd agent dev.organic-framework.checkout-update when ~/.local/state/o
 
 import os
 import plistlib
+import re
 import subprocess
 import sys
 
@@ -83,20 +84,26 @@ def hooked_accounts(dirs=None):
                     old = os.path.join(os.path.dirname(w), "of")
                     if old not in flags and os.path.realpath(old) != os.path.realpath(os.path.join(LIVE, "bin", "of")):
                         flags += ["--replace", old]
-        if any("PreToolUse" in c for c in cmds):
-            flags.append("--guard")
+        import of_init
+        if any(m.get("matcher") == of_init.GUARD_MATCHER for m in hooks.get("PreToolUse") or []):
+            flags.append("--guard")   # the guard's own group, never a recorder's PreToolUse (of_review on PR 628)
         if any("--deny-secrets" in c for c in cmds):
             flags.append("--deny-secrets")
         out.append((d, flags))
     return out
 
 
-def switch_plan(python, accounts, live=LIVE):
+def installed_units(agents=AGENTS):
+    """The units of UNITS this machine runs now (their launchd agent is there): a switch moves those, never adds one."""
+    return [u for u in UNITS if os.path.exists(os.path.join(agents, f"dev.organic-framework.{u[0]}.plist"))]
+
+
+def switch_plan(python, accounts, live=LIVE, units=None):
     """The commands a switch runs, each from LIVE's own bin/of, so each writes LIVE's path: every hooked account's
-    hooks, then the units."""
+    hooks, then the units this machine runs (of_review on PR 628)."""
     of_bin = os.path.join(live, "bin", "of")
     cmds = [[python, of_bin, "hooks", "install", "--config-dir", d, "--yes", *flags] for d, flags in accounts]
-    cmds += [[python, of_bin, *u] for u in UNITS]
+    cmds += [[python, of_bin, *u] for u in (installed_units() if units is None else units)]
     return cmds
 
 
@@ -110,10 +117,30 @@ def check_live(live=LIVE):
         raise LiveError(f"{live}'s origin is not public main ({URL})")
 
 
-def setup(python=None, run=subprocess.run, live=LIVE, log=print):
-    """Clone public main into LIVE (when it is not there), copy the update script beside OF's own, write and load the
-    agent. The owner's, in a plain terminal."""
+def checkout_org(orgs_file, checkout=None):
+    """The organization whose orgs.yaml entry lists the checkout OF runs from now (its `path` or one of its `paths`): the
+    one the live checkout's protected_code entry goes to."""
+    import yaml
+    checkout = os.path.realpath(checkout or os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+    try:
+        with open(orgs_file) as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    for o in doc.get("orgs") or []:
+        if isinstance(o, dict):
+            ps = [o.get("path")] + list(o.get("paths") or [])
+            if any(p and os.path.realpath(os.path.expanduser(str(p))) == checkout for p in ps):
+                return o.get("name")
+    return None
+
+
+def setup(python=None, run=subprocess.run, live=LIVE, log=print, orgs_file=None, org=None):
+    """Clone public main into LIVE (when it is not there), list it as the owner's protected_code entry with ff in
+    orgs.yaml (of protected ff moves only such an entry; of_review on PR 628), write and load the agent. The owner's,
+    in a plain terminal."""
     python = python or sys.executable
+    orgs_file = orgs_file or os.path.expanduser("~/.config/of/orgs.yaml")
     if not os.path.exists(live):
         os.makedirs(os.path.dirname(live), mode=0o755, exist_ok=True)
         r = run(["git", *SAFE_GIT, "clone", "--quiet", "--no-tags", "--branch", "main", URL, live], env=git_env())
@@ -124,6 +151,12 @@ def setup(python=None, run=subprocess.run, live=LIVE, log=print):
     src = os.path.join(live, SCRIPT)
     if not os.path.isfile(src):
         raise LiveError(f"{src} is not in the live checkout yet: public main does not carry it")
+    if ff_entry(orgs_file, live) is None:
+        org = org or checkout_org(orgs_file)
+        if not org:
+            raise LiveError("no organization in orgs.yaml lists the checkout OF runs from; name one with --org")
+        add_ff_entry(orgs_file, org, live)
+        log(f"  listed {live} in {org}'s protected_code in {orgs_file}, moved only by of protected ff")
     os.makedirs(os.path.dirname(REQUEST), exist_ok=True)
     os.makedirs(os.path.expanduser("~/.local/log/of"), exist_ok=True)
     path = os.path.join(AGENTS, LABEL + ".plist")
@@ -137,11 +170,91 @@ def setup(python=None, run=subprocess.run, live=LIVE, log=print):
     return live
 
 
-def switch(python=None, run=subprocess.run, live=LIVE, accounts=None, log=print):
+FF = {"repo": "organic-framework/organic-framework", "branch": "main", "checks": ["unit"],
+      "human": ["bin/of_protected.py"]}   # as the agent host's entry for its live checkout
+
+
+def ff_entry(orgs_file, live=LIVE):
+    """The owner's protected_code entry with ff for LIVE in orgs.yaml (of protected ff moves only such an entry), or
+    None."""
+    import yaml
+    try:
+        with open(orgs_file) as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    for o in doc.get("orgs") or []:
+        for e in (o.get("protected_code") or []) if isinstance(o, dict) else []:
+            if isinstance(e, dict) and e.get("ff") and \
+                    os.path.realpath(os.path.expanduser(str(e.get("path")))) == os.path.realpath(live):
+                return e
+    return None
+
+
+def add_ff_entry(orgs_file, org, live=LIVE):
+    """Add LIVE's protected_code entry with ff to ORG's entry in orgs.yaml, the owner's file (docs/guard.md G33): a
+    block appended to the entry, the rest of the file kept as written, and written only when the file then reads as it
+    did with that one key more. ORG's entry must have no protected_code yet; otherwise the owner adds the item."""
+    import tempfile
+    import yaml
+    import of_init
+    with open(orgs_file) as fh:
+        text = fh.read()
+    doc = yaml.safe_load(text) or {}
+    orgs = doc.get("orgs") or []
+    at = [k for k, o in enumerate(orgs) if isinstance(o, dict) and of_init.org_entry_name(o) == org]
+    if len(at) != 1:
+        raise LiveError(f"no single organization {org!r} in {orgs_file}")
+    if "protected_code" in orgs[at[0]]:
+        raise LiveError(f"{org}'s entry in {orgs_file} has protected_code already: add the live checkout's item to it")
+    home = os.path.expanduser("~")
+    shown = "~" + live[len(home):] if live.startswith(home + "/") else live
+    item = {"path": shown, "ff": dict(FF)}
+    lines = text.splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    dash_col = None
+    for i, ln in enumerate(lines):
+        if re.match(r"^orgs\s*:", ln):
+            for j in range(i + 1, len(lines)):
+                m = re.match(r"^( *)- ", lines[j])
+                if m:
+                    dash_col = len(m.group(1))
+                    break
+            break
+    if dash_col is None:
+        raise LiveError(f"{orgs_file}: its orgs: list is not in block style; add the entry by hand")
+    items = [i for i, ln in enumerate(lines) if re.match(r"^ {%d}- " % dash_col, ln)]
+    if len(items) != len(orgs):
+        raise LiveError(f"{orgs_file}: its orgs: list is not in plain block style; add the entry by hand")
+    b = items[at[0]]
+    e = next((i for i in items if i > b), None)
+    if e is None:
+        e = next((i for i in range(b + 1, len(lines)) if lines[i].strip() and not lines[i].startswith(" ")), len(lines))
+    while e > b + 1 and not lines[e - 1].strip():
+        e -= 1
+    col = dash_col + 2
+    block = yaml.safe_dump({"protected_code": [item]}, default_flow_style=None, sort_keys=False)
+    block = "".join(" " * col + ln + "\n" for ln in block.splitlines())
+    new = "".join(lines[:e]) + block + "".join(lines[e:])
+    want = dict(doc)
+    want["orgs"] = [dict(o, protected_code=[item]) if k == at[0] else o for k, o in enumerate(orgs)]
+    if yaml.safe_load(new) != want:
+        raise LiveError(f"{orgs_file} would read differently after the edit; add the entry by hand:\n{block}")
+    real = os.path.realpath(orgs_file)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(real), prefix=".orgs.yaml.")
+    with os.fdopen(fd, "w") as fh:
+        fh.write(new)
+    os.chmod(tmp, os.stat(real).st_mode & 0o777)
+    os.replace(tmp, real)
+    return item
+
+
+def switch(python=None, run=subprocess.run, live=LIVE, accounts=None, log=print, units=None):
     """Every hooked account's hooks, the units and ~/.local/bin/of from LIVE. The owner's, in a plain terminal."""
     python = python or sys.executable
     check_live(live)
-    for cmd in switch_plan(python, hooked_accounts() if accounts is None else accounts, live):
+    for cmd in switch_plan(python, hooked_accounts() if accounts is None else accounts, live, units):
         r = run(cmd)
         if getattr(r, "returncode", 1) != 0:   # the first failure stops the switch: ~/.local/bin/of stays as it was
             raise LiveError(f"{' '.join(cmd[2:])} failed; nothing after it ran. Fix it and run of live switch again")
@@ -154,12 +267,22 @@ def switch(python=None, run=subprocess.run, live=LIVE, accounts=None, log=print)
     log(f"  {LINK} -> {os.path.join(live, 'bin', 'of')}")
 
 
-def request():
-    """Ask the agent for a move to public main's tip."""
-    os.makedirs(os.path.dirname(REQUEST), exist_ok=True)
-    with open(REQUEST, "a"):
-        os.utime(REQUEST, None)
-    return REQUEST
+def request(path=REQUEST):
+    """Ask the agent for a move to public main's tip: the request file touched, never through a link, and never a
+    FIFO or anything else waited on (of_review on PR 628)."""
+    import stat
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    except OSError as e:
+        raise LiveError(f"{path} cannot be written as a plain file ({e.strerror})")
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise LiveError(f"{path} is no plain file")
+        os.utime(fd)
+    finally:
+        os.close(fd)
+    return path
 
 
 def status(live=LIVE):
@@ -169,6 +292,8 @@ def status(live=LIVE):
         r = subprocess.run(["git", *SAFE_GIT, "-C", live, "rev-parse", "HEAD"], capture_output=True, text=True,
                            env=git_env())
         head = r.stdout.strip() or None
-    link = os.path.realpath(LINK) if os.path.lexists(LINK) else None
+    import shutil
+    found = shutil.which("of")   # the of a shell runs, which need not be ~/.local/bin/of (of_review on PR 628)
+    link = os.path.realpath(found) if found else None
     return {"live": live, "head": head, "link": link,
             "accounts": [(d, flags) for d, flags in hooked_accounts()]}

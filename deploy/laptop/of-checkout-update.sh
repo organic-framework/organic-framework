@@ -47,6 +47,7 @@ check_checkout() {
     case "$line" in
       core.repositoryformatversion=0|core.filemode=true|core.bare=false|core.logallrefupdates=true) ;;
       core.ignorecase=true|core.precomposeunicode=true) ;;   # what git writes into any clone on macOS
+      remote.origin.tagopt=--no-tags) ;;                      # what `of live setup`'s clone --no-tags writes
       "remote.origin.url=$URL") ;;
       'remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*') ;;
       branch.main.remote=origin|branch.main.merge=refs/heads/main) ;;
@@ -120,9 +121,10 @@ main() {
   fi
 
   live file fetch -q --no-tags --no-write-fetch-head "$P" refs/heads/main
-  # -I: no user site and no PYTHON variables. The cache prefix, an empty private folder: a .pyc planted in a
-  # __pycache__ of the checkout is never loaded (-B alone only stops writing them)
-  "$PY" -I -B -X pycache_prefix="$P/pycache" "$LIVE/bin/of" protected ff "$LIVE" --to "$tip" 2>&1 || rc=$?
+  # -E: no PYTHON variables. Not -I: on a Mac, PyYAML lives in the user's site folder, which every hook already
+  # imports from (of_review on PR 628). -P: not the current folder first. The cache prefix, an empty private folder: a
+  # .pyc planted in a __pycache__ of the checkout is never loaded (-B alone only stops writing them)
+  "$PY" -E -P -B -X pycache_prefix="$P/pycache" "$LIVE/bin/of" protected ff "$LIVE" --to "$tip" 2>&1 || rc=$?
   now=$(live '' rev-parse --verify 'HEAD^{commit}')
   if [ "$now" = "$old" ]; then
     echo "UPDATE: not moved, at $old (of protected ff ended $rc, above)"
