@@ -6454,6 +6454,8 @@ def cmd_handover(args):
         if why:
             raise OfError(why)
         to = _resolve_position(args.ref, positions, me_p)
+        if to == me:   # a hand-over is between two positions: one to itself is text it alone chose (PR 633)
+            raise OfError(f"{me} cannot hand work over to itself")
         verify = _resolve_position(args.verify, positions, me_p) if args.verify not in (None, "requester") else "requester"
         scope = {k: v for k, v in (("systems", args.systems), ("paths", args.paths)) if v}
         payload = {"from": me, "to": to, "title": of_hook_mask(args.title), "done_when": of_hook_mask(args.done_when),
@@ -8021,6 +8023,8 @@ def prompt_cited(conn, pid, me, messages=True):
         def others(by):
             return not (of_handover.same(me, by) or by == of_handover.short(me))
         for h in of_handover.project(of_handover.load(conn)).values():
+            if of_handover.same(h.get("to"), h.get("from")):   # one proposed to itself: text it chose, none counts
+                continue                                         # (of_secrets-review on PR 633)
             if of_handover.same(h.get("to"), me):   # received: what its sender wrote
                 texts.append(json.dumps({k: h.get(k) for k in ("title", "done_when", "basis", "context")},
                                         ensure_ascii=False))
@@ -8051,6 +8055,9 @@ def prompt_cited(conn, pid, me, messages=True):
     return False, f"the id cited ({min(cites, key=len)}) names more than one prompt; none is shown"
 
 
+WORDS_KEPT = {"of.agent_question": ("context", "snippet"), "of.agent_question_answered": ("quote",)}
+
+
 def event_show(conn, ref, org=None, positions=None, own_session=None, own_position=None):
     """One event a position may check, as {event_id, ts, name, position, org, payload}, or an OfError."""
     ref = str(ref or "").strip()
@@ -8063,6 +8070,10 @@ def event_show(conn, ref, org=None, positions=None, own_session=None, own_positi
     if len(rows) > 1:
         raise OfError(f"{ref} names more than one event; give more of its id")
     eid, ts, name, position, eorg, payload, session = rows[0]
+    if org:   # the organization first: another's event, of any kind, is named by nothing it returns (of_review on PR 633)
+        mine = {p["name"] for p in positions or [] if org in (p.get("_org"), p.get("_orgid"))}
+        if eorg not in (org, None) or (eorg is None and position not in mine):
+            raise OfError(f"no event {ref} in organization {org}")
     if not (name in SHOWN_EVENTS or name.startswith("of.handover_")):
         raise OfError(f"{eid}: an event of kind {name}, which of event show does not show (asks, their answers and "
                       "amendments, hand-overs and a person's prompt only)")
@@ -8074,14 +8085,19 @@ def event_show(conn, ref, org=None, positions=None, own_session=None, own_positi
         ok, why = prompt_cited(conn, eid, own_position) if own_position else (False, "no position")
         if not ok:
             raise OfError(f"{eid}: a person's prompt in another session, not shown: {why}")
-    if org:
-        mine = {p["name"] for p in positions or [] if org in (p.get("_org"), p.get("_orgid"))}
-        if eorg not in (org, None) or (eorg is None and position not in mine):
-            raise OfError(f"no event {ref} in organization {org}")
     try:
         body = json.loads(payload) if payload else None
     except ValueError:
         body = None
+    if own_session is not None and isinstance(body, dict) and name in WORDS_KEPT:
+        # through a door, another position's ask and the answers to it come without the words they carry: the
+        # asker's context and pane snippet, and the founder's prompt quoted by a chat answer (of_review on PR 633:
+        # the prompt rule keeps those words back, and these fields carried them past it)
+        ask = body.get("ask_id") if name != "of.agent_question" else eid
+        asker = position if name == "of.agent_question" else (conn.execute(
+            "SELECT position FROM event WHERE event_id = ?", (ask,)).fetchone() or [None])[0]
+        if not own_position or asker != own_position:
+            body = {k: v for k, v in body.items() if k not in WORDS_KEPT[name]}
     return {"event_id": eid, "ts": ts, "name": name, "position": position, "org": eorg, "payload": body}
 
 

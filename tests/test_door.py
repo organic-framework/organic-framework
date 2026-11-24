@@ -375,5 +375,55 @@ class EventShowTest(unittest.TestCase):
             {"text": frame("orgA:of_conductor", m5, "01a2aaaa-0003"), "origin": "human"}, "thread-1")
         refused("01a2aaaa-0003", "of_docs")
 
+    def test_a_hand_over_to_itself_cites_nothing(self):
+        """of_secrets-review on PR 633: propose took to equal to from, and the received hand-over unlocked a prompt."""
+        self.conn.execute("INSERT INTO event VALUES ('01a3aaaa-0001-7000-8000-000000000001', '2026-11-20T00:00:00Z', "
+                          "'of.human_prompt', NULL, 'orgA', '{\"text\": \"p\"}', 'conductor')")
+        self.conn.execute("INSERT INTO event VALUES ('01a3eeee-0001-7000-8000-000000000001', '2026-11-20T00:00:00Z', "
+                          "'of.handover_proposed', 'of_docs', 'orgA', ?, 'thread-1')",
+                          (json.dumps({"from": "of_docs", "to": "of_docs", "title": "t", "basis": "01a3aaaa-0001"}),))
+        with self.assertRaises(self.of.OfError):
+            self.of.event_show(self.conn, "01a3aaaa-0001", "orgA", self.positions, own_session="thread-1",
+                               own_position="of_docs")
+
+    def test_another_positions_ask_and_its_answer_come_without_their_words(self):
+        """of_review on PR 633: an answer from the conductor's chat quotes the founder's prompt, and an ask carries
+        its asker's context; through a door only the asker sees them."""
+        self.conn.execute("INSERT INTO event VALUES ('01a4aaaa-0001-7000-8000-000000000001', '2026-11-20T00:00:00Z', "
+                          "'of.agent_question', 'b_x', 'orgA', ?, 'thread-7')",
+                          (json.dumps({"text": "ship?", "context": "the asker's last turn", "snippet": "pane"}),))
+        self.conn.execute("INSERT INTO event VALUES ('01a4aaaa-0002-7000-8000-000000000002', '2026-11-20T00:00:00Z', "
+                          "'of.agent_question_answered', NULL, 'orgA', ?, 'conductor')",
+                          (json.dumps({"ask_id": "01a4aaaa-0001-7000-8000-000000000001", "option": 1,
+                                       "quote": "the founder's words"}),))
+        show = lambda ref, me: self.of.event_show(self.conn, ref, "orgA", self.positions, own_session="thread-1",
+                                                  own_position=me)
+        self.assertEqual(show("01a4aaaa-0001", "of_docs")["payload"], {"text": "ship?"})
+        self.assertEqual(show("01a4aaaa-0002", "of_docs")["payload"],
+                         {"ask_id": "01a4aaaa-0001-7000-8000-000000000001", "option": 1})
+        self.assertIn("context", show("01a4aaaa-0001", "b_x")["payload"])         # the asker's own
+        self.assertIn("quote", show("01a4aaaa-0002", "b_x")["payload"])
+        self.assertIn("quote", self.of.event_show(self.conn, "01a4aaaa-0002", "orgA", self.positions)["payload"])
+
+    def test_status_waiting_ties_its_wait_to_an_ask_through_the_door(self):
+        """of_review on PR 633: the allowlist named --ask by its flag, while the parser's dest is wait_ask."""
+        argv, _ = of_door.check(["status", "waiting", "--on", "founder", "--ask", "AS-1"], "orgA", self.of.build_parser())
+        self.assertIn("--ask", argv)
+
+    def test_codex_json_never_replaces_the_launchs_own_keys(self):
+        base = tempfile.mkdtemp(prefix="sessions-")
+        os.makedirs(os.path.join(base, "L-2"))
+        with open(os.path.join(base, "L-2", of_door.DOOR_FILE), "w") as fh:
+            json.dump({"position": "of_docs", "org": "orgA", "cwd": "/", "launch": "L-2"}, fh)
+        with open(os.path.join(base, "L-2", of_door.CODEX_FILE), "w") as fh:
+            json.dump({"session": "s", "pid": 1, "position": "of_architect", "org": "orgB"}, fh)
+        from unittest import mock
+        with mock.patch.object(of_door, "_cmdline", return_value=["codex", "-p", "of-L-2"]), \
+                mock.patch.object(of_door.os, "kill", return_value=None):
+            got = of_door.read_doors(base)
+        self.assertEqual(list(got), ["L-2"])
+        for door in got.values():
+            self.assertEqual((door["position"], door["org"]), ("of_docs", "orgA"))
+
 if __name__ == "__main__":
     unittest.main()
