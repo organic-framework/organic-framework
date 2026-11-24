@@ -8565,6 +8565,142 @@ def _cred_code(code, cwd, env, keep):
     return out
 
 
+# G43: an unlisted credential root (a user organization's request, 2026-11-24, of_architect's yes): its names are its
+# keeper's alone to list, stat or search for. Reading and using stay the catalogue's (G14); this reads only the calls
+# that show names, sizes or existence of what lies there. A recursive one from a folder above the root shows its names
+# too (`find ~/.config -name '*.key'`), a plain listing of the folder above shows only the root's own name.
+_LIST_HEADS = {"ls", "stat", "file", "find", "tree", "du", "exa", "eza", "lsd", "fd", "fdfind", "gstat", "gls", "dir",
+               "vdir", "locate", "mdfind", "realpath", "readlink", "namei", "lsattr", "getfacl", "xattr"}
+_LIST_CODE = re.compile(r"\b(?:listdir|scandir|walk|iglob|glob|iterdir|rglob|stat|lstat|readdir|readdirSync|opendir|"
+                        r"Dir\.(?:entries|children|glob)|fs\.stat)\s*\(")   # an existence test is no listing, as test(1)
+_LIST_RECURSIVE_CODE = re.compile(r"\b(?:walk|rglob)\s*\(|\*\*")
+
+
+def credential_lists(tool, tool_input, cwd=None, roots=(), depth=0):
+    """[(path, how, recursive)]: what this call lists, stats or searches by name where an unlisted root lies (G43):
+    the Glob and LS tools, Bash's listing programs and interpreter code's directory calls, its operands (or the folder
+    it runs in when it names none)."""
+    roots = [r for r in roots or () if r]
+    if not roots:
+        return []
+    ti = tool_input or {}
+
+    def near(p, recursive):
+        return any(p == r or p.startswith(r.rstrip("/") + "/") or (recursive and r.startswith(p.rstrip("/") + "/"))
+                   for r in roots)
+    if tool in ("Glob", "LS"):
+        base = _cred_expand(str(ti.get("path") or cwd or ""), {}, cwd)
+        pattern = str(ti.get("pattern") or "")
+        recursive = tool == "Glob" and ("**" in pattern or "/" in pattern)
+        out = []
+        if base and near(base, recursive or tool == "Glob"):
+            out.append((base, tool, recursive or tool == "Glob"))
+        if pattern.startswith(("/", "~")):   # an absolute pattern names its own folder
+            fixed = _expanduser(re.split(r"[*?\[{]", pattern, 1)[0])
+            fixed = os.path.normpath(fixed if fixed.endswith("/") else os.path.dirname(fixed) or fixed)
+            if near(fixed, True):
+                out.append((fixed, tool, True))
+        return out
+    if tool != "Bash":
+        return []
+    return [x for x in _cred_lists_bash(str(ti.get("command") or ""), cwd, dict(os.environ), near, depth)]
+
+
+def _cred_lists_bash(cmd, cwd, env, near, depth):
+    if depth > DEPTH_CAP:
+        _CAPPED[0] = _CAPPED[0] or "_cred_lists_bash"
+        return []
+    out = []
+    try:
+        text, subs, docs, _ = _scan(cmd)
+    except Exception:  # noqa: BLE001 - nothing found is the fail-open answer for an organization's rule
+        return []
+    for sub in subs:
+        out += _cred_lists_bash(sub, cwd, env, near, depth + 1)
+    for quoted, body, opener in docs:
+        head = _head(opener)
+        if head in _SHELLS:
+            out += _cred_lists_bash(body, cwd, env, near, depth + 1)
+        elif head in _INTERPRETERS:
+            out += _cred_lists_code(body, cwd, env, near)
+    try:
+        pipes = _split(text)
+    except ValueError:
+        return out
+    for pipe in pipes:
+        for kind, stext in pipe:
+            if kind == "sub":
+                out += _cred_lists_bash(stext, cwd, env, near, depth + 1)
+                continue
+            try:
+                assigns = _assignments(stext)
+                s = _simple(stext)
+            except ValueError:   # a stage it cannot read: nothing found here, the critical reading decides it
+                continue
+            if not s:
+                env.update({k: v for k, v in assigns.items() if "$(" not in v})
+                continue
+            if s[0] == "<read":
+                continue
+            head, args = s[0], s[1]
+            local = dict(env, **assigns)
+            if head in ("cd", "pushd") and args:
+                d = _cred_expand(args[-1], local, cwd)
+                cwd = d if d else cwd
+                continue
+            if head != "ssh" and head not in _RUNNERS:
+                for body in _nested(head, args):
+                    out += _cred_lists_bash(body, cwd, local, near, depth + 1)
+            if head in _INTERPRETERS:
+                for flag in ("-c", "-e"):   # as _cred_bash reads them here
+                    if flag in args[:-1]:
+                        out += _cred_lists_code(args[args.index(flag) + 1], cwd, local, near)
+            try:
+                ws = _command_words(_segments(stext)[-1]) if stext else []
+            except (ValueError, IndexError):
+                ws = []
+            prog = _cred_expand(_cred_word(ws[0]), local, cwd) if ws and "/" in ws[0] else None
+            if prog and near(prog, False):   # a program run by its path there: a use, the catalogue's to decide
+                out.append((prog, "run", False))
+            if head not in _LIST_HEADS:
+                continue
+            recursive = head in ("find", "tree", "du", "fd", "fdfind", "locate", "mdfind") or \
+                bool({"-R", "-r", "--recursive"} & set(args)) or any(re.fullmatch(r"-\w*R\w*", a) for a in args)
+            ops = [a for a in args if not a.startswith("-")]
+            if head == "find":   # its starting points: the words before its first expression
+                ops = []
+                for a in args:
+                    if a.startswith(("-", "(", "!")):
+                        break
+                    ops.append(a)
+            if head in ("locate", "mdfind", "fd", "fdfind"):   # a name search: its words name the folders it walks
+                ops = [a for a in ops if "/" in a or a.startswith("~")]
+            paths = [_cred_expand(_cred_word(a), local, cwd) for a in ops] or [cwd]
+            if head in ("locate", "mdfind") and not [a for a in ops]:
+                paths = ["/"]   # the whole disk's index: every name under every root
+            for p in paths:
+                if p and near(p, recursive):
+                    out.append((p, head, recursive))
+    return out
+
+
+def _cred_lists_code(code, cwd, env, near):
+    """Interpreter code that lists, stats or walks a folder named by a literal under an unlisted root (G43)."""
+    if not _LIST_CODE.search(code):
+        return []
+    recursive = bool(_LIST_RECURSIVE_CODE.search(code))
+    carried = re.sub(r"'''.*?'''|\"\"\".*?\"\"\"", " ", code, flags=re.S)
+    out = []
+    for m in _LITERAL.finditer(carried):
+        lit = m.group(2).strip()
+        if " " in lit or "/" not in lit:
+            continue
+        p = _cred_expand(lit.split("*", 1)[0].rstrip("/") or lit, env, cwd)
+        if p and near(p, recursive):
+            out.append((p, "code", recursive))
+    return out
+
+
 # ------------------------------------------------------------------ scratch quota (G15)
 # A user organization's platform_owner (msg 01a1c8f3) and of_platform (msg 01a1c950, cec3833), 2026-11-11: free
 # disk fell from 46 to 28 GiB in a night, nearly all of it live sessions' scratch folders (worktrees of 1.5 GB, data

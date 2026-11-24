@@ -108,7 +108,8 @@ class DepthCapTest(unittest.TestCase):
             of_guard.DEPTH_CAP_MODE = saved
 
     def test_every_reader_with_a_depth_cap_marks_it(self):
-        """A reader that stops at its cap marks the call, so a later check can refuse it (11 readers at this head)."""
+        """A reader that stops at its cap marks the call, so a later check can refuse it (12 readers at this head: G43's
+        listing reader is the twelfth)."""
         import inspect
         import re
         src = inspect.getsource(of_guard)
@@ -116,7 +117,7 @@ class DepthCapTest(unittest.TestCase):
         capped = [b.split("(", 1)[0][4:] for b in bodies if re.search(r"\n    if [^\n]*\bdepth > DEPTH_CAP\b", b)]
         unmarked = [name for name, b in zip(capped, [b for b in bodies if re.search(r"\n    if [^\n]*\bdepth > DEPTH_CAP\b", b)])
                     if "_CAPPED[0] = _CAPPED[0] or" not in b]
-        self.assertEqual(len(capped), 11, capped)
+        self.assertEqual(len(capped), 12, capped)
         self.assertEqual(unmarked, [], "a reader whose depth cap answers without marking the call")
 
 

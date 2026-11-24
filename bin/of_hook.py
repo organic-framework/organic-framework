@@ -1793,17 +1793,48 @@ def _credential_guard(hook, sess):
     store or registry fails open here (an organization's rule); the critical rules above never do."""
     global OUTPUT
     tool = hook.get("tool_name")
-    if tool not in ("Bash", "Read", "Grep", "Edit", "MultiEdit", "NotebookEdit"):
+    if tool not in ("Bash", "Read", "Grep", "Edit", "MultiEdit", "NotebookEdit", "Glob", "LS"):
         return False
     sid = hook.get("session_id")
     try:
         import of_credentials
         cat = of_credentials.cached(STATE, os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml"))
-        refs = of_guard.credential_refs(tool, hook.get("tool_input"), hook.get("cwd"), of_credentials.interesting(cat))
-        if not refs:
+        unlisted = of_credentials.unlisted_roots(cat)
+        lists = of_guard.credential_lists(tool, hook.get("tool_input"), hook.get("cwd"), unlisted) if unlisted else []
+        refs = of_guard.credential_refs(tool, hook.get("tool_input"), hook.get("cwd"), of_credentials.interesting(cat)) \
+            if tool not in ("Glob", "LS") else []
+        if not refs and not lists:
             return False
         index = _guard_index(sid)
         name, org = (((index.get("sessions") or {}).get(sid) or []) + [None, None])[:2]
+        for path, how, recursive in lists:   # G43: an unlisted root's names are its keeper's alone
+            if how == "run":   # its program run by its path: a use of the credential that names it (of_architect)
+                d = of_credentials.decide(path, name, org, cat)
+                if d and not d[0]:
+                    refs = list(refs) + [(path, "run")]
+                continue
+            got = of_credentials.unlisted_hit(path, name, org, cat, recursive)
+            if got:
+                owner, root, keeper = got
+                why = (f"{root.replace(os.path.expanduser('~'), '~', 1)} is {owner}'s unlisted credential root: what "
+                       f"lies there is used only through its own programs, and listing, stat or a name search there is "
+                       f"its keeper {keeper}'s alone (docs/registry.md, Credentials; docs/guard.md G43)")
+                OUTPUT = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                 "permissionDecisionReason": f"Organic Framework credential rule of "
+                                                 f"{owner}: {why}." + NO_WAY_ROUND}}
+                sys.stdout.write(json.dumps(OUTPUT, ensure_ascii=False))   # the decision goes out before recording
+                sys.stdout.flush()
+                OUTPUT = None
+                try:
+                    write("mandate_check", {"verdict": "credential", "decision": "deny", "mode": "enforce",
+                                            "router_version": __import__("of_router").VERSION, "tool_name": tool,
+                                            "rule": "credential_unlisted", "credential_org": owner,
+                                            "reason": why, "subject": how}, hook, sess, _guard_index())
+                except (SystemExit, Exception):
+                    pass
+                return True
+        if not refs:
+            return False
         hits = []
         for path, _how in dict.fromkeys(refs):
             d = of_credentials.decide(path, name, org, cat)
