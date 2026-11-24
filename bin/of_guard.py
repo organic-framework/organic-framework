@@ -73,7 +73,6 @@ _INTERPRETERS = {"python", "python3", "node", "ruby", "perl", "php", "osascript"
 _WRAPPERS = {"sudo", "command", "exec", "nohup", "time", "nice", "stdbuf", "xargs", "builtin", "doas", "ionice",
              "caffeinate", "taskset", "chrt", "taskpolicy", "arch", "script"}
 _WRAPPER_POSITIONAL = {"taskset": 1, "chrt": 1, "script": 1}  # a mask, a priority, a typescript file, then the command
-_HEREDOC = re.compile(r"<<(-?)[ \t]*(['\"]?)([A-Za-z_][\w.-]*)\2")
 _SEPS, _REDIR = set(";&|()\n"), set("<>&")
 
 # A variable reference, and the rule for a secret-shaped NAME: KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL(S)|
@@ -1107,19 +1106,83 @@ def _code_deny(code, lang=None):
 
 
 _META = " \t\n;&|()<>"   # bash's metacharacters: a word starts after one (a carriage return is a word's character)
-_HERE_WORD = re.compile(r"<<(-?)[ \t]*(\\?)(['\"]?)([^\s;&|<>()'\"]+)\3")
+_HERE_META = set(" \t\n;&|()<>")
+
+
+def _here_word(text, i):
+    """The here-document TEXT opens at I (its `<<`) as bash reads it: (dash, quoted, delimiter, end) or None when no
+    word follows. The delimiter is the word after `<<` or `<<-` and its blanks, up to an unquoted metacharacter, with
+    its quotes and backslashes removed, however its parts are quoted or escaped, and any quote or backslash in it keeps
+    the body unexpanded. The one reader for _scan, _comment_spans and _cut_heredocs (of_secrets-review,
+    message 01a20d09-c216: the three readers each took a narrower word, and none a quoted one with a blank)."""
+    n = len(text)
+    if not text.startswith("<<", i) or text.startswith("<<<", i):
+        return None
+    j = i + 2
+    dash = text.startswith("-", j)
+    j += dash
+    while j < n and text[j] in " \t":
+        j += 1
+    word, quoted = [], False
+    while j < n and text[j] not in _HERE_META:
+        c = text[j]
+        if c == "\\" and j + 1 < n:
+            if text[j + 1] == "\n":       # a backslash-newline joins the word's lines
+                j += 2
+                continue
+            word.append(text[j + 1])
+            quoted, j = True, j + 2
+        elif c == "'":
+            e = text.find("'", j + 1)
+            if e < 0:
+                return None
+            word.append(text[j + 1:e])
+            quoted, j = True, e + 1
+        elif c == '"':
+            k, part = j + 1, []
+            while k < n and text[k] != '"':
+                if text[k] == "\\" and k + 1 < n and text[k + 1] in '$`"\\\n':
+                    part.append(text[k + 1])
+                    k += 2
+                else:
+                    part.append(text[k])
+                    k += 1
+            if k >= n:
+                return None
+            word.append("".join(part))
+            quoted, j = True, k + 1
+        else:
+            word.append(c)
+            j += 1
+    if not word:
+        return None
+    return dash, quoted, "".join(word), j
+
+
+def _comment_spans(text):
+    """{start: end} of every comment in TEXT as bash reads one (_shell_read)."""
+    return _shell_read(text)[0]
+
+
+def _heredoc_opens(text):
+    """{index of `<<`: (dash, quoted, delimiter, end)} for every here-document TEXT opens as bash reads it, from the
+    same walk as its comments (_shell_read): never inside quotes, a parameter expansion or arithmetic."""
+    return _shell_read(text)[1]
 
 
 @functools.lru_cache(maxsize=256)
-def _comment_spans(text):
+def _shell_read(text):
     """{start: end} of every comment in TEXT as bash reads one, the one rule _scan, _split and _strip_comments all take
     (hand-over 6f336a7c and 03375da4): a `#` that starts a word, outside quotes, in a command (the line, a $( ) body or
     a backtick substitution) and never inside a parameter expansion ${ … } or arithmetic $(( … )); a word starts after
     a metacharacter (blank, tab, newline, ; & | ( ) < >), at the text's start and right after a $( or an opening
-    backtick, while a carriage return, an escaped character and a quote are a word's. A comment ends before its line's
+    backtick, while a carriage return, an escaped character and a quote are a word's; $'…' is one quote, its
+    backslash escapes included. A comment ends before its line's
     newline, or, inside a backtick substitution, before the closing backtick when that comes first. A heredoc's body
-    holds none. END is the index of the newline or backtick that ends it (the text's length at its end)."""
-    out, n, i = {}, len(text), 0
+    holds none. END is the index of the newline or backtick that ends it (the text's length at its end).
+    Also every here-document's opening, read by _here_word where a command can open one: never in arithmetic, $(( ))
+    or a command's (( )), where << is a shift. Returns (spans, opens)."""
+    out, opens, n, i = {}, {}, len(text), 0
     frames = [["cmd", False, False, 0]]   # [kind, single, double, parens]; kinds: cmd, sub ($( )), back, param, arith
     start = True
     here, bodies = [], []
@@ -1179,6 +1242,10 @@ def _comment_spans(text):
             out[i] = e
             i = e
             continue
+        if text.startswith("$'", i) and _ANSI_WORD.match(text, i):
+            i = _ANSI_WORD.match(text, i).end()   # $'…': its \' is no closing quote, as _scan reads it
+            start = False
+            continue
         if c == "'":
             f[1] = True
             start = False
@@ -1228,16 +1295,24 @@ def _comment_spans(text):
             start = True
         elif kind in ("cmd", "sub", "back") and text.startswith("<<", i) and not text.startswith("<<<", i) \
                 and text[i - 1:i] != "<":
-            m = _HERE_WORD.match(text, i)
-            if m and re.search(r"(?m)^" + (r"\t*" if m.group(1) else "") + re.escape(m.group(4)) + r"$", text[i:]):
-                bodies.append((m.group(4), bool(m.group(1))))
-            i += 2
+            h = _here_word(text, i)
+            if h:   # its body runs to its delimiter's line, or to the text's end as bash reads a missing one
+                opens[i] = h
+                bodies.append((h[2], h[0]))
+                i = h[3]   # the delimiter word is no code: a quote or a # in it opens nothing
+            else:
+                i += 2
             start = True
+            continue
+        elif kind in ("cmd", "sub", "back") and start and text.startswith("((", i):
+            frames.append(["arith", False, False, 0])   # an arithmetic command: its << is a shift, its # no comment
+            i += 2
+            start = False
             continue
         else:
             start = kind in ("cmd", "sub", "back") and c in _META
         i += 1
-    return out
+    return out, opens
 
 
 def _scan(text, i=0, nested=False):
@@ -1251,6 +1326,7 @@ def _scan(text, i=0, nested=False):
     single = double = False
     depth = 0
     spans = _comment_spans(text)   # a comment holds no quote and no substitution (hand-over 03375da4)
+    opens = _heredoc_opens(text)   # and a here-document opens only where that walk reads one
     while i < n:
         if i in spans:
             i = spans[i]
@@ -1310,11 +1386,11 @@ def _scan(text, i=0, nested=False):
             i += 3
             continue
         elif not double and text.startswith("<<", i):
-            m = _HEREDOC.match(text, i)
-            if m:
-                pending.append((m.group(1) == "-", bool(m.group(2)), m.group(3), text[text.rfind("\n", 0, i) + 1:i]))
+            h = opens.get(i)
+            if h:
+                pending.append((h[0], h[1], h[2], text[text.rfind("\n", 0, i) + 1:i]))
                 out.append("<< __OFDOC__")
-                i = m.end()
+                i = h[3]
                 continue
         elif nested and not double:
             if c == "(":
@@ -5390,16 +5466,22 @@ def _stdin_runs_protected(stext, cwd, fed):
     return fed() if callable(fed) else fed
 
 
-_HEREDOC_OPEN = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*(['\"]?)([A-Za-z_][\w.-]*)\2")
 
 
 def _cut_heredocs(text):
     """TEXT without its here-document bodies, for G21's read of a raw line: a body is data for the command it goes to
-    (a shell's own body is read apart), and its lines are no commands (`won't` in a commit message)."""
-    out, lines, i = [], text.split("\n"), 0
+    (a shell's own body is read apart), and its lines are no commands (`won't` in a commit message). Its openings are
+    the ones the guard's one walk reads (_heredoc_opens)."""
+    lines = text.split("\n")
+    starts, at = [], 0
+    for line in lines:
+        starts.append(at)
+        at += len(line) + 1
+    opens = sorted(_heredoc_opens(text).items())
+    out, i = [], 0
     while i < len(lines):
         out.append(lines[i])
-        ends = [(m.group(1), m.group(3)) for m in _HEREDOC_OPEN.finditer(lines[i])]
+        ends = [(h[0], h[2]) for k, h in opens if starts[i] <= k < starts[i] + len(lines[i])]
         i += 1
         for dash, d in ends:
             while i < len(lines) and (lines[i].lstrip("\t") if dash else lines[i]) != d:
