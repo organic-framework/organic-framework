@@ -114,6 +114,14 @@ class SubagentTest(unittest.TestCase):
             {"harness": harness, "passed": passed, "failed": None if passed else ["the model cannot read its login"],
              "kinds": kinds})))
 
+    def test_a_selftest_with_its_real_login_readable_does_not_start(self):
+        """of_server on PR 652: the selftest ran with the gates off and asked the model to read the real login."""
+        fake = Fake("muse")
+        with self.assertRaises(of_subagent.SubagentError) as e:
+            of_subagent.selftest("muse", session="S1", log=lambda m: None, popen=fake)
+        self.assertIn("could read its own login", str(e.exception))
+        self.assertEqual(fake.calls, [])
+
     def test_a_run_needs_its_harness_latest_selftest_passed(self):
         """of_secrets-review on PR 328: Muse's file tools read its own login, and withholding catches only a verbatim
         copy, so a harness runs only while its latest live selftest passed every check."""

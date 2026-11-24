@@ -1223,7 +1223,8 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
         run_canary=None):
     """One outside run; returns {run, exit, answer, record, usage, model, tools, unexpected_tools}. Refuses (raises
     SubagentError) before anything leaves the machine when a limit is not met. GATES False skips the organization's
-    choice, the prompt's checks and the training gate (`of subagent selftest`, which sends only its own canary files).
+    choice, the prompt's checks and the training gate (`of subagent selftest`, which sends only its own canary files);
+    never the login's gate.
     ORG_ROOT: the organization's repository, where its prompt_check lives. ORG_NAME: its name in orgs.yaml, for the
     training reading's card (ORG is the events' organization id)."""
     if harness not in HARNESSES:
@@ -1342,7 +1343,9 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
         argv, env, reads, writes = command(harness, kind, run_dir, work_dir, run_prompt, answer_file, run_schema, model,
                                            binary, effort)
         outer = sandbox if sandbox is not None else OUTER_SANDBOX[harness]
-        exposed = login_readable(harness, run_dir, work_dir, reads, outer) if gates else []
+        # the login's gate holds for every run, the selftest's too: whatever a file tool reads goes to the provider in
+        # its tool result before any local withholding (of_server on PR 652)
+        exposed = login_readable(harness, run_dir, work_dir, reads, outer)
         # no run whose model could read its harness's own login (of_server, message 01a20e67-96ff, withdrawing his yes
         # of 01a20e57-08f0: the outer sandbox lets every host through, and the withholding matches raw values only):
         # until the sandbox allows the network only to the harness's endpoints and the model cannot read the login,
