@@ -1100,17 +1100,20 @@ def _dest_names(code):
 
 def _os_open_writes(code):
     """Does an os.open call name a write flag inside its own parentheses, across lines and nested calls, and never past
-    its closing one (of_review on PR 629: flags in parentheses, a call over two lines, a flag after the call)?"""
+    its closing one (of_review on PR 629: flags in parentheses, a call over two lines, a flag after the call)? Its
+    arguments are read as the scanner walks them: a comment is left out, a string kept whole, so a '#' inside a string
+    starts no comment (of_secrets-review on PR 629)."""
     for m in _OS_OPEN.finditer(code):
-        depth, k, quote = 1, m.end(), None
+        depth, k, quote, kept = 1, m.end(), None, []
         while k < len(code) and depth:
             ch = code[k]
             if quote:
                 if ch == "\\":   # an escape takes the next character, an escaped backslash included (of_review, 629)
+                    kept.append(code[k:k + 2])
                     k += 2
                     continue
                 quote = None if ch == quote else quote
-            elif ch == "#":   # a comment runs to its line's end: its ')' ends no call (of_review on PR 629)
+            elif ch == "#":   # a comment runs to its line's end: its ')' ends no call, its words name no flag
                 nl = code.find("\n", k)
                 k = len(code) if nl < 0 else nl
                 continue
@@ -1120,8 +1123,9 @@ def _os_open_writes(code):
                 depth += 1
             elif ch == ")":
                 depth -= 1
+            kept.append(ch)
             k += 1
-        if _OS_OPEN_FLAGS.search(re.sub(r"#[^\n]*", "", code[m.end():k])):
+        if _OS_OPEN_FLAGS.search("".join(kept)):
             return m
     return None
 

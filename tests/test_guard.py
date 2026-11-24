@@ -1077,7 +1077,8 @@ class LiveCheckoutTest(unittest.TestCase):
                     f"cd {live}/bin && python3 -c \"import os; os.link('/tmp/source', 'stamp')\"",
                     f"cd {live}/bin && python3 -c \"import os, shutil; shutil.copyfile(os.path.join('/tmp', 'source'), 'stamp')\"",
                     f"cd {live}/bin && python3 <<'EOF'\nimport os, shutil\nshutil.copyfile(os.path.join('/tmp', 'source'), \"team's\")\nEOF",
-                    f"cd {live}/bin && python3 <<'EOF'\nimport os, shutil\nshutil.copyfile(os.path.join('/tmp', 'source\\\\'), 'stamp')\nEOF"):
+                    f"cd {live}/bin && python3 <<'EOF'\nimport os, shutil\nshutil.copyfile(os.path.join('/tmp', 'source\\\\'), 'stamp')\nEOF",
+                    f"python3 -c \"import os; os.open('{live}/bin/x#1', os.O_WRONLY | os.O_CREAT)\""):   # of_secrets-review
             self.assertTrue(self.deny(cmd), cmd)
         self.assertFalse(self.deny(f"cd {live}/bin && python3 -c \"import pathlib; pathlib.Path('/tmp/q').open('w')\""))
         self.assertFalse(self.deny(f"python3 -c \"import os; os.open('{live}/bin/of', os.O_RDONLY); print(os.O_CREAT)\""))
