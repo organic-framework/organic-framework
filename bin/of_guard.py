@@ -3162,6 +3162,37 @@ def _stdin_script_deny(path, kind, depth):
     return _bash_deny(body, depth + 1) if kind == "shell" else _code_deny(body)
 
 
+def _reads_script_on_stdin(args):
+    """Does a shell with these arguments read its script from stdin: no -c, and no script file named (only options,
+    `-s`, or `-` first)."""
+    if any(a == "-c" or (a.startswith("-") and not a.startswith("--") and "c" in a[1:]) for a in args):
+        return False
+    pos = [a for a in args if not a.startswith("-") or a == "-"]
+    return not pos or pos[0] == "-" or "-s" in args
+
+
+def _piped_script(stext, docs, first_doc):
+    """The text the stage STEXT prints for the next stage to read: an echo's words, a printf's format and arguments,
+    or the body of the heredoc a cat prints; None for any other stage."""
+    s = _simple(stext)
+    if not s or s[0] == "<read":
+        return None
+    head, args = s[0], s[1]
+    if head == "echo":
+        words = list(args)
+        while words and re.fullmatch(r"-[neE]+", words[0]):
+            words.pop(0)
+        return " ".join(words)
+    if head == "printf" and args:
+        fmt, rest = args[0], args[1:]
+        if re.fullmatch(r"%[sb](?:\\n)?", fmt):
+            return "\n".join(rest)
+        return fmt + ("\n" + "\n".join(rest) if rest else "")
+    if head == "cat" and "__OFDOC__" in stext and not [a for a in args if not a.startswith("-")]:
+        return docs[first_doc][1] if first_doc < len(docs) else None
+    return None
+
+
 def _stdin_file(stext):
     """The file a simple command reads on stdin (`< file`), or None."""
     toks = _tokens(stext)
@@ -5960,12 +5991,16 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
     loops = _LOOPS[0]    # `for NAME in WORDS` earlier on the line: what NAME holds in the body, a { } group or a
     # subshell in it included (G0.9), shared by every depth of one check
     lab_link = False     # a link or a socket made under of_herdr's lab earlier on the line (G19)
+    ndoc = 0             # the heredocs of the stages before this one: a stage's placeholders index into docs
     for pipe in pipes:
         last = len(pipe) - 1
         cmds = []  # (head, args) of the simple-command stages, for the env-dump pipeline check
         prior = []  # earlier stages of this pipe (G21: `cat <script> | bash`), read only when a shell needs them
         prev = None  # the last simple command's (head, text): `bash <(cat <script>)` splits into it and a sub
+        doc_at = []      # each stage's first heredoc in docs
         for idx, (kind, stext) in enumerate(pipe):
+            doc_at.append(ndoc)
+            ndoc += stext.count("__OFDOC__")
             if kind == "sub" and prev and _ORG_PROTECTION["code"] and prev[1].rstrip().endswith("<") \
                     and prev[0] in _RUN_SHELLS | {"source", "."}:
                 named = _text_names_protected(stext, here21)
@@ -6056,6 +6091,15 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                         files += [a for a in prev[1] if not a.startswith("-")]
                 for f in files:
                     hit = _stdin_script_deny(f, remote, depth)
+                    if hit:
+                        return hit
+            if head in _SHELLS and head != "eval" and idx > 0 and _reads_script_on_stdin(args) \
+                    and pipe[idx - 1][0] == "cmd":
+                # a local shell takes the text an echo, a printf or a heredoc prints on its stdin as its script: read
+                # as G12 reads a remote shell's (of_review's probe on PR 637, hand-over 71a405d6)
+                fed = _piped_script(pipe[idx - 1][1], docs, doc_at[idx - 1])
+                if fed:
+                    hit = _in_folder(here21, _bash_deny, fed, depth + 1)
                     if hit:
                         return hit
             if head in ("echo", "printf") and stage_reaches:
