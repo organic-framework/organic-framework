@@ -2935,6 +2935,13 @@ class LimitDialog(unittest.TestCase):
         self.assertFalse(of_capacity.limit_cursor(moved))  # never Enter on the paid option
         self.assertFalse(of_capacity.limit_cursor(INPUT_BOX))
 
+    def test_has_limit_dialog_ignores_quoted_options(self):
+        history = ["Options: 1 Stop and wait for limit to reset | 2 Wait here, then continue automatically at "
+                   "Nov 30 at 12am | 3 Switch to usage credits"]
+        self.assertFalse(of_capacity.has_limit_dialog(history + INPUT_BOX))
+        self.assertTrue(of_capacity.has_limit_dialog(history + self.SCREEN))
+        self.assertTrue(of_capacity.has_limit_dialog(self.WRAPPED))
+
     def test_only_the_live_dialog_counts(self):
         # of_server on PR 318: a copy printed higher up, cursor on "Stop and wait", above the live dialog whose
         # cursor is on the paid option, passed
