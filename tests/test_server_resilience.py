@@ -269,6 +269,12 @@ class WatchdogTest(unittest.TestCase):
             self.assertIn("refused, a link", out)
             with open(target) as fh:
                 self.assertEqual(fh.read(), "")   # never written through
+            calls.clear()   # an uninstall boots the job out and removes the link itself (of_review on PR 660)
+            out = of_server.load_launchd({"dev.example.two": "<plist/>"}, uninstall=True, run=run)
+            self.assertIn("removed dev.example.two", out)
+            self.assertTrue(any(c[:2] == ["launchctl", "bootout"] for c in calls))
+            self.assertFalse(os.path.lexists(os.path.join(agents, "dev.example.two.plist")))
+            self.assertTrue(os.path.exists(target))   # its target stays
 
     def test_without_launchd_it_only_says_so(self):
         with mock.patch.object(of_server, "launchd_job", lambda: None), \
