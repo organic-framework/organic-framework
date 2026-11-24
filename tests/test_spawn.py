@@ -497,22 +497,32 @@ class PositionFolderTest(unittest.TestCase):
 
     def test_each_denied_tree_is_a_folder_before_the_sandbox_starts(self):
         """agent-host_keeper's read on the host, through of_server (2026-11-24): the sandbox leaves an empty read-only
-        file at a denied path not there yet, and the folder (subagent/muse-login) can then never be made."""
+        file at a denied path not there yet, and the folder (subagent/muse-login) can then never be made; of_review on
+        PR 642: Muse's folder comes from the sandbox block itself, and a plan or a dry run makes nothing."""
         import tempfile
+        from unittest import mock
         with tempfile.TemporaryDirectory() as t:
-            home = os.path.realpath(t)
-            state = os.path.join(home, ".local", "state", "of")
+            state = os.path.join(os.path.realpath(t), "state")
             os.makedirs(state)
-            login, there = os.path.join(state, "subagent", "muse-login"), os.path.join(home, "keys")
+            login, there = os.path.join(state, "subagent", "muse-login"), os.path.join(state, "keys")
             os.makedirs(there)
-            made = of_spawn.make_denied_folders([f"Read(/{login}/**)", f"Read(/{there}/**)",
-                                                 f"Read(/{home}/a-file.txt)", f"Read(/{home}/*.pem)",
-                                                 "Read(//elsewhere/outside/**)"], home=home)
+            made = of_spawn.make_denied_folders([f"Read(/{there}/**)", f"Read(/{state}/a-file.txt)",
+                                                 f"Read(/{state}/*.pem)", "Read(//elsewhere/outside/**)",
+                                                 f"Read(/{os.path.realpath(t)}/config/**)"],
+                                                extra=(login,), base=state)
             self.assertEqual(made, [login])
-            self.assertTrue(os.path.isdir(login))
-            self.assertEqual(oct(os.stat(login).st_mode & 0o777), "0o700")
-            self.assertFalse(os.path.exists(os.path.join(home, "a-file.txt")))   # a file pattern makes nothing
-            self.assertFalse(os.path.exists("/elsewhere/outside"))
+            for q in (os.path.dirname(login), login):
+                self.assertEqual(oct(os.stat(q).st_mode & 0o777), "0o700")      # each level made 0700
+            self.assertFalse(os.path.exists(os.path.join(state, "a-file.txt")))
+            self.assertFalse(os.path.exists(os.path.join(os.path.realpath(t), "config")))   # outside OF's state
+            settings = json.dumps({"sandbox": {"enabled": True},
+                                   "permissions": {"deny": [f"Read(/{state}/later/**)"]}})
+            with mock.patch.object(of_spawn, "session_settings", return_value=settings), \
+                    mock.patch.object(of_spawn, "_muse_dir", return_value=None):
+                of_spawn.session_settings()                                      # building settings makes nothing
+                self.assertFalse(os.path.exists(os.path.join(state, "later")))
+                of_spawn.settings_file(settings, "s-1", state_dir=state)       # a launch's file does
+            self.assertTrue(os.path.isdir(os.path.join(state, "later")))
 
     def test_the_top_and_the_clones_control_are_closed_in_the_sandbox(self):
         with mock.patch.object(of_spawn, "_accounts_dirs", return_value=[]):

@@ -731,23 +731,44 @@ def sandbox_settings(deny=None, platform=None, scratch=None, org=None, rules_dir
                         "allowedDomains": list(SANDBOX_DOMAINS), "deniedDomains": []}}
 
 
-def make_denied_folders(deny, home=None):
-    """Make each folder a deny rule names by its whole tree (`Read(//<path>/**)`) that is not there yet, inside the
-    home, before the session starts: Claude Code's Linux sandbox leaves an empty read-only file at a denied path that
-    does not exist, and the folder can then never be made there (agent-host_keeper's read on the agent host,
-    2026-11-24, through of_server: the state folder's subagent/muse-login). Returns the folders made."""
-    home = os.path.realpath(home or os.path.expanduser("~"))
-    made = []
+def make_denied_folders(deny, extra=(), base=None):
+    """Make, inside OF's state folder (BASE), each folder the session's sandbox denies that is not there yet: those a
+    deny rule names by their whole tree (`Read(//<path>/**)`) and EXTRA (Muse's login folder, which the sandbox block
+    denies by itself). Claude Code's Linux sandbox leaves an empty read-only file at a denied path that does not exist,
+    and the folder can then never be made there (agent-host_keeper's read on the agent host, 2026-11-24, through
+    of_server: the state folder's subagent/muse-login). Each missing level is made 0700 and read back as a folder of its
+    own, never a link. Only when a session is launched (settings_file), never for a plan or a dry run (of_review on
+    PR 642). Returns the folders made."""
+    import stat
+    if base is None:
+        import of_events
+        base = of_events.STATE_DIR
+    base = os.path.realpath(base)
+    want = []
     for r in deny or []:
         m = re.fullmatch(r"Read\(/(/[^*?\[\]]+?)/\*\*\)", r or "")
-        if not m:
+        if m:
+            want.append(m.group(1))
+    want += [x for x in extra or () if x]
+    made = []
+    for p in want:
+        p = os.path.normpath(os.path.expanduser(p))
+        if os.path.lexists(p):
             continue
-        p = os.path.normpath(m.group(1))
         parent = os.path.realpath(os.path.dirname(p))
-        if os.path.lexists(p) or not (parent == home or parent.startswith(home + os.sep)):
+        if not (parent == base or parent.startswith(base + os.sep)) and \
+                not os.path.realpath(p).startswith(base + os.sep):
             continue
+        levels, q = [], p
+        while not os.path.lexists(q):
+            levels.append(q)
+            q = os.path.dirname(q)
         try:
-            os.makedirs(p, mode=0o700)
+            for q in reversed(levels):
+                os.mkdir(q, 0o700)
+                st = os.lstat(q)
+                if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+                    raise OSError(f"{q} is no folder of this user's")
             made.append(p)
         except OSError:
             pass
@@ -764,7 +785,6 @@ def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=
         s.setdefault("permissions", {}).setdefault("deny", []).extend(deny)
     box = sandbox_settings(deny, platform, scratch, org, rules_dirs)
     if box:
-        make_denied_folders(deny)   # a folder, not the sandbox's empty read-only placeholder file, at each denied tree
         s["sandbox"] = box
         # the sandbox binds Bash only; the file tools, MCP servers and command hooks run outside it
         # (code.claude.com/docs/en/sandboxing): the file tools write only inside the working folders, and never the
@@ -832,6 +852,12 @@ def settings_file(settings, sid, state_dir=None):
     with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
         fh.write(settings)
     os.replace(tmp, path)
+    if '"sandbox"' in settings:   # a launch: a folder, not the sandbox's read-only placeholder file, at each denied tree
+        try:
+            doc = json.loads(settings)
+            make_denied_folders(((doc.get("permissions") or {}).get("deny")), extra=(_muse_dir(),), base=state_dir)
+        except (ValueError, AttributeError):
+            pass
     data = settings.encode()
     WRITTEN[os.path.realpath(path)] = (__import__("hashlib").sha256(data).hexdigest(), len(data))
     return path
