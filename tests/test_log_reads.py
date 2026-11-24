@@ -38,7 +38,14 @@ PRIORS = ("the priors tally (bin/of_priors.py, docs/diagnose.md 5.2), an offline
           "the latest label of each issue counts however old it is, so no time bound holds (of_field-analyst, "
           "on organic-framework PR 581)")
 
+DOOR = ("the door's check that a record another wrote to a position cites a person's prompt: on demand, when a "
+        "sandboxed position asks for one; one name by the name index (RFC 0008 par. 4.5, organic-framework PR 489)")
+PREFIX = "the prompts whose event id starts with a cited prefix: a range on the primary key"
 ALLOWED = {
+    ('of', 'prompt_cited', 'of_handover.load(conn)'): HANDOVER,
+    ('of', 'prompt_cited', "SELECT payload FROM event WHERE name = 'of.agent_question_an"): DOOR,
+    ('of', 'prompt_cited', "SELECT position, org FROM event WHERE name = 'of.human_promp"): PREFIX,
+    ('of', 'prompt_cited', "SELECT COUNT(*) FROM event WHERE name = 'of.human_prompt' AN"): PREFIX,
     ('of_priors.py', 'main', "of_model.load_events(conn, names=['of.issue_labelled'])"): PRIORS,
     ('of_merge_delta.py', 'org_scope', 'SELECT DISTINCT session_id, position FROM event WHERE sessio'): MERGE,
     ('of_merge_delta.py', 'merge', 'SELECT event_id, position, session_id, org, payload FROM eve'): MERGE,
