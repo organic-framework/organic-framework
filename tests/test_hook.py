@@ -1119,6 +1119,19 @@ class HolderCheckTest(unittest.TestCase):
             got = self.run_check("fork", True, t.name)
         self.assertEqual([(k, p["new_session"]) for k, p in got], [("holder_changed", "new-1")])
 
+    def test_a_transcript_that_comes_within_a_second_counts(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:
+            path = os.path.join(t, "fork.jsonl")
+            calls = []
+
+            def sleep(s):
+                calls.append(s)
+                if len(calls) == 2:
+                    open(path, "w").close()
+            self.assertTrue(of_hook._transcript_appears(path, sleep=sleep))
+            self.assertFalse(of_hook._transcript_appears(os.path.join(t, "never.jsonl"), sleep=lambda s: None))
+
     def test_a_daemons_session_with_no_transcript_is_not_the_panes(self):
         self.assertEqual(self.run_check("startup", True, "/nonexistent/x.jsonl"), [])
 

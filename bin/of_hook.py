@@ -2125,6 +2125,19 @@ def _under_claude_daemon(pid=None, depth=8, run=None):
     return False
 
 
+def _transcript_appears(path, tries=4, wait=0.25, sleep=None):
+    """Whether the session's transcript file is there, or comes within a second: whether a fork's copied history is
+    written before its SessionStart hook runs is not observed (of_herdr, message 01a20d9d-259b), and a daemon's empty
+    background session never gets one."""
+    sleep = sleep or time.sleep
+    for i in range(tries):
+        if path and os.path.isfile(str(path)):
+            return True
+        if i < tries - 1:
+            sleep(wait)
+    return False
+
+
 def _holder_check(hook, index, sess):
     """A new session in a pane whose label names a position held by another session: started, resumed, or forked by
     Claude Code itself (`continued-in`, source fork; of_capacity's reading, 2026-11-24). Under Claude Code's
@@ -2143,7 +2156,7 @@ def _holder_check(hook, index, sess):
     info = (index.get("labels") or {}).get(label)
     sid = hook.get("session_id")
     if info and info[0] and info[0] != sid and \
-            not (_under_claude_daemon() and not os.path.isfile(str(hook.get("transcript_path") or ""))):
+            not (_under_claude_daemon() and not _transcript_appears(hook.get("transcript_path"))):
         write("holder_changed", {"position": label, "previous_session": info[0], "new_session": sid,
                                  "evidence": f"herdr pane {pane} is labelled {label}"}, hook, sess, index)
 
