@@ -3174,9 +3174,14 @@ def load_launchd(plists, uninstall=False, run=subprocess.run):
         if linked and not uninstall:
             out.append(f"{label}: refused, a link at {path}")
             continue
-        try:
-            with open(path) as fh:
-                same = fh.read() == text
+        try:   # read without waiting on it: a FIFO at the name would block (of_review's note on PR 660)
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                import stat as _stat
+                same = _stat.S_ISREG(os.fstat(fd).st_mode) and os.read(fd, len(text.encode()) + 1).decode(
+                    "utf-8", "replace") == text
+            finally:
+                os.close(fd)
         except OSError:
             same = False
         if same and not uninstall and not linked and run(["launchctl", "print", f"{domain}/{label}"],
