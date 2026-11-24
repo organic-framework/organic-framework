@@ -3690,9 +3690,9 @@ def _command_word(text, names, interpreters=False):
     return False
 
 
-ACTOR_SET_WARN = ("of run with a variable that names its caller set on the line (docs/guard.md G31): of takes its "
-                  "caller from CLAUDE_CODE_SESSION_ID and OF_POSITION, so the message, status or record would be "
-                  "another position's. Leave them as your session set them")
+ACTOR_SET_DENY = ("of run with a variable that names its caller set on the line (docs/guard.md G31): of takes its "
+                  "caller from CLAUDE_CODE_SESSION_ID and OF_POSITION, so the message, status, inbox or record would "
+                  "be another position's. Leave them as your session set them")
 
 
 def _actor_set_warn(cmd):
@@ -3707,6 +3707,23 @@ def _actor_set_warn(cmd):
                 "set it")
         if note not in _WARNINGS:
             _WARNINGS.append(note)
+
+
+def _actor_set_deny(cmd):
+    """G31 for any of command on a line that sets a caller variable to a value: `of send`, `of status`, `of inbox
+    --mine`, a hand-over would be another position's (of_secrets-review on PR 630: the writing commands too). The
+    21-day replay: one such line, a python heredoc's text, in 492 lines that name either variable."""
+    if "of" not in cmd or not any(v in cmd for v in ACTOR_VARS):
+        return None
+    flat = _strip_quoted(_without_code_text(cmd))   # a message's own words are prose, its prefix is not
+    runs_of = _command_word(flat, {"of"}) or bool(re.search(   # and through env (`env OF_POSITION=x of inbox`)
+        r"(?:^|[;&|({`\n]|\$\()\s*(?:\S*/)?env\s+(?:-\S+\s+)*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?of\s", flat))
+    own = {"CLAUDE_CODE_SESSION_ID": _CALLER[0], "OF_POSITION": _CALLER[1]}
+    other = [v for v in ACTOR_VARS for x in re.findall(rf"\b{v}=([^\s;&|)]+)", flat)
+             if not own[v] or x.strip("'\"") != own[v]]   # its own values, as the hook knows them, stay (env -i …)
+    if runs_of and other:
+        return ACTOR_SET_DENY, "of with its caller set"
+    return None
 
 
 def _actor_line_deny(cmd):
@@ -6545,9 +6562,14 @@ def _bash_reads_whole(cmd):
     return None
 
 
-def critical_deny(tool, tool_input, cwd=None):
-    """(reason, subject) for a call to deny, or None. Examples (.env.example, *.pub) stay allowed."""
+_CALLER = [None, None]   # the calling session's id and position as the hook knows them, never as a command says
+
+
+def critical_deny(tool, tool_input, cwd=None, caller=None):
+    """(reason, subject) for a call to deny, or None. Examples (.env.example, *.pub) stay allowed. CALLER: the hook's
+    (session id, position) for this call, which a line may set its caller variables to (G31)."""
     ti = tool_input or {}
+    _CALLER[0], _CALLER[1] = tuple(caller or (None, None))[:2]
     _WARNINGS.clear()
     _REMOTE_BODY[0] = 0
     _LOOPS[0] = {}
@@ -6561,9 +6583,7 @@ def critical_deny(tool, tool_input, cwd=None):
         cmd = ti.get("command") or ""
         _DENY_CWD[0] = cwd
         try:
-            hit = _actor_line_deny(cmd) or _bash_deny(cmd)
-            if not hit:
-                _actor_set_warn(cmd)
+            hit = _actor_line_deny(cmd) or _actor_set_deny(cmd) or _bash_deny(cmd)
         except Exception as e:  # a parser slip: the old text match first, then a deny unless the shell would refuse
             # the line itself (of_review on PR 575)
             bare = _strip_quoted(cmd)
