@@ -12,14 +12,20 @@ tool call of every session on the laptop, both organizations', until the owner r
 
 ## Set it up (the owner, once, in a plain terminal)
 
-    of live setup     # clones public main into ~/.local/share/of/live, writes the update agent
+    of live setup     # clones public main into ~/.local/share/of/live, lists it for of protected ff, writes the agent
     of live switch    # every hooked account's hooks, the units and ~/.local/bin/of now run from it
+
+`of live setup` adds the live checkout to `protected_code` in `~/.config/of/orgs.yaml`, in the entry of the
+organization that lists the checkout OF runs from now (`--org` names another): `of protected ff` moves only a path the
+owner lists there with `ff` (docs/registry.md, Protected code), here the public repository's `main`, its `unit` check
+green, `bin/of_protected.py` the owner's to change. It writes only when the file then reads as before with that key
+more, and leaves an entry that has `protected_code` already for the owner to extend by hand.
 
 `of live switch` runs `of hooks install` from the live checkout for each account whose settings already run OF's
 hooks, with the flags it had (`--guard` where a `PreToolUse` hook runs, `--deny-secrets` where the prompt's mention
 guard does) and `--replace` for the checkout its hooks ran from, so no hook of the working copy stays beside the
-live one; then `of listen install`, `of relay install`, `of server install` and `of health install` from there, so
-each launchd unit names the live checkout's `bin/of`. It stops at the first command that fails and leaves
+live one; then `of listen install`, `of relay install`, `of server install` and `of health install` from there, for
+each of those units this machine runs already, so each launchd unit names the live checkout's `bin/of`. It stops at the first command that fails and leaves
 `~/.local/bin/of` as it was. Both commands refuse in an agent's session.
 
 ## How it moves

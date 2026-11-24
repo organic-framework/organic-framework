@@ -30,14 +30,19 @@ class Accounts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             a, b, c = (os.path.join(t, n) for n in ("a", "b", "c"))
             settings(a, ["py /wc/bin/of-hook PreToolUse", "py /wc/bin/of-hook UserPromptSubmit --deny-secrets"])
-            settings(b, ["py /wc/bin/of-hook Stop"])
+            with open(os.path.join(a, "settings.json")) as fh:
+                sa = json.load(fh)
+            sa["hooks"]["PreToolUse"][0]["matcher"] = of_init.GUARD_MATCHER   # the guard's own group
+            with open(os.path.join(a, "settings.json"), "w") as fh:
+                json.dump(sa, fh)
+            settings(b, ["py /wc/bin/of-hook Stop", "py /wc/bin/of-hook PreToolUse"])   # a recorder's, no guard
             settings(c, ["echo other Stop"])
             got = dict(of_live.hooked_accounts([a, b, c, os.path.join(t, "none")]))
             self.assertEqual(got, {a: ["--replace", "/wc/bin/of", "--guard", "--deny-secrets"],
                                    b: ["--replace", "/wc/bin/of"]})
 
     def test_a_switch_runs_lives_own_of_for_every_account_then_the_units(self):
-        plan = of_live.switch_plan("/py", [("/acc", ["--guard"])], live="/L")
+        plan = of_live.switch_plan("/py", [("/acc", ["--guard"])], live="/L", units=of_live.UNITS)
         self.assertEqual(plan[0], ["/py", "/L/bin/of", "hooks", "install", "--config-dir", "/acc", "--yes", "--guard"])
         self.assertEqual([c[2] for c in plan[1:]], ["listen", "relay", "server", "health"])
         self.assertTrue(all(c[1] == "/L/bin/of" for c in plan))
@@ -48,6 +53,50 @@ class Accounts(unittest.TestCase):
         cmd = of_init.hook_command("PreToolUse", of_path="/L/bin/of")
         self.assertIn("/L/bin/of-hook", cmd)
         self.assertNotIn(ROOT, cmd)
+
+
+ORGS = """# the owner's file
+orgs:
+  - name: alpha
+    path: ~/alpha   # its repository
+    paths:
+      - ~/wc
+  - name: beta
+    path: ~/beta
+"""
+
+
+class FfEntry(unittest.TestCase):
+    def test_setup_lists_the_live_checkout_for_of_protected_ff_and_keeps_the_rest(self):
+        import yaml
+        with tempfile.TemporaryDirectory() as t:
+            f = os.path.join(t, "orgs.yaml")
+            with open(f, "w") as fh:
+                fh.write(ORGS)
+            self.assertIsNone(of_live.ff_entry(f, live="/L"))
+            of_live.add_ff_entry(f, "alpha", live="/L")
+            text = open(f).read()
+            self.assertIn("# the owner's file", text)
+            self.assertIn("# its repository", text)
+            doc = yaml.safe_load(text)
+            self.assertEqual(doc["orgs"][0]["protected_code"], [{"path": "/L", "ff": of_live.FF}])
+            self.assertNotIn("protected_code", doc["orgs"][1])
+            self.assertEqual(of_live.ff_entry(f, live="/L")["ff"]["repo"], "organic-framework/organic-framework")
+            with self.assertRaises(of_live.LiveError):          # a second one is the owner's to add by hand
+                of_live.add_ff_entry(f, "alpha", live="/L2")
+
+    def test_the_org_is_the_one_listing_the_running_checkout(self):
+        with tempfile.TemporaryDirectory() as t:
+            f = os.path.join(t, "orgs.yaml")
+            with open(f, "w") as fh:
+                fh.write(ORGS.replace("~/wc", t))
+            self.assertEqual(of_live.checkout_org(f, checkout=t), "alpha")
+            self.assertIsNone(of_live.checkout_org(f, checkout="/nowhere"))
+
+    def test_the_move_keeps_the_user_site_where_pyyaml_lives(self):
+        text = open(os.path.join(ROOT, "deploy", "laptop", "of-checkout-update.sh")).read()
+        self.assertIn('"$PY" -E -P -B', text)
+        self.assertNotIn('"$PY" -I', text)
 
 
 class Switch(unittest.TestCase):
@@ -72,9 +121,31 @@ class Switch(unittest.TestCase):
 
         with mock.patch.object(of_live, "check_live"), mock.patch.object(of_live.os, "replace") as moved:
             with self.assertRaises(of_live.LiveError):
-                of_live.switch("/py", run=run, live="/L", accounts=[("/a", []), ("/b", []), ("/c", [])], log=lambda m: 0)
+                of_live.switch("/py", run=run, live="/L", accounts=[("/a", []), ("/b", []), ("/c", [])], log=lambda m: 0,
+                               units=[])
         self.assertEqual(len(ran), 2)
         moved.assert_not_called()          # ~/.local/bin/of is left as it was
+
+
+class Request(unittest.TestCase):
+    def test_a_request_never_follows_a_link_or_waits_on_a_fifo(self):
+        with tempfile.TemporaryDirectory() as t:
+            r = os.path.join(t, "req")
+            self.assertEqual(of_live.request(r), r)
+            os.unlink(r)
+            os.symlink(os.path.join(t, "elsewhere"), r)
+            with self.assertRaises(of_live.LiveError):
+                of_live.request(r)
+            self.assertFalse(os.path.exists(os.path.join(t, "elsewhere")))
+            os.unlink(r)
+            os.mkfifo(r)
+            with self.assertRaises(of_live.LiveError):
+                of_live.request(r)
+
+    def test_a_switch_moves_only_the_units_this_machine_runs(self):
+        with tempfile.TemporaryDirectory() as t:
+            open(os.path.join(t, "dev.organic-framework.listen.plist"), "w").close()
+            self.assertEqual(of_live.installed_units(t), [("listen", "install")])
 
 
 class Script(unittest.TestCase):
@@ -96,6 +167,7 @@ class Script(unittest.TestCase):
             subprocess.run(["git", "-C", live, "remote", "add", "origin", of_live.URL], check=True)
             subprocess.run(["git", "-C", live, "config", "branch.main.remote", "origin"], check=True)
             subprocess.run(["git", "-C", live, "config", "branch.main.merge", "refs/heads/main"], check=True)
+            subprocess.run(["git", "-C", live, "config", "remote.origin.tagopt", "--no-tags"], check=True)
             r = self.check(live)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
