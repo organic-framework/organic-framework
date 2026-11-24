@@ -21,6 +21,10 @@ owner lists there with `ff` (docs/registry.md, Protected code), here the public 
 green, `bin/of_protected.py` the owner's to change. It writes only when the file then reads as before with that key
 more, and leaves an entry that has `protected_code` already for the owner to extend by hand.
 
+Setup also copies the PyYAML package the owner's Python imports into the live checkout's `.git/of-site`: the update
+runs Python with `-I`, so the user's site folder, which sessions may write, never loads, and on a Mac PyYAML lives
+there. Run `of live setup` again after upgrading Python or PyYAML.
+
 `of live switch` runs `of hooks install` from the live checkout for each account whose settings already run OF's
 hooks, with the flags it had (`--guard` where a `PreToolUse` hook runs, `--deny-secrets` where the prompt's mention
 guard does) and `--replace` for the checkout its hooks ran from, so no hook of the working copy stays beside the

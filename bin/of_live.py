@@ -25,6 +25,26 @@ URL = "https://github.com/organic-framework/organic-framework.git"
 LIVE_DIR = "~/.local/share/of/live"   # of_guard.LIVE_DIR, which G40 keeps
 LIVE = os.path.expanduser(LIVE_DIR)
 SCRIPT = os.path.join("deploy", "laptop", "of-checkout-update.sh")   # run where it lies, in the live checkout
+SITE = os.path.join(".git", "of-site")   # the update's only import folder beyond the checkout: PyYAML, which G40 keeps
+
+
+def copy_pyyaml(live=LIVE, python=None, run=subprocess.run):
+    """Copy the PyYAML package the owner's Python imports into LIVE's SITE: the update runs Python with -I, so the
+    user site, a folder sessions may write, never loads (of_secrets-review on PR 629), while on a Mac PyYAML lives
+    there. The copy is the owner's, at setup."""
+    r = run([python or sys.executable, "-c", "import os, yaml; print(os.path.dirname(yaml.__file__))"],
+            capture_output=True, text=True)
+    src = (r.stdout or "").strip()
+    if getattr(r, "returncode", 1) != 0 or not os.path.isfile(os.path.join(src, "__init__.py")):
+        raise LiveError("the Python OF runs on has no PyYAML to copy")
+    import shutil
+    site = os.path.join(live, SITE)
+    tmp = site + ".new"
+    shutil.rmtree(tmp, ignore_errors=True)
+    shutil.copytree(src, os.path.join(tmp, "yaml"), symlinks=False, ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.rmtree(site, ignore_errors=True)
+    os.replace(tmp, site)
+    return site
 LABEL = "dev.organic-framework.checkout-update"
 AGENTS = os.path.expanduser("~/Library/LaunchAgents")
 REQUEST = os.path.expanduser("~/.local/state/of/checkout-update.request")
@@ -151,6 +171,7 @@ def setup(python=None, run=subprocess.run, live=LIVE, log=print, orgs_file=None,
     src = os.path.join(live, SCRIPT)
     if not os.path.isfile(src):
         raise LiveError(f"{src} is not in the live checkout yet: public main does not carry it")
+    log(f"  copied PyYAML into {copy_pyyaml(live, python, run)} for the update, which runs Python with -I")
     if ff_entry(orgs_file, live) is None:
         org = org or checkout_org(orgs_file)
         if not org:
