@@ -603,7 +603,7 @@ def fit(head, sections, cap=CAP, note=None):
 
 
 def build(position, positions, loops=None, resolve=None, runs=None, clocks=None, subagents=None, info=None, cap=CAP,
-          unwritten=False, cwd=None):
+          unwritten=False, cwd=None, harness=None):
     """additionalContext for one enrolled position, or None. LOOPS: [(work id, owner|doer, loop)] of the works it owns
     or does (bin/of position_loops); RESOLVE: id -> the owner's yes in the log (bin/of _decided_resolver); RUNS: their
     newest runs that are proxies whose condition did not hold (of_loop.blind_runs). The text is at most CAP characters
@@ -638,7 +638,9 @@ def build(position, positions, loops=None, resolve=None, runs=None, clocks=None,
     def section(parts):
         return "\n".join(parts).lstrip("\n") if parts else None
     brief = _read(os.path.join(root, p["mandate"]), BRIEF_MAX) if p.get("mandate") else None
-    loaded = rules_loaded_from(cwd, org, os.path.join(root, "AGENTS.md"))
+    # a Codex session reads no .claude/rules (its layer sets project_doc_max_bytes 0): its rules come here whole
+    # (of_review on PR 634)
+    loaded = None if harness == "codex" else rules_loaded_from(cwd, org, os.path.join(root, "AGENTS.md"))
     r = None if loaded else rules(os.path.join(root, "AGENTS.md"))
     # every active teammate: what does not fit is cut at a line and named in the note, never dropped silently
     team = [x for x in positions if x.get("_org") == p.get("_org") and x["name"] != p["name"]

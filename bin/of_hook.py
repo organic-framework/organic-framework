@@ -2001,7 +2001,7 @@ def position_context(name, cwd=None, cap=None):
     import of_context
     positions, loops, resolve, runs, clocks, subagents = _context_inputs(name)
     return of_context.build(name, positions, loops, resolve, runs, clocks, subagents, info={}, cwd=cwd,
-                            cap=cap or 10 ** 7)
+                            cap=cap or 10 ** 7, harness="codex")
 
 
 def _mandate_context(hook, index, sess):

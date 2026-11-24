@@ -81,6 +81,11 @@ class CodexSpawnTest(unittest.TestCase):
         with mock.patch.object(of_capacity, "training_verified", return_value="off"):
             self.assertTrue(ok(self.seat, rows=rows, training={}))
             self.assertFalse(ok(os.path.join(self.d, "other-seat"), rows=rows, training={}))   # no row: unread
+        seen = {}
+        with mock.patch.object(of_capacity, "codex_seat_for",
+                               side_effect=lambda r, public=True, training=None: seen.setdefault("t", training) and r[0]):
+            of_spawn.codex_seat(None, rows=rows, training={"acct-1": "off"})
+        self.assertEqual(seen["t"], {"acct-1": "off"})                       # the caller's map reaches the choice
         with mock.patch.object(of_spawn, "codex_seat_private_ok", return_value=False):
             with self.assertRaisesRegex(of_spawn.SpawnError, "not verified off"):
                 of_spawn.codex_seat(self.seat, rows=rows)
