@@ -8,18 +8,21 @@ id, note, affected positions or case, so its labels stay in it (docs/contours.md
     python3 bin/of_priors.py --org ORG [--json]
 
 It reads this machine's store and the organization's registry, as Studio's page does. The rules of §5.2:
-- each issue counts by its latest label that counts, as diagnose reads labels (`of_diagnose.may_label`, organic-framework
-  PR 630): the owner's on any issue; the structure keeper's, or the position's the issue routes to, unless the issue
-  names it. Who may label an issue is the issue's (the positions it names, the one it routes to), so a label from
-  another writer than the owner is judged in a replay, and counts apart when no label of its issue counts
-  (`other writer`), never as one a position gave on an issue about itself;
+- each issue counts by its latest label that counts, as diagnose reads labels (`of_diagnose.counted_label`,
+  organic-framework PR 630): the owner's on any issue; the structure keeper's of the label's time, or the position's the
+  issue routes to, unless the issue names it; the writer is the one the store records, a session's by its holder. Who
+  may label an issue is the issue's (the positions it names, the one it routes to: a merged issue's by its own rule),
+  so a label from another writer than the owner is judged in a replay, and counts apart when no label of its issue
+  counts (`other writer`), never as one a position gave on an issue about itself. A later label no replay judges does
+  not replace the owner's;
 - only the rule's current version's issues, as `of_diagnose.apply_label` reads a label: one given on the current
   version counts, since that version raised the issue it was given on (a version changes whenever what it raises
   does, docs/diagnose.md "Labels and versions"); one given on a version the current one carries (`labels_carry_from`),
   or on none named, counts when the current version still raises its issue, replayed over the 7 days before the
   label, an issue merged into another (`thresholds.merge_into`) included. A label whose rule was blocked or failed in
-  that replay is not judged: the store lacks what the rule reads then, so it counts apart (`replay blocked`), never as
-  no longer raised;
+  that replay, or had a part blocked while its issue is not raised (a label names no part), is not judged: the store
+  lacks what the rule reads then, so it counts apart (`replay blocked`), never as no longer raised;
+- a label the tally cannot read is left out and counted in the footer;
 - distinct judgements are (label, note): a decider's one note on many issues of one cause is one judgement;
 - p is the share of distinct judgements that are not `false_positive`, held at 0.95 or under, and set only from 5 of
   them; m_decide is not set, since a label records no decision time.
@@ -65,19 +68,59 @@ def counts_for(lab, rule, cur):
     return lab.get("rule_version") in {None, f"{rule}@{v}"} | {f"{rule}@{c}" for c in carry}
 
 
-def replayed(d):
+def well_formed(lab):
+    """A label the tally can read: its label is text, and its note, rule, version, time and writer text or absent."""
+    return isinstance(lab.get("label"), str) and all(isinstance(lab.get(k), (str, type(None)))
+                                                     for k in ("note", "rule", "rule_version", "ts", "by"))
+
+
+def readable(labels):
+    """(LABELS with only their well-formed labels, issues left with none dropped; how many labels were left out), so
+    one bad record never stops the tally."""
+    out, left = {}, 0
+    for iid, hist in labels.items():
+        ok = [x for x in hist if well_formed(x)]
+        left += len(hist) - len(ok)
+        if ok:
+            out[iid] = ok
+    return out, left
+
+
+def who_of(i):
+    """What `of_diagnose.may_label` reads of issue I."""
+    return {"affected": list(i.get("affected") or []), "decider_position": i.get("decider_position")}
+
+
+def merged_who(model, cat, name, host, ev, keeper):
+    """An issue of rule NAME merged into HOST: diagnose judges its labels before `merge_into`, by its own routing,
+    which `evidence.merged` does not keep. So it is routed here as diagnose routes it, from its rule's decider for its
+    part over the host's affected positions (no rule raises a critical issue); without MODEL, the host's."""
+    if model is None:
+        return who_of(host)
+    spec = (cat.get("rules") or {}).get(name) or {}
+    i = {"rule": f"ap.{name}", "affected": list(host.get("affected") or []), "evidence": dict(ev or {}),
+         "part": (ev or {}).get("part"), "critical": False,
+         "decider": of_model.spec_part(spec, "decider", (ev or {}).get("part"), "owner") or "owner"}
+    i["decider_position"] = of_diagnose.decider_position(model, i, keeper)
+    of_diagnose.route_to_unit(model, i, keeper)
+    return who_of(i)
+
+
+def replayed(d, model=None, cat=None):
     """What a diagnose run tells the tally: {issues: {the id of each issue it raised, those merged into another issue
     included (their id is their rule's over the host's affected positions, as `merge_into` matches them): what
     `of_diagnose.may_label` reads of it}, keeper: the run's structure keeper, blocked: the rules it could not judge
-    (blocked, failed, not built)}."""
-    issues = {}
+    whole (blocked, failed, not built, or a part blocked: a label names no part, so an issue it does not raise may be
+    the blocked part's)}."""
+    issues, keeper = {}, d.get("structure_keeper")
     for i in d.get("issues") or []:
-        who = {"affected": list(i.get("affected") or []), "decider_position": i.get("decider_position")}
-        issues[i["issue_id"]] = who
-        for rv in ((i.get("evidence") or {}).get("merged") or {}):
-            issues[of_model.issue_id(rv.split("@")[0][3:], i["affected"])] = who
-    return {"issues": issues, "keeper": d.get("structure_keeper"),
-            "blocked": {r["rule"] for r in d.get("rules") or [] if r.get("status") not in ("fired", "quiet")}}
+        issues[i["issue_id"]] = who_of(i)
+        for rv, ev in ((i.get("evidence") or {}).get("merged") or {}).items():
+            name = rv.split("@")[0][3:]
+            issues[of_model.issue_id(name, i["affected"])] = merged_who(model, cat or {}, name, i, ev, keeper)
+    return {"issues": issues, "keeper": keeper,
+            "blocked": {r["rule"] for r in d.get("rules") or []
+                        if r.get("status") not in ("fired", "quiet") or r.get("parts_blocked")}}
 
 
 def hour_after(t):
@@ -89,8 +132,13 @@ def rule_of(lab):
 
 
 def by(lab):
-    """The label's writer, as `of_diagnose.label_history` reads it: none recorded is the owner."""
+    """The label's writer, as `of_diagnose.label_history` reads it (`label_writer`): none recorded is the owner."""
     return lab.get("by") or "owner"
+
+
+def owners(hist):
+    """The owner's latest label in HIST, or None."""
+    return next((x for x in reversed(hist) if by(x) == "owner"), None)
 
 
 def needs_replay(hist, cat):
@@ -130,7 +178,9 @@ def sittings(labels, cat):
 def tally(labels, cat, raised, end_of=None):
     """LABELS: {issue id: its labels, oldest first, each with ts and by (`of_diagnose.label_history`)}; RAISED(b):
     `replayed` of the current rules over the WINDOW_D days before b, b being END_OF[issue id] (`sittings`), else the
-    hour after its latest label. Returns ({rule at its current version: counts and p}, {labels, gone})."""
+    hour after its latest label, with `keeper`: the structure keeper or fn(label) -> the keeper when it was written
+    (`of_diagnose.keeper_then`), and `histories`: {issue id: its labels, their writers resolved by that run's sessions}.
+    LABELS are `readable`'s. Returns ({rule at its current version: counts and p}, {labels, gone})."""
     rows, gone = {}, 0
     for iid, hist in labels.items():
         new = hist[-1]
@@ -145,29 +195,28 @@ def tally(labels, cat, raised, end_of=None):
         r["labels"] += 1
         run = (raised((end_of or {}).get(iid) or hour_after(of_model.epoch(new.get("ts")) or 0))
                if needs_replay(hist, cat) else None)
+        if run is not None:
+            hist = [x for x in (run.get("histories") or {}).get(iid, hist) if well_formed(x)] or hist
+            new = hist[-1]
         lab = new
         if run is not None and by(new) != "owner":   # who may label it is the issue's: as raised in its replay
-            if rule in run["blocked"]:
-                r["replay_blocked"] += 1
-                continue
             who = run["issues"].get(iid)
-            if who is None:
-                r["not_raised"] += 1
-                continue
-            lab = next((x for x in reversed(hist) if of_diagnose.may_label(by(x), who, run["keeper"]) is None), None)
-            if lab is None:
-                r["other_writer"] += 1
-                continue
+            if who is not None:
+                lab = of_diagnose.counted_label(hist, who, run.get("keeper"))[0]
+                if lab is None:
+                    r["other_writer"] += 1
+                    continue
+            else:   # no replay judges the later labels: they do not replace the owner's, which counts on any issue
+                lab = owners(hist)
+                if lab is None:
+                    r["replay_blocked" if rule in run["blocked"] else "not_raised"] += 1
+                    continue
         if not counts_for(lab, rule, cur):
             r["older_version"] += 1
             continue
-        if lab.get("rule_version") != f"{rule}@{cur[0]}":   # carried or unnamed: does the current version raise it?
-            if rule in run["blocked"]:
-                r["replay_blocked"] += 1
-                continue
-            if iid not in run["issues"]:
-                r["not_raised"] += 1
-                continue
+        if lab.get("rule_version") != f"{rule}@{cur[0]}" and iid not in run["issues"]:   # carried or unnamed
+            r["replay_blocked" if rule in run["blocked"] else "not_raised"] += 1
+            continue
         r["counted"] += 1
         r["_j"].add((lab.get("label"), " ".join(str(lab.get("note") or "").split())))
     out = {}
@@ -193,7 +242,8 @@ def table(out, meta):
     w = [max(len(str(x)) for x in col) for col in zip(head, *body)]
     lines = ["  ".join(str(x).ljust(n) for x, n in zip(row, w)).rstrip() for row in [head] + body]
     lines.append(f'org {meta["org"]} · {meta["labels"]} labelled issues · {meta["gone"]} on rules no longer in the '
-                 f'catalogue · {meta["replays"]} replays · at {meta["at"]} · p from {P_FLOOR} distinct judgements, '
+                 f'catalogue · ' + (f'{meta["malformed"]} malformed labels left out · ' if meta.get("malformed") else "")
+                 + f'{meta["replays"]} replays · at {meta["at"]} · p from {P_FLOOR} distinct judgements, '
                  f'at most {P_MAX}' + (f' · {meta["cpu_s"]} CPU s, peak {meta["peak_mib"]} MiB' if "cpu_s" in meta else ""))
     return "\n".join(lines)
 
@@ -232,9 +282,21 @@ def main(argv=None):
     others = [o for o in all_orgs if o["name"] != org["name"]]
     conn = of_store.connect()
     cat = of_diagnose.catalogue()
-    labels = of_diagnose.label_history(of_studio.org_rows(of_model.load_events(conn, names=["of.issue_labelled"]),
-                                                          org, others))
+    label_rows = of_studio.org_rows(of_model.load_events(conn, names=["of.issue_labelled"]), org, others)
+    # writers as the store records them; one recorded by its session is resolved again in its replay, by that run's
+    # sessions, as diagnose resolves it (of_diagnose.label_writer)
+    labels, malformed = readable(of_diagnose.label_history(label_rows))
+    rows_of = {}   # {issue id: all its label rows}, for the issues a label of which its session recorded
+    for r in label_rows:
+        pl = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+        if pl.get("issue_id") in labels:
+            rows_of.setdefault(pl["issue_id"], []).append(r)
+    rows_of = {iid: rs for iid, rs in rows_of.items() if any(r.get("session_id") for r in rs)}
     plan, end_of = sittings(labels, cat)
+    by_b = {}
+    for iid, b in end_of.items():
+        by_b.setdefault(b, []).append(iid)
+    keeper_at = None
     labelled = set().union(*(r for _, r in plan)) if plan else set()
     kinds = model_kinds(of_studio) | set(of_diagnose.kinds_needed(dict(cat, rules={n: cat["rules"][n] for n in labelled})))
     results, window, seen, loaded_to = {}, [], set(), None
@@ -252,18 +314,24 @@ def main(argv=None):
         seen = {r["event_id"] for r in window}
         window.sort(key=lambda r: (r.get("_t") or 0))
         org_cfg, m, rows = of_studio_cli._model(argparse.Namespace(org=a.org, at=of_model.iso(b)), window)
-        ctx = {"keeper_since": lambda sysid, k, repo=org_cfg["repo"]: of_model.keeper_since(repo, sysid, k)}
+        keeper_at = keeper_at or of_model.keeper_reader(org_cfg["repo"])   # the registry's history, read once
+        ctx = {"keeper_since": lambda sysid, k, repo=org_cfg["repo"]: of_model.keeper_since(repo, sysid, k),
+               "keeper_at": keeper_at}
         d = of_diagnose.diagnose(m, rows, b - WINDOW_D * 86400, b, cat=dict(cat, rules={n: cat["rules"][n] for n in rules}),
                                  context=ctx)
-        results[b] = replayed(d)
-        del m, rows, d, fresh
+        results[b] = replayed(d, m, cat)
+        results[b]["keeper"] = of_diagnose.keeper_then(m, ctx, d.get("structure_keeper"))   # a label's, at its time
+        sessions = of_diagnose.session_writer(m, rows)
+        results[b]["histories"] = {iid: of_diagnose.label_history(rows_of[iid], sessions).get(iid) or labels[iid]
+                                   for iid in by_b.get(b, ()) if iid in rows_of}
+        del m, rows, d, fresh, sessions   # sessions holds the model and the rows
         gc.collect()   # the model's cycles go before the next window is read
         ru = resource.getrusage(resource.RUSAGE_SELF)
         print(f"replay {len(results)}/{len(plan)}: {len(window)} rows, {len(rules)} rules, "
               f"{round(ru.ru_utime + ru.ru_stime, 1)} CPU s, peak {peak_mib(ru)} MiB", file=sys.stderr, flush=True)
     out, meta = tally(labels, cat, results.__getitem__, end_of)
     ru = resource.getrusage(resource.RUSAGE_SELF)
-    meta.update(org=a.org, replays=len(results), at=of_model.iso(time.time()),
+    meta.update(org=a.org, replays=len(results), at=of_model.iso(time.time()), malformed=malformed,
                 cpu_s=round(ru.ru_utime + ru.ru_stime, 1), peak_mib=peak_mib(ru))
     print(json.dumps({"rules": out, **meta}, indent=1) if a.json else table(out, meta))
     return 0

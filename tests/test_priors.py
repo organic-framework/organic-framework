@@ -96,6 +96,36 @@ class TallyTest(unittest.TestCase):
                           r["false_positive"]), (8, 3, 1, 4, 4, 1))
         self.assertEqual(len(seen), 7)          # the owner's label on the current version needs no replay
 
+    def test_a_label_is_judged_by_the_keeper_of_its_time(self):
+        # as diagnose does (of_diagnose.keeper_then, organic-framework PR 630): a former keeper's label counts, and one
+        # it writes after the change does not (of_review on PR 632)
+        change = of_priors.of_model.epoch("2026-11-16T12:00:00Z")
+
+        def keeper(x):
+            return "old" if (of_priors.of_model.epoch(x.get("ts")) or 0) < change else "new"
+        who = {"x": {"affected": ["a"], "decider_position": None}, "y": {"affected": ["a"], "decider_position": None}}
+        labels = {"x": lab("chatty", 4, "true_positive", "then", ts="2026-11-16T10:00:00Z", by="old"),
+                  "y": lab("chatty", 4, "false_positive", "after", ts="2026-11-16T13:00:00Z", by="old")}
+        r = self.run_tally(labels, raised=set(who), who=who, keeper=keeper)[0]["ap.chatty@4"]
+        self.assertEqual((r["counted"], r["other_writer"], r["false_positive"]), (1, 1, 0))
+
+    def test_the_owners_label_stands_when_a_later_one_cannot_be_judged(self):
+        # a later label no replay judges (its issue blocked or not raised then) does not replace the owner's
+        later = "2026-11-16T13:00:00Z"
+        labels = {"o": [lab("chatty", 4, "true_positive", "the owner's"), lab("chatty", 4, "false_positive", "x", later, "zz")],
+                  "c": [lab("chatty", 3, "true_positive", "carried"), lab("chatty", 4, "false_positive", "x", later, "zz")],
+                  "n": lab("chatty", 4, "false_positive", "x", later, "zz")}
+        r = self.run_tally(labels, raised=set(), blocked={"ap.chatty"})[0]["ap.chatty@4"]
+        self.assertEqual((r["counted"], r["replay_blocked"], r["distinct"], r["false_positive"]), (1, 2, 1, 0))
+        r = self.run_tally(labels, raised=set())[0]["ap.chatty@4"]
+        self.assertEqual((r["counted"], r["not_raised"]), (1, 2))
+
+    def test_a_malformed_label_is_left_out(self):
+        labels = {"a": [lab("chatty", 4, "true_positive", "n"), dict(lab("chatty", 4, "false_positive"), label=["x"])],
+                  "b": [dict(lab("chatty", 4, "true_positive"), rule_version={"v": 4})]}
+        out, left = of_priors.readable(hist(labels))
+        self.assertEqual((left, list(out), len(out["a"])), (2, ["a"], 1))
+
     def test_sittings_replay_only_carried_labels(self):
         h = "2026-11-16T"
         labels = {"a": lab("chatty", 3, "true_positive", ts=h + "09:10:00Z"),
@@ -125,6 +155,18 @@ class TallyTest(unittest.TestCase):
         self.assertEqual(of_priors.replayed(d), {"issues": {"host": host,
                                                             of_priors.of_model.issue_id("inbound-backlog", ["p1"]): host},
                                                  "keeper": "kp", "blocked": {"ap.chatty", "ap.loop-wip"}})
+        # with the model, a merged issue is routed as its own rule routes it (diagnose judges its labels before the
+        # merge): orphan-work's cluster part inside a delegated unit is its unit owner's, not the host's keeper's; and
+        # a rule with a part blocked could not judge an issue it does not raise
+        model = {"org_units": {"u": {"owner": "uo", "delegation": {"positions": ["p1"]}}}, "positions": {}, "systems": {}}
+        d = {"issues": [{"issue_id": "h2", "affected": ["p1"], "decider_position": "kp",
+                         "evidence": {"merged": {"ap.orphan-work@5": {"part": "cluster"}}}}],
+             "rules": [{"rule": "ap.orphan-work", "status": "quiet", "parts_blocked": {"unmapped": ["of.work_record"]}}],
+             "structure_keeper": "kp"}
+        got = of_priors.replayed(d, model, of_priors.of_diagnose.catalogue())
+        self.assertEqual(got["issues"][of_priors.of_model.issue_id("orphan-work", ["p1"])],
+                         {"affected": ["p1"], "decider_position": "uo"})
+        self.assertEqual(got["blocked"], {"ap.orphan-work"})
 
     def test_table_carries_no_id_note_or_case(self):
         labels = {"9f3c2a1b7e44": lab("off-map-work", 1, "false_positive", "obs_keeper covers the alert rules"),
@@ -160,13 +202,15 @@ class MainTest(unittest.TestCase):
         git = ["git", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@t"]
         with tempfile.TemporaryDirectory() as t:
             orgs = []
-            for name, systems in (("acme", {"app": {"keeper": "acme_lead"}, "db": None, "queue": {"keeper": "acme_lead"}}),
+            for name, systems in (("acme", {"app": {"keeper": "acme_lead"}, "db": None, "queue": {"keeper": "acme_lead"},
+                                            "org": {"kind": "creating", "keeper": "acme_lead"}}),   # the structure keeper
                                   ("beta", {"web": {"keeper": "beta_lead"}, "cache": None})):
                 repo = os.path.join(t, name)
                 os.makedirs(os.path.join(repo, "registry"))
                 with open(os.path.join(repo, "registry", "positions.yaml"), "w") as fh:
                     json.dump({"organization": name, "systems": systems,
-                               "positions": [{"name": f"{name}_lead", "system": next(iter(systems)), "status": "active"}]}, fh)
+                               "positions": [{"name": f"{name}_lead", "system": next(iter(systems)), "status": "active",
+                                              "holder": {"session": f"sess-{name}"}}]}, fh)
                 env = dict(os.environ, GIT_AUTHOR_DATE="2026-11-01T00:00:00Z", GIT_COMMITTER_DATE="2026-11-01T00:00:00Z")
                 subprocess.run(git + ["init", "-q", repo], check=True)
                 subprocess.run(git + ["-C", repo, "add", "-A"], check=True)
@@ -177,21 +221,26 @@ class MainTest(unittest.TestCase):
             conn = of_store.connect(os.path.join(t, "of.db"))
             iid = of_priors.of_model.issue_id
             now = of_priors.current(of_priors.of_diagnose.catalogue(), "ap.unkept-system")[0]   # @0 is carried by it
-            for i, (org, rule, v, label, note, ts, issue, *by) in enumerate((
+            for i, (org, rule, v, label, note, ts, issue, *who) in enumerate((
                     ("acme", "unkept-system", 0, "true_positive", "db has no keeper", "2026-11-10T09:00:00Z",
                      iid("unkept-system", ["db"])),                               # @0, carried by @1: replayed, raised
                     ("acme", "unkept-system", 0, "false_positive", "kept by the vendor", "2026-11-10T09:20:00Z",
                      iid("unkept-system", ["app"])),                              # replayed: app has a keeper
                     ("acme", "unkept-system", 0, "false_positive", "not mine to keep", "2026-11-10T09:40:00Z",
-                     iid("unkept-system", ["db"]), "acme_lead"),   # a position that may not label it: the owner's stands
+                     iid("unkept-system", ["db"]), "acme_lead"),   # a writer the payload names, the event does not
+                    ("acme", "unkept-system", 0, "false_positive", "the vendor keeps it now", "2026-11-10T09:50:00Z",
+                     iid("unkept-system", ["db"]), None, "sess-acme"),   # its session's holder: the keeper, it counts
+                    ("acme", "unkept-system", now, ["not", "a", "label"], "x", "2026-11-12T10:00:00Z", "bad0bad0bad0"),
                     ("acme", "unkept-system", now, "true_positive", "a note", "2026-11-12T09:00:00Z", "a1b2c3d4e5f6"),
                     ("beta", "unkept-system", 0, "false_positive", "beta's own", "2026-11-10T09:00:00Z",
                      iid("unkept-system", ["cache"])))):
+                by, sid = (who + [None, None])[:2]
                 of_store.add_event(conn, {"of.event.id": f"e{i}", "timestamp": ts, "event.name": "of.issue_labelled",
+                                          "gen_ai.conversation.id": sid,
                                           "of.org": org, "of.payload": {"issue_id": issue, "rule": f"ap.{rule}",
                                                                         "rule_version": f"ap.{rule}@{v}",
                                                                         "label": label, "note": note,
-                                                                        "by": (by or ["owner"])[0]}})
+                                                                        "by": by or ("owner" if not sid else None)}})
             conn.close()
             saved = {k: os.environ.get(k) for k in ("OF_ORGS", "OF_DB")}
             os.environ.update(OF_ORGS=os.path.join(t, "orgs.yaml"), OF_DB=os.path.join(t, "of.db"))
@@ -206,13 +255,13 @@ class MainTest(unittest.TestCase):
                     os.environ.pop(k) if v is None else os.environ.__setitem__(k, v)
         self.assertEqual(rc, 0, err.getvalue())
         d = json.loads(out.getvalue())
-        self.assertEqual((d["labels"], d["replays"]), (3, 1))                 # beta's label is not acme's
+        self.assertEqual((d["labels"], d["replays"], d["malformed"]), (3, 1, 1))   # beta's label is not acme's
         r = d["rules"][f"ap.unkept-system@{now}"]
         self.assertEqual((r["labels"], r["older_version"], r["other_writer"], r["replay_blocked"], r["not_raised"],
-                          r["counted"], r["distinct"], r["false_positive"], r["p"]), (3, 0, 0, 0, 1, 2, 2, 0, None))
+                          r["counted"], r["distinct"], r["false_positive"], r["p"]), (3, 0, 0, 0, 1, 2, 2, 1, None))
         self.assertIn("replay 1/1", err.getvalue())
         for secret in ("db has no keeper", "vendor", "not mine", "a1b2c3d4e5f6", iid("unkept-system", ["db"]), "acme_lead",
-                       '"db"'):
+                       '"db"', "sess-acme", "bad0bad0bad0"):
             self.assertNotIn(secret, out.getvalue() + text.getvalue())
 
 
