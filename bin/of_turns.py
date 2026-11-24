@@ -25,7 +25,7 @@ The labels, OF's own frame first, then Claude Code's own origin fields (`origin`
 - cron: a scheduled fire (a cron, a wake-up, a loop);
 - background_done, subagent_done, monitor: Claude Code's notice that the session's own background command or
   subagent finished, or that its monitor saw an event;
-- subagent: a subagent's own turn (a sidechain);
+- subagent: a subagent's own turn (a sidechain); its `cause` is the starter of the turn that launched it;
 - compaction: the summary that continues a session past its context;
 - limit_reset: Claude Code's continuation after a usage limit reset;
 - sdk: a `claude -p` or SDK prompt;
@@ -128,7 +128,7 @@ def usage_of(rec):
 
 def turns(records, cost=None, seen=None):
     """RECORDS: one transcript's records in order, each (ts, session, user record or None, usage or None). Yields
-    each turn: {ts, session, starter, sender (a relayed message's), responses, input, output, cache_read,
+    each turn: {ts, session, prompt_id, starter, sender (a relayed message's), responses, input, output, cache_read,
     cache_write, cost}. A response counts once (its id, across every transcript sharing SEEN: a moved or carried
     session's copy repeats its records), to the turn open when it came; one before any turn counts to a turn
     `before_first_turn`."""
@@ -142,13 +142,14 @@ def turns(records, cost=None, seen=None):
             if cur:
                 yield cur
             f = frame(rec) if s == "relay" else None
-            cur = {"ts": ts, "session": session, "starter": s, "sender": f and f["position"], "responses": 0,
-                   "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost": 0.0}
+            cur = {"ts": ts, "session": session, "prompt_id": rec.get("promptId"), "starter": s,
+                   "sender": f and f["position"], "responses": 0, "input": 0, "output": 0, "cache_read": 0,
+                   "cache_write": 0, "cost": 0.0}
         elif use is not None and use[0] not in seen:
             seen.add(use[0])
             if cur is None:
-                cur = {"ts": ts, "session": session, "starter": "before_first_turn", "sender": None, "responses": 0,
-                       "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost": 0.0}
+                cur = {"ts": ts, "session": session, "prompt_id": None, "starter": "before_first_turn", "sender": None,
+                       "responses": 0, "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost": 0.0}
             _, model, i, o, cr, cw, cw5, cw1 = use
             cur["responses"] += 1
             for k, v in (("input", i), ("output", o), ("cache_read", cr), ("cache_write", cw)):
@@ -156,6 +157,20 @@ def turns(records, cost=None, seen=None):
             cur["cost"] += cost(model, i or 0, o or 0, cr or 0, cw or 0, cw5, cw1)
     if cur:
         yield cur
+
+
+def with_causes(all_turns):
+    """ALL_TURNS with `cause`: a turn's own starter, or for a subagent's turn the starter of the turn that launched it,
+    so a subagent's spend counts to what made its parent start one. A subagent's first record carries its parent
+    turn's `promptId` in the same session (all 18 subagent transcripts on the agent host's store, 2026-11-24); one
+    whose parent was not read is `subagent_unlinked`."""
+    all_turns = list(all_turns)
+    parent = {(t["session"], t["prompt_id"]): t["starter"] for t in all_turns
+              if t["prompt_id"] and t["starter"] != "subagent"}
+    for t in all_turns:
+        t["cause"] = (parent.get((t["session"], t["prompt_id"]), "subagent_unlinked") if t["starter"] == "subagent"
+                      else t["starter"])
+    return all_turns
 
 
 def store_records(conn, since=None, until=None):
@@ -219,11 +234,11 @@ def positions(conn):
 
 def count(all_turns, by, pos_of):
     """{key: {turns, responses, input, output, cache_read, cache_write, cost}} over the keys BY names (day, position,
-    starter, sender)."""
+    starter, cause, sender)."""
     out = collections.defaultdict(collections.Counter)
     for t in all_turns:
         vals = {"day": str(t["ts"] or "")[:10], "position": pos_of.get(t["session"], "?"), "starter": t["starter"],
-                "sender": t.get("sender") or "-"}
+                "cause": t.get("cause") or t["starter"], "sender": t.get("sender") or "-"}
         c = out[tuple(vals[k] for k in by)]
         c["turns"] += 1
         for k in ("responses", "input", "output", "cache_read", "cache_write", "cost"):
@@ -250,13 +265,13 @@ def main(argv=None):
     ap.add_argument("transcripts", nargs="*", help="transcript files; none: this machine's store")
     ap.add_argument("--since", help="ISO time, inclusive")
     ap.add_argument("--until", help="ISO time, exclusive")
-    ap.add_argument("--by", default="starter", help="comma-separated: day, position, starter, sender")
+    ap.add_argument("--by", default="starter", help="comma-separated: day, position, starter, cause, sender")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     by = tuple(x.strip() for x in a.by.split(",") if x.strip())
-    bad = [x for x in by if x not in ("day", "position", "starter", "sender")]
+    bad = [x for x in by if x not in ("day", "position", "starter", "cause", "sender")]
     if bad:
-        ap.error(f"--by takes day, position, starter, sender, not {', '.join(bad)}")
+        ap.error(f"--by takes day, position, starter, cause, sender, not {', '.join(bad)}")
     import of_spend
     import of_store
     conn = of_store.connect()
@@ -264,7 +279,7 @@ def main(argv=None):
     sources = ([file_records(p, a.since, a.until) for p in a.transcripts] if a.transcripts
                else store_records(conn, a.since, a.until))
     seen = set()
-    out = count((t for recs in sources for t in turns(recs, of_spend.response_cost, seen)), by, pos_of)
+    out = count(with_causes(t for recs in sources for t in turns(recs, of_spend.response_cost, seen)), by, pos_of)
     if a.json:
         print(json.dumps([dict(zip(by, k), **{x: round(v, 4) if isinstance(v, float) else v for x, v in c.items()})
                           for k, c in sorted(out.items())], indent=1))

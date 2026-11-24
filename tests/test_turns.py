@@ -81,6 +81,17 @@ class TurnsTest(unittest.TestCase):
         self.assertEqual(sum(t["responses"] for t in of_turns.turns(recs, seen=seen)), 4)
         self.assertEqual(sum(t["responses"] for t in of_turns.turns(recs, seen=seen)), 0)
 
+    def test_a_subagents_turn_counts_to_what_started_its_parent(self):
+        main = [("t1", "s", user("Message from x:of_a (via of handover, authority: none)", promptId="p1"), None),
+                ("t2", "s", None, resp("m1"))]
+        sub = [("t3", "s", user("Review the diff", isSidechain=True, promptId="p1"), None), ("t4", "s", None, resp("m2")),
+               ("t5", "s", user("Read the docs", isSidechain=True, promptId="p9"), None), ("t6", "s", None, resp("m3"))]
+        got = of_turns.with_causes(list(of_turns.turns(main)) + list(of_turns.turns(sub)))
+        self.assertEqual([(t["starter"], t["cause"]) for t in got],
+                         [("handover", "handover"), ("subagent", "handover"), ("subagent", "subagent_unlinked")])
+        out = of_turns.count(got, ("cause",), {})
+        self.assertEqual((out[("handover",)]["turns"], out[("handover",)]["responses"]), (2, 2))
+
     def test_count_and_a_transcript_file(self):
         lines = [user("Message from x:of_a (via relay, authority: none)", timestamp="2026-11-20T10:00:00Z",
                       sessionId="s1"),
