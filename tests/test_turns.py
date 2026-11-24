@@ -1,5 +1,7 @@
 """What starts each turn (bin/of_turns.py): the labels from OF's frames and Claude Code's origin fields, the records
 that open no turn, and each response counted once, to the turn open when it came. Pure logic: no store."""
+import contextlib
+import io
 import json
 import os
 import sys
@@ -46,6 +48,10 @@ class StarterTest(unittest.TestCase):
                                  origin={"kind": "auto-continuation"}, isMeta=True)),
             ("sdk", user("Run exactly this command", turnOrigin="sdk")),
             ("typed", user("where did all the agents go?", origin={"kind": "human"}, turnOrigin="human")),
+            ("monitor", user("<task-notification> <event>ERROR in deploy.log</event>", origin={"kind": "task-notification"})),
+            ("capacity_move", user("of_capacity resumed this session after a move that did not finish. Read the note")),
+            ("asks", user("Question from acme_ops (unit trading, delegated to you; ask 1a2b3c4d): merge it?")),
+            ("founder_answer", user("Side question from the founder: why is it slow?")),
             ("typed", user("next_step: run the suite again")),          # a word with an underscore is no position
         ]
         for want, rec in cases:
@@ -54,7 +60,11 @@ class StarterTest(unittest.TestCase):
 
     def test_records_that_open_no_turn(self):
         tool = {"type": "user", "message": {"content": [{"type": "tool_result", "content": "ok"}]}}
-        for rec in (tool, user("[Request interrupted by user]"), user("<bash-input>ls</bash-input>"),
+        # a tool result with a text block beside it, such as a system reminder, continues the turn (of_review, PR 647)
+        reminder = {"type": "user", "message": {"content": [{"type": "tool_result", "content": "ok"},
+                                                            {"type": "text", "text": "<system-reminder>x</system-reminder>"}]}}
+        for rec in (tool, reminder, user("[Request interrupted by user]"), user("<bash-input>ls</bash-input>"),
+                    user("shown only", isVisibleInTranscriptOnly=True),
                     user("[Image: original 2068x1842]", isMeta=True), {"type": "assistant", "message": {}}):
             self.assertIsNone(of_turns.turn_starter(rec))
 
@@ -62,6 +72,7 @@ class StarterTest(unittest.TestCase):
         self.assertEqual(of_turns.frame(user("Message from acme:acme_org (via relay, authority: none)")),
                          {"org": "acme", "position": "acme_org", "via": "relay"})
         self.assertIsNone(of_turns.frame(user("reply ok")))
+        self.assertEqual(of_turns.frame(user("Message from my_org:my_pos (via relay, authority: none)"))["org"], "my_org")
 
 
 class TurnsTest(unittest.TestCase):
@@ -76,7 +87,7 @@ class TurnsTest(unittest.TestCase):
         got = list(of_turns.turns(recs))
         self.assertEqual([(t["starter"], t["responses"], t["cache_write"], t["cache_read"]) for t in got],
                          [("before_first_turn", 1, 0, 0), ("relay", 2, 100, 50), ("capacity_move", 1, 900, 0)])
-        self.assertEqual(got[1]["sender"], "of_a")
+        self.assertEqual(got[1]["sender"], "x:of_a")   # with its organization: two organizations' senders stay apart
         seen = set()   # a carried copy of the same session repeats its responses: counted once over both
         self.assertEqual(sum(t["responses"] for t in of_turns.turns(recs, seen=seen)), 4)
         self.assertEqual(sum(t["responses"] for t in of_turns.turns(recs, seen=seen)), 0)
@@ -92,6 +103,35 @@ class TurnsTest(unittest.TestCase):
         out = of_turns.count(got, ("cause",), {})
         self.assertEqual((out[("handover",)]["turns"], out[("handover",)]["responses"]), (2, 2))
 
+    def test_a_window_cuts_responses_by_time_and_keeps_a_turns_starter(self):
+        recs = [("2026-11-19T23:50:00Z", "s", user("Message from x:of_a (via relay, authority: none)"), None),
+                ("2026-11-19T23:55:00Z", "s", None, resp("m1")),            # before the window: not counted
+                ("2026-11-20T00:00:00.500Z", "s", None, resp("m2")),        # after it, with milliseconds: counted
+                ("2026-11-20T01:00:00Z", "s", user("hello"), None), ("2026-11-20T01:01:00Z", "s", None, resp("m3"))]
+        got = list(of_turns.turns(recs, since=of_turns._t("2026-11-20T00:00:00Z")))
+        self.assertEqual([(t["starter"], t["counted"], t["responses"]) for t in got], [("relay", False, 1), ("typed", True, 1)])
+        out = of_turns.count(got, ("starter",), {})
+        self.assertEqual((out[("relay",)]["turns"], out[("relay",)]["responses"]), (0, 1))
+        self.assertIn("0 turns · 0 responses · 0 at list prices", of_turns.table({}, ("starter",)))
+
+    def test_a_subagents_file_is_its_parents_session_and_only_regular_files_are_read(self):
+        self.assertEqual(of_turns.session_of("/h/.claude/projects/p/s-parent/subagents/agent-a1.jsonl", "agent-a1"), "s-parent")
+        self.assertEqual(of_turns.session_of("/h/.claude/projects/p/s1.jsonl", "s1"), "s1")
+        with tempfile.TemporaryDirectory() as d:
+            sub = os.path.join(d, "s-parent", "subagents")
+            os.makedirs(sub)
+            p = os.path.join(sub, "agent-a1.jsonl")
+            with open(p, "w") as fh:
+                fh.write(json.dumps(user("Review it", isSidechain=True, sessionId="agent-a1", timestamp="2026-11-20T10:00:00Z")))
+            self.assertEqual(of_turns.file_records(p)[0][1], "s-parent")
+            link = os.path.join(d, "link.jsonl")
+            os.symlink(p, link)
+            os.mkfifo(os.path.join(d, "pipe.jsonl"))
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(of_turns.file_records(link), [])
+                self.assertEqual(of_turns.file_records(os.path.join(d, "pipe.jsonl")), [])
+            self.assertEqual(err.getvalue().count("not a regular file"), 2)
+
     def test_count_and_a_transcript_file(self):
         lines = [user("Message from x:of_a (via relay, authority: none)", timestamp="2026-11-20T10:00:00Z",
                       sessionId="s1"),
@@ -105,8 +145,9 @@ class TurnsTest(unittest.TestCase):
             p = os.path.join(d, "s1.jsonl")
             with open(p, "w") as fh:
                 fh.write("\n".join(json.dumps(x) for x in lines) + "\nnot json\n")
-            recs = of_turns.file_records(p, since="2026-11-20T00:00:00Z")
-        out = of_turns.count(of_turns.turns(recs), ("day", "position", "starter"), {"s1": "of_b"})
+            recs = of_turns.file_records(p)
+        out = of_turns.count(of_turns.turns(recs, since=of_turns._t("2026-11-20T00:00:00Z")), ("day", "position", "starter"),
+                             {"s1": "of_b"})
         self.assertEqual(out[("2026-11-20", "of_b", "relay")]["responses"], 1)
         self.assertEqual(out[("2026-11-20", "of_b", "relay")]["cache_read"], 11)
         self.assertEqual(out[("2026-11-21", "of_b", "typed")]["turns"], 1)
