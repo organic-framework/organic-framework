@@ -15,6 +15,8 @@ import of_events  # noqa: E402
 import of_resume  # noqa: E402
 import of_spawn  # noqa: E402
 
+REAL_PRIVATE_OK = of_spawn.codex_seat_private_ok   # the setUp stands in for these two; their own tests read the real
+REAL_REQ_OK = of_spawn.codex_requirements_ok
 POS = {"name": "of_docs", "_org": "ofb", "system": "s", "status": "active",
        "holder": {"runtime": "codex"}, "brief": "registry/briefs/of_docs.md"}
 
@@ -38,7 +40,9 @@ class CodexSpawnTest(unittest.TestCase):
         of_events.STATE_DIR = self.state
         self.addCleanup(setattr, of_events, "STATE_DIR", saved)
         for name, value in (("place", lambda p, w: ("ofb", "docs")), ("brief_text", lambda p, r, s=False: "Read your brief."),
-                            ("prepare_folder", lambda *a, **k: None)):
+                            ("prepare_folder", lambda *a, **k: None),
+                            ("codex_requirements_ok", lambda path=None: (True, None)),
+                            ("codex_seat_private_ok", lambda home, rows=None, training=None: True)):
             patch = mock.patch.object(of_spawn, name, value)
             patch.start()
             self.addCleanup(patch.stop)
@@ -46,6 +50,73 @@ class CodexSpawnTest(unittest.TestCase):
     def plan(self, **kw):
         return of_spawn.codex_plan(POS, [POS], [], bind, {}, [self.cwd], self.d, None, seat=self.seat, cwd=self.cwd,
                                    **kw)
+
+    def test_no_start_and_no_resume_where_the_requirements_file_runs_no_guard(self):
+        """of_review on PR 634: Codex started with its brief before anything checked the managed requirements file."""
+        with mock.patch.object(of_spawn, "codex_requirements_ok", return_value=(False, "no managed requirements file")):
+            with self.assertRaisesRegex(of_spawn.SpawnError, "no managed requirements file"):
+                self.plan(launch="L-9")
+        with tempfile.TemporaryDirectory() as t:
+            req = os.path.join(t, "requirements.toml")
+            self.assertFalse(REAL_REQ_OK(req)[0])
+            import of_codex
+            with open(req, "w") as fh:
+                fh.write(of_codex.requirements_toml())
+            self.assertEqual(REAL_REQ_OK(req), (True, None))
+            with open(req, "w") as fh:
+                fh.write("allow_managed_hooks_only = true\n")
+            self.assertIn("names no OF guard", REAL_REQ_OK(req)[1])
+
+    def test_a_seat_is_chosen_from_the_seats_rows_and_a_named_one_is_read_too(self):
+        """of_review on PR 634: codex_status gives one dict, whose keys the choice walked; a seat given with
+        --config-dir skipped the training reading."""
+        import of_capacity
+        rows = [{"home": self.seat, "account": "acct-1", "used_percent": 10}]
+        with mock.patch.object(of_capacity, "codex_seat_rows", return_value=rows) as got_rows:
+            self.assertEqual(of_spawn.codex_seat(None, choose=lambda r, public: r[0]), self.seat)
+            got_rows.assert_called_once()
+        ok = REAL_PRIVATE_OK
+        with mock.patch.object(of_capacity, "training_verified", return_value="on"):
+            self.assertFalse(ok(self.seat, rows=rows, training={}))
+        with mock.patch.object(of_capacity, "training_verified", return_value="off"):
+            self.assertTrue(ok(self.seat, rows=rows, training={}))
+            self.assertFalse(ok(os.path.join(self.d, "other-seat"), rows=rows, training={}))   # no row: unread
+        with mock.patch.object(of_spawn, "codex_seat_private_ok", return_value=False):
+            with self.assertRaisesRegex(of_spawn.SpawnError, "not verified off"):
+                of_spawn.codex_seat(self.seat, rows=rows)
+
+    def test_the_line_is_one_command_and_codex_json_is_read_safely(self):
+        """of_review's notes on PR 634: `exec cd …` is no command, and a FIFO or a record with no pid was waited on or
+        taken."""
+        pl = self.plan(launch="L-7")
+        self.assertTrue(pl["command"].startswith("env CODEX_HOME="))
+        import of_codex
+        d = of_codex.door_dir("L-7")
+        os.makedirs(d, exist_ok=True)
+        f = os.path.join(d, "codex.json")
+        with open(f, "w") as fh:
+            json.dump({"session": "s-1"}, fh)                       # no pid: not taken
+        self.assertIsNone(of_spawn.codex_session("L-7", 0, sleep=lambda s: None))
+        os.unlink(f)
+        os.mkfifo(f)                                                 # a FIFO: never waited on
+        self.assertIsNone(of_spawn.codex_session("L-7", 0, sleep=lambda s: None))
+        os.unlink(f)
+        with open(f, "w") as fh:
+            json.dump({"session": "s-1", "pid": 42}, fh)
+        self.assertEqual(of_spawn.codex_session("L-7", 0, sleep=lambda s: None), "s-1")
+
+    def test_the_positions_folder_is_untrusted_in_its_seat(self):
+        """RFC 0008, the table's first row (of_review on PR 634): no project layer loads from the folder's .codex/."""
+        import tomllib
+        cfg = os.path.join(self.seat, "config.toml")
+        with open(cfg, "w") as fh:
+            fh.write('model = "x"\n\n[projects."%s"]\ntrust_level = "trusted"\n\n[other]\nk = 1\n' % self.cwd)
+        of_spawn.codex_untrust(self.seat, self.cwd)
+        with open(cfg, "rb") as fh:
+            doc = tomllib.load(fh)
+        self.assertEqual(doc["projects"][self.cwd]["trust_level"], "untrusted")
+        self.assertEqual((doc["model"], doc["other"]["k"]), ("x", 1))
+        self.assertFalse(self.plan(launch="L-8")["trusted"])
 
     def test_the_plan_names_the_seat_the_layer_the_folder_and_the_brief(self):
         self.assertEqual(of_spawn.harness_of(POS), "codex")

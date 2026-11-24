@@ -953,13 +953,55 @@ def harness_of(p):
     return "codex" if rt in CODEX_RUNTIMES else "claude" if rt in ("claude-code", "claude") else rt
 
 
-def codex_seat(seat=None, rows=None, choose=None):
-    """The CODEX_HOME a Codex position starts in: SEAT when given, else the seat of_capacity picks (the most headroom,
-    and a training reading verified off, since a position's work is not only public; of_capacity.codex_seat_for)."""
-    if seat:
-        return os.path.expanduser(seat)
+def codex_requirements_ok(path=None):
+    """(True, None) when the machine's managed requirements file is installed and runs OF's guard on every Codex call,
+    else (False, why): without it Codex runs no OF hook, so a position would start unguarded (of_review on PR 634)."""
+    import tomllib
+    import of_codex
+    path = path or of_codex.REQUIREMENTS_PATH
+    try:
+        with open(path, "rb") as fh:
+            doc = tomllib.load(fh)
+    except FileNotFoundError:
+        return False, f"no managed requirements file at {path}"
+    except (OSError, ValueError) as e:
+        return False, f"{path} cannot be read ({type(e).__name__})"
+    if doc.get("allow_managed_hooks_only") is not True:
+        return False, f"{path} does not hold Codex to its managed hooks alone"
+    cmds = [h.get("command") or "" for g in (doc.get("hooks") or {}).get("PreToolUse") or [] if isinstance(g, dict)
+            for h in g.get("hooks") or [] if isinstance(h, dict)]
+    if not any("hook PreToolUse" in c for c in cmds):
+        return False, f"{path} names no OF guard for PreToolUse"
+    return True, None
+
+
+def codex_seat_private_ok(home, rows=None, training=None):
+    """Whether the seat at HOME may take a position's private start context: its account's training reading verified
+    off, as the automatic choice requires (of_review on PR 634: a seat named with --config-dir, or the one a resume
+    finds, skipped it)."""
     import of_capacity
-    rows = of_capacity.codex_status(probe=False) if rows is None else rows
+    rows = of_capacity.codex_seat_rows(probe=False) if rows is None else rows
+    real = os.path.realpath(os.path.expanduser(home))
+    row = next((r for r in rows if os.path.realpath(os.path.expanduser(r.get("home") or "")) == real), None)
+    account = (row or {}).get("account")
+    if not account:
+        return False
+    if training is None:
+        training = of_capacity.training_readings_by_seat()
+    return of_capacity.training_verified("codex", readings=training, seat_account=account) == "off"
+
+
+def codex_seat(seat=None, rows=None, choose=None, training=None):
+    """The CODEX_HOME a Codex position starts in: SEAT when given and its training reading is verified off, else the
+    seat of_capacity picks (the most headroom, and that reading verified off, since a position's work is not only
+    public; of_capacity.codex_seat_for)."""
+    import of_capacity
+    rows = of_capacity.codex_seat_rows(probe=False) if rows is None else rows   # a list, one row per seat
+    if seat:
+        if not codex_seat_private_ok(seat, rows, training):
+            raise SpawnError(f"{seat}: its account's Codex training reading is not verified off (of capacity status), "
+                             "so it takes no position's start context")
+        return os.path.expanduser(seat)
     row = (choose or of_capacity.codex_seat_for)(rows or [], public=False)
     if not row or not row.get("home"):
         raise SpawnError("no Codex seat with headroom and its training reading verified off (of capacity status); "
@@ -971,6 +1013,9 @@ def codex_plan(p, positions, agents, bind, systems, org_paths, org_root, want_wo
                model=None, deny=None, subagents=False, folders=None, rows=None, launch=None):
     """What codex_run needs, or SpawnError: the same refusals as plan(), then the seat, a launch id of OF's own, and
     the command. Nothing is written here (a dry run prints the command)."""
+    ok, why = codex_requirements_ok()
+    if not ok:   # before anything else: a Codex start runs only where OF's hooks are forced (docs/registry.md)
+        raise SpawnError(f"{why}: a Codex position starts only where `of codex requirements` installed it")
     cwd = _start_checks(p, positions, agents, bind, systems, org_paths, cwd, folders)
     home = codex_seat(seat, rows)
     launch = launch or str(uuid.uuid4())
@@ -978,7 +1023,7 @@ def codex_plan(p, positions, agents, bind, systems, org_paths, org_root, want_wo
     pl = {"harness": "codex", "position": p["name"], "org": p.get("_org"), "cwd": cwd, "config_dir": home,
           "session": None, "launch": launch, "model": model, "repo_names": sorted(repo_names(p, org_paths)),
           "workspace": ws, "tab": tab, "brief": brief_text(p, org_root, subagents), "deny": list(deny or []),
-          "trusted": True, "bypass_ok": True}
+          "trusted": False, "bypass_ok": True}   # its folders untrusted in the seat (codex_untrust, at prepare)
     pl["command"] = codex_command(pl)
     return pl
 
@@ -987,8 +1032,9 @@ def codex_command(pl, resume=None):
     """The shell line: the seat, the launch (OF_LAUNCH, read by the managed hooks), the layer's profile, the folder,
     an inline screen; the brief as the first prompt, or `resume <session>` for a session that ran before."""
     import shlex
-    head = ["cd", shlex.quote(pl["cwd"]), "&&", "env", f"CODEX_HOME={shlex.quote(pl['config_dir'])}", "OF_SPAWNED=1",
-            f"OF_LAUNCH={pl['launch']}", "codex"]
+    # one command, no `cd … &&` in front: `of claude --resume` execs the line (of_review on PR 634), and codex -C
+    # gives the session its folder
+    head = ["env", f"CODEX_HOME={shlex.quote(pl['config_dir'])}", "OF_SPAWNED=1", f"OF_LAUNCH={pl['launch']}", "codex"]
     if resume:
         head += ["resume", shlex.quote(resume)]
     head += ["-C", shlex.quote(pl["cwd"]), "-p", f"of-{pl['launch']}", "--no-alt-screen"]
@@ -1010,6 +1056,7 @@ def codex_prepare(pl, context=None, tool_layer=None, log=print):
     if tool_layer is None:
         import of_tools
         tool_layer = of_tools.codex_layer
+    codex_untrust(pl["config_dir"], pl["cwd"])
     d = of_codex.door_dir(pl["launch"])
     os.makedirs(os.path.dirname(d), mode=0o700, exist_ok=True)
     os.makedirs(d, mode=0o700, exist_ok=False)   # a launch's folder is new: never one a session left
@@ -1024,6 +1071,47 @@ def codex_prepare(pl, context=None, tool_layer=None, log=print):
                          launch=pl["launch"])
     of_codex.write_layer(pl["config_dir"], pl["launch"], doc)
     return of_codex.layer_path(pl["config_dir"], pl["launch"])
+
+
+def codex_untrust(home, folder):
+    """Mark FOLDER untrusted in the seat's config.toml (`[projects."<path>"] trust_level = "untrusted"`), so Codex loads
+    no project layer of its own from the folder's .codex/ under the position's profile (RFC 0008, the table's first
+    row; of_review on PR 634). Its own section is rewritten, the rest of the file kept as written; a file that would
+    then not parse is left alone and refused."""
+    import tomllib
+    path = os.path.join(os.path.expanduser(home), "config.toml")
+    real = os.path.realpath(folder)
+    key = '"' + real.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    try:
+        with open(path) as fh:
+            text = fh.read()
+    except FileNotFoundError:
+        text = ""
+    head = f"[projects.{key}]"
+    lines = text.splitlines(keepends=True)
+    out, skip = [], False
+    for ln in lines:
+        if ln.strip() == head:
+            skip = True   # its own section goes, and is written again below
+            continue
+        if skip and ln.lstrip().startswith("["):
+            skip = False
+        if not skip:
+            out.append(ln)
+    new = "".join(out)
+    if new and not new.endswith("\n"):
+        new += "\n"
+    new += f'{head}\ntrust_level = "untrusted"\n'
+    try:
+        got = tomllib.loads(new)
+    except ValueError as e:
+        raise SpawnError(f"{path} would not parse after marking {real} untrusted ({e}); fix it by hand") from e
+    if ((got.get("projects") or {}).get(real) or {}).get("trust_level") != "untrusted":
+        raise SpawnError(f"{path}: {real} could not be marked untrusted")
+    tmp = path + ".of-new"
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600), "w") as fh:
+        fh.write(new)
+    os.replace(tmp, path)
 
 
 def declare_first_prompt(pane, text, window_s, injector="of_spawn"):
@@ -1047,11 +1135,18 @@ def codex_session(launch, timeout, sleep=time.sleep, clock=time.time):
     import of_door
     path = os.path.join(of_codex.door_dir(launch), of_door.CODEX_FILE)
     end = clock() + timeout
+    import stat
     while True:
-        try:
-            with open(path) as fh:
-                sid = (_json.load(fh) or {}).get("session")
-            if sid:
+        try:   # a plain file of its own size, never a FIFO or a link waited on, with both the session and its pid
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+            try:
+                st = os.fstat(fd)
+                body = os.read(fd, 65536) if stat.S_ISREG(st.st_mode) and st.st_size <= 65536 else b""
+            finally:
+                os.close(fd)
+            rec = _json.loads(body or b"{}")
+            sid = rec.get("session") if isinstance(rec, dict) else None
+            if sid and isinstance(sid, str) and isinstance(rec.get("pid"), int):
                 return sid
         except (OSError, ValueError):
             pass
