@@ -471,20 +471,35 @@ CACHE_MAX_BYTES = 64 << 20
 
 
 def _cache_path():
-    return os.path.join(STATE_DIR, "capacity.json")
+    # in capacity's own folder with the balancer's other files, which only OF's services write: on Linux a session's
+    # sandbox may not write that folder (of_spawn.sandbox_settings), and a folder holds the temporary names beside the
+    # file too, which a sandbox cannot deny by a pattern (of_review, 2026-11-24)
+    return os.path.join(STATE_DIR, "capacity", "cache.json")
+
+
+def _old_cache_path():
+    return os.path.join(STATE_DIR, "capacity.json")   # the name until 2026-11-24, read once, until the next save
 
 
 def load_cache():
-    try:
-        text = of_events.read_own(_cache_path(), cap=CACHE_MAX_BYTES)
-        return json.loads(text)
-    except (OSError, ValueError):
-        return {}
+    for path in (_cache_path(), _old_cache_path()):
+        try:
+            return json.loads(of_events.read_own(path, cap=CACHE_MAX_BYTES))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            return {}
+    return {}
 
 
 def save_cache(c):
-    of_events.own_dir(STATE_DIR)
-    of_events.write_new(_cache_path(), json.dumps(c, indent=1))
+    path = _cache_path()
+    of_events.own_dir(os.path.dirname(path))
+    of_events.write_new(path, json.dumps(c, indent=1))
+    try:
+        os.unlink(_old_cache_path())   # a link there goes, never its target
+    except FileNotFoundError:
+        pass
 
 
 def readings_behind(dirs=None, now=None, factor=2, home=None):

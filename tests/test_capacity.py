@@ -402,6 +402,28 @@ class CapacityStateFiles(unittest.TestCase):
         self.index = Path(of_capacity._spend_path())
         self.index.parent.mkdir()
 
+    def test_the_cache_lives_in_capacitys_own_folder(self):
+        self.assertEqual(self.cache.parent, self.index.parent)
+
+    def test_the_old_cache_name_is_read_once_and_removed_at_the_next_save(self):
+        old = Path(of_capacity._old_cache_path())
+        old.write_text('{"_balanced": {"s": [1, 2]}}')
+        os.chmod(old, 0o600)
+        self.assertEqual(of_capacity.load_cache(), {"_balanced": {"s": [1, 2]}})
+        of_capacity.save_cache({"_balanced": {"s": [1, 2]}, "d": {}})
+        self.assertFalse(old.exists())
+        old.write_text('{"forged": true}')
+        self.assertEqual(of_capacity.load_cache(), {"_balanced": {"s": [1, 2]}, "d": {}})
+
+    def test_a_link_at_the_old_cache_name_is_removed_never_its_target(self):
+        self.target.write_text("untouched")
+        old = Path(of_capacity._old_cache_path())
+        old.symlink_to(self.target)
+        self.assertEqual(of_capacity.load_cache(), {})
+        of_capacity.save_cache({"a": 1})
+        self.assertFalse(old.is_symlink() or old.exists())
+        self.assertEqual(self.target.read_text(), "untouched")
+
     def test_load_cache_ignores_a_symlink(self):
         self.target.write_text('{"from_target": true}')
         self.cache.symlink_to(self.target)
