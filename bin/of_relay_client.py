@@ -248,12 +248,17 @@ _DIALOG = re.compile(r"(?i:enter to confirm|esc to cancel|enter to select|to nav
                      r"|enter confirm · esc)|Background work is running|Do you want to proceed\?"
                      r"|We recommend compacting earlier"
                      r"|Hooks need review|Trust all and continue|Continue without trusting"
-                     r"|Background server has incompatible feature settings|Run without daemon this time")
+                     r"|Background server has incompatible feature settings|Run without daemon this time"
+                     # Codex 0.170's folder trust, hooks list and sign-in (of_herdr's lab screens, 2026-11-24), and any
+                     # footer of its kind: `enter continue · esc back`, `t trust all · enter review · esc close`
+                     r"|Trust this folder\?|Sign in with ChatGPT|(?i:enter \w+ · esc \w+)|(?m:^\s*t trust all ·)")
 
 
 def dialog_open(screen):
     """Is a dialog drawn on the pane's last lines?"""
-    tail = "\n".join(_ANSI.sub("", (screen or "").replace("\r", "")).split("\n")[-15:])
+    # its last 15 lines that hold anything: Codex draws its dialogs high in a tall pane, with empty lines below them
+    # (of_herdr's lab screens, 2026-11-24: the folder trust, the hooks review and the sign-in sat above 30 empty lines)
+    tail = "\n".join([ln for ln in _ANSI.sub("", (screen or "").replace("\r", "")).split("\n") if ln.strip()][-15:])
     return bool(_DIALOG.search(tail))
 
 
@@ -261,6 +266,24 @@ def dialog_open(screen):
 # Claude Code's box, and on every saved Codex screen it returned None, so the relay typed and would have added its
 # message to a person's half-typed words.
 _CODEX_PROMPT = re.compile(r"(?m)^› ?")
+
+
+def codex_box_text(screen):
+    """The text in Codex's box on a pane screen read with ANSI codes, '' when empty, None when there is no box. The box
+    is the last line with `›` at column 0 and the lines below it down to an empty one; its placeholder ('Ask Codex to
+    do anything') is drawn dim and does not count (of_herdr's lab screens of Codex 0.170, 2026-11-24). A dialog's
+    `› 1. …` choice line looks the same, so dialog_open is asked first."""
+    lines = (screen or "").replace("\r", "").split("\n")
+    plain = [_ANSI.sub("", _DIM.sub("", l)).replace("\xa0", " ") for l in lines]
+    at = next((i for i in range(len(plain) - 1, -1, -1) if plain[i].startswith("›")), None)
+    if at is None:
+        return None
+    out = [plain[at][1:].strip()]
+    for line in plain[at + 1:]:
+        if not line.strip():
+            break
+        out.append(line.strip())
+    return "\n".join(out).strip()
 
 
 def pane_input(pane):
@@ -278,7 +301,9 @@ def pane_input(pane):
         return "[dialog]"
     box = input_box_text(out)
     if box is None and _CODEX_PROMPT.search(_ANSI.sub("", out.replace("\r", ""))):
-        return "[unread]"   # Codex's › box, which this reader cannot tell empty yet: deferred, never typed into
+        box = codex_box_text(out)   # Codex's › box
+        if box is None:
+            return "[unread]"       # one it cannot read: deferred, never typed into
     if box and term is of_screen and of_screen.attached(pane) is False \
             and not (_PASTE_ONLY.fullmatch(box) or _FRAMED.match(box)):
         return ""  # a hardcopy has no dim: in a detached session nobody types, so this is a suggestion (of_screen)
