@@ -844,6 +844,21 @@ class RelayTest(unittest.TestCase):
         res, typed = self._deliver_with_box(compact)
         self.assertEqual((res, typed), (("deferred", "a dialog is open in the pane"), []))
 
+    def test_codex_start_dialogs_and_its_box_defer(self):
+        """of_herdr's W8 report, gaps 1 and 2: Codex's hooks review and its daemon question read as idle, and its ›
+        box is not Claude Code's; typed text would answer the dialogs or join a person's words."""
+        hooks = "Hooks need review\n  1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting (hooks won't run)\n"
+        daemon = ("Background server has incompatible feature settings\n  1. Run without daemon this time\n"
+                  "  2. Restart with these settings (recommended)\n  3. Cancel\n")
+        for screen in (hooks, daemon):
+            self.assertTrue(of_relay.dialog_open(screen))
+            res, typed = self._deliver_with_box(screen)
+            self.assertEqual((res, typed), (("deferred", "a dialog is open in the pane"), []))
+        for screen in ("some output\n\n› half typed words\n\n  100% context left\n", "output\n\n›\n"):
+            res, typed = self._deliver_with_box(screen)
+            self.assertEqual((res, typed), (("deferred", "a Codex input box the relay cannot read yet"), []))
+        self.assertEqual(of_relay.input_box_text(self._screen("")), "")   # Claude Code's box reads as before
+
     def test_confirmation_by_the_hooks_record_and_a_late_one(self):
         import of_events as ev_
         self.assertFalse(of_relay.hook_saw(self.conn, "S", "m-77"))
