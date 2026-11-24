@@ -31,13 +31,14 @@ def _org(name):
 
 
 
-def _rows(since=None, names=None):
+def _rows(since=None, names=None, strict=False):
+    """The store's events; on an error [] (a missing store means no events, not a crash), or None when STRICT."""
     try:
         import of_store
         return of_model.load_events(of_store.connect(), since=since, names=names)
-    except Exception as exc:  # noqa: BLE001 — a missing store means no events, not a crash
-        print(f"of model: no local store ({exc}); registry only", file=sys.stderr)
-        return []
+    except Exception as exc:  # noqa: BLE001
+        print(f"of model: no local store ({exc}); " + ("not read" if strict else "registry only"), file=sys.stderr)
+        return None if strict else []
 
 
 def _index(since, until):
@@ -208,7 +209,7 @@ def issues_for_label(org=None, ids=(), log=None, run=True, fresh=False):
     names = _issue_orgs(org)
     docs = None if fresh else of_studio.read_issue_files(names)
     cached = None if docs is None else [dict(i, structure_keeper=docs[n].get("structure_keeper"))
-                                        for n in names for i in docs[n].get("issues") or []]
+                                        for n in names for i in docs[n].get("issues") or [] if i.get("state") == "open"]
     if cached is not None and all(any(_names(i, x) for i in cached) for x in ids):
         return cached, "render"
     if not run:   # every id names its issue in full: what the render holds, if anything
@@ -249,11 +250,12 @@ def _open_issues(args, org_name, rows, b):
     return org["name"], issues, dict(d, computed_at=b)
 
 
-def _labels_of(org, since=None):
-    """The organization's of.issue_labelled rows from the store, every one or those from SINCE (ISO): the diagnose's
-    labels (of_diagnose.diagnose, label_rows)."""
-    return of_studio.org_rows(_rows(since, names=("of.issue_labelled",)), org,
-                              [o for o in of_studio.orgs() if o["name"] != org["name"]])
+def _labels_of(org):
+    """Every of.issue_labelled row of the organization ORG (its orgs.yaml entry) in the store: the diagnose's labels
+    (of_diagnose.diagnose, label_rows). None when the store cannot be read, so the diagnose keeps the labels among its
+    window's rows rather than none (of_review on organic-framework PR 630), as the render's Data.history does."""
+    rows = _rows(None, names=("of.issue_labelled",), strict=True)
+    return None if rows is None else of_studio.org_rows(rows, org, [o for o in of_studio.orgs() if o["name"] != org["name"]])
 
 
 def _code_activity(org, m, b, days=of_model.CODE_DAYS):
@@ -270,9 +272,11 @@ def _code_activity(org, m, b, days=of_model.CODE_DAYS):
 def _rendered_issues(args, names, ids, b):
     """([(organization, open issues, {rules, structure_keeper, computed_at})], None) as the page render diagnosed them
     (of_studio.write_issues), or (None, why) when an organization's file is missing or is not the render's latest,
-    holds no rules (a file written before 2026-11-24), or holds no issue an id in IDS names: the caller then runs the
-    diagnose. A label written since the render applies as the diagnose would apply it (of_diagnose.apply_label), so an
-    issue just labelled false_positive or true_but_not_now leaves the list at once, not at the next render."""
+    holds no rules (a file written before 2026-11-24), holds no issue an id in IDS names, or the labels cannot be
+    read: the caller then runs the diagnose. Each issue's labels are applied again from every label up to now, as the
+    run applies them (of_diagnose.label_issue: the writer's check, the rule's labels_carry_from), on the issue as its
+    rule raised it, so a label written since the render takes an issue out or brings it back at once, and a rule's
+    open count moves with it. The merges (merge_into) stay the render's; --fresh gives the run."""
     import of_diagnose
     docs = of_studio.read_issue_files(names, b)
     if docs is None:
@@ -282,20 +286,39 @@ def _rendered_issues(args, names, ids, b):
     held = [i for doc in docs.values() for i in doc.get("issues") or []]
     gone = [x for x in ids if not any(_names(i, x) for i in held)]
     if gone:
-        return None, f"the last page render holds no open issue {', '.join(gone)}"
+        return None, f"the last page render holds no issue {', '.join(gone)}"
+    try:
+        rules = of_diagnose.catalogue().get("rules") or {}
+    except OSError:
+        rules = {}
+    carry = lambda i: (rules.get(str(i.get("rule") or "").removeprefix("ap.")) or {}).get("labels_carry_from") or []
     cfgs = {o["name"]: o for o in of_studio.orgs()}
     out = []
     for n in names:
         doc = docs[n]
-        since = of_model.iso(float(doc.get("computed_at") or 0) - 300)   # re-applying one the render had changes nothing
-        hist = of_diagnose.label_history(_labels_of(cfgs[n], since) if n in cfgs else
-                                         [r for r in _rows(since, names=("of.issue_labelled",)) if r.get("org") == n])
-        keeper = doc.get("structure_keeper")
-        issues = [i for i in (of_diagnose.label_issue(dict(i, org=n), hist.get(i.get("issue_id")), keeper, b)
-                              for i in doc.get("issues") or []) if i.get("state") == "open" and _decided_by(args, i)]
-        out.append((n, issues, {"rules": doc["rules"], "structure_keeper": doc.get("structure_keeper"),
-                                "computed_at": float(doc.get("computed_at") or 0)}))
+        labs = _labels_of(cfgs[n]) if n in cfgs else None
+        if labs is None:
+            return None, "the labels could not be read" if n in cfgs else f"{n} is not in orgs.yaml"
+        hist, keeper = of_diagnose.label_history(labs), doc.get("structure_keeper")
+        moved = {}
+        issues = []
+        for i in doc.get("issues") or []:
+            j = of_diagnose.label_issue(of_diagnose.unlabelled(dict(i, org=n)), hist.get(i["issue_id"]), keeper, b, carry(i))
+            d = (j["state"] == "open") - (i.get("state") == "open")
+            moved[i.get("rule_version")] = moved.get(i.get("rule_version"), 0) + d
+            issues.append(j)
+        out.append((n, [i for i in issues if i["state"] == "open" and _decided_by(args, i)],
+                    {"rules": [_recount(r, moved.get(r.get("version"), 0)) for r in doc["rules"]],
+                     "structure_keeper": keeper, "computed_at": float(doc.get("computed_at") or 0)}))
     return out, None
+
+
+def _recount(r, moved):
+    """A rule's status row with its open count moved by MOVED issues that a label opened (+) or closed (-)."""
+    if not moved or r.get("status") not in ("fired", "quiet"):
+        return r
+    k = max(0, (r.get("issues") or 0) + moved)
+    return dict(r, issues=k, status="fired" if k else ("blocked" if r.get("missing") else "quiet"))
 
 
 def _print_issue(i):
@@ -324,7 +347,8 @@ def cmd_issues(args):
     printed nothing within an agent's two-minute limit, though the render held every id it asked for."""
     b = time.time()
     args.at = of_model.iso(b)
-    names = _issue_orgs(args.org)
+    # no --org: the one organization _org gives (the last listed), as before 2026-11-24; all: every one
+    names = _issue_orgs("all") if args.org == "all" else [_org(args.org)["name"]]
     ids = [x for x in getattr(args, "ids", None) or [] if x]
     runs, why = (None, None) if args.fresh else _rendered_issues(args, names, ids, b)
     source = "render" if runs is not None else "run"

@@ -4185,18 +4185,26 @@ class IssuesAcrossOrgsTest(unittest.TestCase):
         class D:
             org, now = "team", time.time() - 600
             diagnosis = {"issues": [self.issue("43b590d385f6"), dict(self.issue("77aa00000000"), decider="structure_keeper",
-                                                                     decider_position="team_org", summary="x" * 120)],
+                                                                     decider_position="team_org", summary="x" * 120),
+                                    dict(self.issue("55bb00000000"), state="dismissed", label="false_positive"),
+                                    dict(self.issue("66cc00000000"), rule_version="ap.r@1")],
                          "rules": [rule], "structure_keeper": "team_org"}
         label = {"event_id": "l1", "ts": of_model.iso(now - 60), "name": "of.issue_labelled", "org": "team",
                  "payload": {"issue_id": "43b590d385f6", "rule_version": "ap.r@0", "label": "false_positive"}}
         other = {"event_id": "l2", "ts": of_model.iso(now - 30), "name": "of.issue_labelled", "org": "team",
                  "position": "ops_z", "payload": {"issue_id": "77aa00000000", "rule_version": "ap.r@0",
                                                   "label": "false_positive", "by": "ops_z"}}
-        ran, read = [], []
+        lab = lambda n, iid, label, ago, rv="ap.r@0": {"event_id": n, "ts": of_model.iso(now - ago), "name": "of.issue_labelled",
+                                                       "org": "team", "payload": {"issue_id": iid, "rule_version": rv, "label": label}}
+        labels = [lab("l0", "55bb00000000", "false_positive", 86400 * 20), label, other,
+                  lab("l4", "66cc00000000", "false_positive", 20)]   # on @0, which ap.r@1 carries
+        ran, read, broken = [], [], []
 
-        def rows(since, names=None):
+        def rows(since, names=None, strict=False):
             read.append((since, names))
-            return [label, other] if names else []
+            if broken and strict:
+                return None
+            return list(labels) if names else []
 
         def run(cmd):
             out, err = io.StringIO(), io.StringIO()
@@ -4206,6 +4214,7 @@ class IssuesAcrossOrgsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(of_studio, "_pages_dir", lambda: tmp), \
                 mock.patch.object(of_studio, "orgs", lambda *a: [{"name": "team", "paths": []}]), \
                 mock.patch.object(of_studio_cli, "_rows", rows), mock.patch.object(of_studio, "last_render", lambda *a, **k: None), \
+                mock.patch.object(of_diagnose, "catalogue", lambda: {"rules": {"r": {"labels_carry_from": [0]}}}), \
                 mock.patch.object(of_studio_cli, "_open_issues",
                                   lambda a, n, r, b: ran.append(n) or (n, [self.issue("99990000ffff", n)],
                                                                       {"rules": [], "structure_keeper": None, "computed_at": b})):
@@ -4216,8 +4225,10 @@ class IssuesAcrossOrgsTest(unittest.TestCase):
             ran.clear()
             rc, out, err = run(["--org", "team", "--json"])
             got = json.loads(out)
-            self.assertEqual((rc, ran, got["source"], got["rules"], got["structure_keeper"]), (0, [], "render", [rule], "team_org"))
-            self.assertEqual([i["issue_id"] for i in got["issues"]], ["77aa00000000"])   # labelled false_positive since
+            self.assertEqual((rc, ran, got["source"], got["structure_keeper"]), (0, [], "render", "team_org"))
+            self.assertEqual(got["rules"], [dict(rule, issues=1)])            # one of its two dismissed since the render
+            self.assertEqual([i["issue_id"] for i in got["issues"]], ["77aa00000000"])   # labelled false_positive since;
+            # 55bb dismissed before the render stays so, and 66cc's label on @0 holds through labels_carry_from
             self.assertEqual(got["issues"][0]["label_not_counted"]["by"], "ops_z")    # ops_z may not label it: still open
             self.assertEqual(read[-1][1], ("of.issue_labelled",))              # only the labels, never the window
             rc, out, err = run(["--org", "team"])
@@ -4242,6 +4253,23 @@ class IssuesAcrossOrgsTest(unittest.TestCase):
             rc, out, err = run(["--org", "team", "--fresh", "--json"])
             self.assertEqual((ran, json.loads(out)["source"]), (["team"], "run"))
             self.assertNotIn("follows", err)
+            ran.clear()
+            labels.append(dict(lab("l5", "55bb00000000", "true_positive", 10), payload=dict(
+                lab("l5", "55bb00000000", "true_positive", 10)["payload"], by="owner")))
+            got = json.loads(run(["--org", "team", "--json"])[1])              # a later label opens a dismissed one
+            self.assertEqual(([i["issue_id"] for i in got["issues"]], got["rules"][0]["issues"], ran),
+                             (["77aa00000000", "55bb00000000"], 2, []))
+            self.assertEqual(got["issues"][1]["label"], "true_positive")
+            broken.append(1)                                                   # the labels cannot be read: a run
+            rc, out, err = run(["--org", "team", "--json"])
+            self.assertEqual((ran, json.loads(out)["source"]), (["team"], "run"))
+            self.assertIn("the labels could not be read", err)
+            self.assertIsNone(of_studio_cli._labels_of({"name": "team", "paths": []}))   # so a run keeps its window's
+            broken.clear()
+            ran.clear()
+            with mock.patch.object(of_studio, "orgs", lambda *a: [{"name": "acme", "paths": []}, {"name": "team", "paths": []}]):
+                rc, out, err = run(["--json"])                                 # no --org: the last listed, as before
+                self.assertEqual((ran, json.loads(out)["source"]), ([], "render"))
             with redirect_stderr(io.StringIO()):
                 self.assertEqual(of_studio_cli.main(["model", "works", "--id", "x"]), 2)
             with open(of_studio.issues_path("team")) as fh:                    # a file written before the rules were kept

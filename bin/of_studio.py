@@ -3129,8 +3129,9 @@ def write_issues(d):
     2026-11-15). Returns 1 when written."""
     import json
     diag = d.diagnosis or {}
-    issues = [dict(i, org=d.org) for i in diag.get("issues") or [] if i.get("state") == "open"]
-    # the rules' status and the keeper too, so that `of model issues` lists from this file as its own run would print
+    # every issue with its state (a dismissed or snoozed one may open again on a later label), the rules' status and
+    # the keeper, so that `of model issues` lists from this file as its own run would print
+    issues = [dict(i, org=d.org) for i in diag.get("issues") or []]
     _write_page(issues_path(d.org), json.dumps({"org": d.org, "computed_at": d.now, "issues": issues,
                                                 "rules": diag.get("rules") or [],
                                                 "structure_keeper": diag.get("structure_keeper")},
@@ -3149,7 +3150,11 @@ def read_issue_files(names, now=None):
                 doc = json.load(fh)
         except (OSError, ValueError):
             return None
-        if not isinstance(doc, dict) or not_latest(float(doc.get("computed_at") or 0), now):
+        if (not isinstance(doc, dict) or not isinstance(doc.get("issues", []), list)
+                or not isinstance(doc.get("rules", []), list)
+                or not all(isinstance(i, dict) and i.get("issue_id") for i in doc.get("issues") or [])):
+            return None   # not a file write_issues wrote
+        if not_latest(float(doc.get("computed_at") or 0), now):
             return None
         out[n] = doc
     return out
@@ -3158,7 +3163,7 @@ def read_issue_files(names, now=None):
 def read_issues(names, now=None):
     """[open issue] of the organizations NAMES from the render's files, or None (read_issue_files)."""
     docs = read_issue_files(names, now)
-    return None if docs is None else [i for n in names for i in docs[n].get("issues") or []]
+    return None if docs is None else [i for n in names for i in docs[n].get("issues") or [] if i.get("state") == "open"]
 
 
 def last_render(path=None, started=False):
