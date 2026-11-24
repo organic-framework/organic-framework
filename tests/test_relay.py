@@ -900,6 +900,13 @@ class RelayTest(unittest.TestCase):
         finally:
             of_relay.codex_box_text = saved
 
+    def test_an_idle_claude_pane_quoting_codex_dialog_words_is_no_dialog(self):
+        """of_herdr on PR 639: an answer that quotes 'Hooks need review' must not hold every delivery."""
+        quoted = "⏺ Codex showed 'Hooks need review' and 'Sign in with ChatGPT' at start.\n" + self._screen("")
+        self.assertFalse(of_relay.dialog_open(quoted))
+        res, typed = self._deliver_with_box(quoted)
+        self.assertEqual(res, (True, None))
+
     def test_codex_folder_trust_hooks_list_and_sign_in_are_dialogs(self):
         """of_herdr's lab screens: each draws `› 1. …` like a box, and Enter there would answer it."""
         trust = ("  Folder access\n  /tmp/lab/proj\n  Trust this folder? Codex can read, edit, and run files here.\n"
