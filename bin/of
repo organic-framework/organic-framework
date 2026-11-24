@@ -7954,38 +7954,44 @@ _CITED_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}(?:-[0-9a-f]{4}(?:-[0-9a-f]{4}(?
 
 
 def prompt_cited(conn, pid, me):
-    """Whether a record addressed to position ME or written by it cites the person's prompt PID (of_architect, msg
-    01a1fa13-59a5: "a prompt is shown to a position when a record addressed to it or written by it cites the prompt's
-    id"): a hand-over it sends or receives, its own asks, their answers and amendments. (True, None), or (False, why).
-    A citation is an id or a prefix of at least its first two groups; one that names more than one prompt shows none."""
+    """Whether a record another wrote to position ME cites the person's prompt PID (of_architect, msg 01a1fa13-59a5;
+    narrowed by of_secrets-review on PR 633: a record the position writes itself is text it chooses, so its own asks,
+    amendments, answers, proposals, notes and results never count): the owner's answers to its asks, a hand-over it
+    receives (its title, done-when, basis and context, as its sender wrote them), and the other side's notes and result
+    on a hand-over it is a party to. (True, None), or (False, why). A citation is an id or a prefix of at least its
+    first two groups; one that names more than one prompt shows none. A prompt it saw itself, in its own session, is
+    shown by the own-session rule, not here."""
     head = pid[:13]
     texts = []
-    for (payload,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question' AND position = ? AND "
-                                   "payload LIKE ?", (me, f"%{head}%")):
-        texts.append(payload)
     mine = {r[0] for r in conn.execute("SELECT event_id FROM event WHERE name = 'of.agent_question' AND position = ?",
                                        (me,))}
-    for name, position, payload in conn.execute(
-            "SELECT name, position, payload FROM event WHERE name IN ('of.agent_question_answered', 'of.ask_amended') "
-            "AND payload LIKE ?", (f"%{head}%",)):
+    for (payload,) in conn.execute(
+            "SELECT payload FROM event WHERE name = 'of.agent_question_answered' AND payload LIKE ? "
+            "AND (position IS NULL OR position != ?)", (f"%{head}%", me)):   # never an answer it recorded itself
         try:
             body = json.loads(payload or "{}")
         except ValueError:
             continue
-        asks = {body.get("ask_id")} | set(body.get("ask_ids") or [])
-        if asks & mine or (name == "of.ask_amended" and position == me):
+        if ({body.get("ask_id")} | set(body.get("ask_ids") or [])) & mine:
             texts.append(payload)
     try:
         import of_handover
+
+        def others(by):
+            return not (of_handover.same(me, by) or by == of_handover.short(me))
         for h in of_handover.project(of_handover.load(conn)).values():
-            if me in (h.get("from"), h.get("to")):
-                texts.append(json.dumps({k: h.get(k) for k in ("title", "done_when", "basis", "context", "notes",
-                                                               "result")}, ensure_ascii=False))
+            if of_handover.same(h.get("to"), me):   # received: what its sender wrote
+                texts.append(json.dumps({k: h.get(k) for k in ("title", "done_when", "basis", "context")},
+                                        ensure_ascii=False))
+            if of_handover.same(h.get("to"), me) or of_handover.same(h.get("from"), me):
+                texts += [n.get("note") or "" for n in h.get("notes") or [] if others(n.get("by"))]
+                if of_handover.same(h.get("from"), me) and h.get("result"):   # its receiver's delivery
+                    texts.append(json.dumps(h.get("result"), ensure_ascii=False))
     except Exception:  # noqa: BLE001 - no hand-overs to read: none cites it
         pass
     cites = {t for text in texts for t in _CITED_ID.findall(text or "") if len(t) >= 13 and pid.startswith(t)}
     if not cites:
-        return False, "no hand-over, ask or answer of yours cites it"
+        return False, "no answer to your asks and no hand-over or note another wrote to you cites it"
     for t in sorted(cites, key=len, reverse=True):
         n = conn.execute("SELECT COUNT(*) FROM event WHERE name = 'of.human_prompt' AND event_id >= ? AND "
                          "event_id < ?", (t, t + "\uffff")).fetchone()[0]
@@ -8010,9 +8016,10 @@ def event_show(conn, ref, org=None, positions=None, own_session=None, own_positi
         raise OfError(f"{eid}: an event of kind {name}, which of event show does not show (asks, their answers and "
                       "amendments, hand-overs and a person's prompt only)")
     if name == "of.human_prompt" and own_session is not None and session != own_session:
-        # through a door, a person's prompt from the caller's own session, or one a record addressed to it or written
-        # by it cites (of_architect, msg 01a1fa13-59a5; of_server on the door, msg 01a1fa0e-dd4a: never any prompt of
-        # the organization, since prompts hold matters the founder told nobody else about)
+        # through a door, a person's prompt from the caller's own session, or one a record another wrote to it cites
+        # (of_architect, msg 01a1fa13-59a5, narrowed by of_secrets-review on PR 633; of_server on the door, msg
+        # 01a1fa0e-dd4a: never any prompt of the organization, since prompts hold matters the founder told nobody else
+        # about)
         ok, why = prompt_cited(conn, eid, own_position) if own_position else (False, "no position")
         if not ok:
             raise OfError(f"{eid}: a person's prompt in another session, not shown: {why}")

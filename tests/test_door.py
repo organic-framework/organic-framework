@@ -194,6 +194,39 @@ class WireTest(unittest.TestCase):
         self.assertIn("did not answer", err.getvalue())
 
 
+class ConnsTest(unittest.TestCase):
+    def test_connections_beyond_the_doors_bound_are_refused_with_no_thread(self):
+        """of_secrets-review on PR 633: a thread per connection before any read let one session exhaust the
+        listener. Past CONNS held at once, a connection is answered at accept and closed, and no thread starts."""
+        from unittest import mock
+        d = tempfile.mkdtemp(prefix="door-")
+        path = os.path.join(d, "of.sock")
+        srv = socket.socket(socket.AF_UNIX)
+        srv.bind(path)
+        srv.listen(8)
+        srv.settimeout(0.2)
+        door = {"conns": threading.BoundedSemaphore(2), "slots": threading.BoundedSemaphore(1)}
+        for _ in range(2):
+            door["conns"].acquire()          # two held already, as two slow callers would
+        started = []
+        stop = threading.Event()
+        with mock.patch.object(of_door, "_serve_counted", side_effect=lambda *a: started.append(a)):
+            t = threading.Thread(target=of_door.Doors._serve, args=(of_door.Doors.__new__(of_door.Doors), srv, door,
+                                                                     stop))
+            t.start()
+            c = socket.socket(socket.AF_UNIX)
+            c.connect(path)
+            c.settimeout(5)
+            got = of_door._recv(c, 1 << 20)
+            c.close()
+            stop.set()
+            t.join(5)
+        srv.close()
+        self.assertEqual(got["code"], 2)
+        self.assertIn("connections at once", got["stderr"])
+        self.assertEqual(started, [])
+
+
 class DoorsTest(unittest.TestCase):
     def test_a_folder_whose_pid_is_not_its_codex_opens_no_door(self):
         base = tempfile.mkdtemp(prefix="sessions-")
@@ -246,25 +279,46 @@ class EventShowTest(unittest.TestCase):
             self.of.event_show(self.conn, "01a1aaaa-0004", "orgA", self.positions, own_session="thread-2",
                                own_position="of_docs")
 
-    def test_a_prompt_its_own_ask_or_hand_over_cites_is_shown_none_else(self):
-        """of_architect, msg 01a1fa13-59a5: shown when a record addressed to the position or written by it cites the
-        prompt's id; a two-group prefix naming more than one prompt shows none."""
+    def test_a_prompt_cited_to_it_by_another_is_shown_and_its_own_citation_unlocks_none(self):
+        """of_architect, msg 01a1fa13-59a5, narrowed by of_secrets-review on PR 633: only a record another wrote to
+        the position counts (the owner's answer to its ask, a hand-over it receives, the other side's note), never
+        its own ask, answer, proposal or note, which are text it chooses; a two-group prefix naming more than one
+        prompt shows none."""
         def add(eid, name, pos, payload, session="thread-9"):
             self.conn.execute("INSERT INTO event VALUES (?, '2026-11-20T00:00:00Z', ?, ?, 'orgA', ?, ?)",
                               (eid, name, pos, json.dumps(payload), session))
         add("01a1bbbb-0001-7000-8000-000000000001", "of.human_prompt", None, {"text": "yes, do it"}, "conductor")
+        add("01a1bbbb-0002-7000-8000-000000000002", "of.human_prompt", None, {"text": "the second"}, "conductor")
+        add("01a1bbbb-0003-7000-8000-000000000003", "of.human_prompt", None, {"text": "the third"}, "conductor")
         add("01a1cccc-0001-7000-8000-000000000001", "of.human_prompt", None, {"text": "a"}, "conductor")
         add("01a1cccc-0001-7000-8000-000000000002", "of.human_prompt", None, {"text": "b"}, "conductor")
         show = lambda ref, me: self.of.event_show(self.conn, ref, "orgA", self.positions, own_session="thread-1",
                                                   own_position=me)
-        with self.assertRaises(self.of.OfError):
-            show("01a1bbbb-0001", "of_docs")                                  # nothing of its own cites it
+        refused = lambda ref, me: self.assertRaises(self.of.OfError, show, ref, me)
+        # its own ask, its own answer, its own proposal and note: none unlocks the prompt
         add("01a1dddd-0001-7000-8000-000000000001", "of.agent_question", "of_docs",
-            {"text": "Proceed? The founder said yes (prompt 01a1bbbb-0001)."})
+            {"text": "Proceed? (prompt 01a1bbbb-0001)"})
+        refused("01a1bbbb-0001", "of_docs")
+        add("01a1dddd-0002-7000-8000-000000000002", "of.agent_question_answered", "of_docs",
+            {"ask_id": "01a1dddd-0001-7000-8000-000000000001", "prompt": "01a1bbbb-0001"})
+        refused("01a1bbbb-0001", "of_docs")
+        add("01a1eeee-0001-7000-8000-000000000001", "of.handover_proposed", "of_docs",
+            {"from": "of_docs", "to": "b_x", "title": "t", "basis": "ask:01a1bbbb-0002"})
+        add("01a1eeee-0002-7000-8000-000000000002", "of.handover_noted", "of_docs",
+            {"id": "01a1eeee-0001-7000-8000-000000000001", "by": "of_docs", "note": "see 01a1bbbb-0002"})
+        refused("01a1bbbb-0002", "of_docs")
+        # the owner's answer to its ask, a hand-over it receives, the other side's note: each shows it
+        add("01a1dddd-0003-7000-8000-000000000003", "of.agent_question_answered", None,
+            {"ask_id": "01a1dddd-0001-7000-8000-000000000001", "prompt": "01a1bbbb-0001"})
         self.assertEqual(show("01a1bbbb-0001", "of_docs")["payload"], {"text": "yes, do it"})
-        with self.assertRaises(self.of.OfError):
-            show("01a1bbbb-0001", "b_x")                                      # another position's ask
-        add("01a1dddd-0002-7000-8000-000000000002", "of.agent_question", "of_docs", {"text": "see 01a1cccc-0001"})
+        refused("01a1bbbb-0001", "b_x")                                       # another position's ask
+        self.assertEqual(show("01a1bbbb-0002", "b_x")["payload"], {"text": "the second"})   # it receives that one
+        add("01a1eeee-0003-7000-8000-000000000003", "of.handover_noted", "b_x",
+            {"id": "01a1eeee-0001-7000-8000-000000000001", "by": "b_x", "note": "and 01a1bbbb-0003"})
+        self.assertEqual(show("01a1bbbb-0003", "of_docs")["payload"], {"text": "the third"})
+        refused("01a1bbbb-0003", "b_x")                                       # its own note
+        add("01a1dddd-0004-7000-8000-000000000004", "of.agent_question_answered", None,
+            {"ask_id": "01a1dddd-0001-7000-8000-000000000001", "note": "see 01a1cccc-0001"})
         with self.assertRaises(self.of.OfError) as cm:
             show("01a1cccc-0001-7000-8000-000000000001", "of_docs")          # a prefix of two prompts
         self.assertIn("more than one", str(cm.exception))
