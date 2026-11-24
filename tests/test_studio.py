@@ -670,6 +670,22 @@ class DiagnoseTest(unittest.TestCase):
         self.assertEqual(state(rows + [lab("false_positive", "ap.orphan-work@0")]), "dismissed")  # labels_carry_from: [0]
         self.assertEqual(state(rows + [lab("true_but_not_now")]), "snoozed")
 
+    def test_a_label_older_than_the_rows_still_holds(self):
+        """A label is the one stored part: read over all time, never only the window's rows (2026-11-24: the render
+        read 9 days, and an issue of_architect dismissed on 2026-11-14 was open again in the inbox)."""
+        rows = [self.wr(i, []) for i in range(5)]
+        iid = of_diagnose.issue_id("orphan-work", ["(unmapped)"])
+        ver = next(r["version"] for r in self.diag(rows)["rules"] if r["rule"] == "ap.orphan-work")
+        m = of_model.build(self.DOC2, rows, at=self.B)
+        lab = lambda at, label="false_positive": ev(f"l{at}", at, "of.issue_labelled", None,
+                                                   {"issue_id": iid, "rule_version": ver, "label": label})
+        state = lambda labels: next(i for i in of_diagnose.diagnose(m, rows, self.A, self.B, label_rows=labels)["issues"]
+                                    if i["issue_id"] == iid)["state"]
+        self.assertEqual(state([lab("2026-10-01T10:00Z")]), "dismissed")          # long before the rows' window
+        self.assertEqual(state([]), "open")                                       # given: the rows' own are not read
+        self.assertEqual(state([lab("2026-10-01T10:00Z"), lab("2026-11-04T10:00Z", "true_positive")]), "open")
+        self.assertEqual(state([lab("2026-12-01T10:00Z")]), "open")               # after the moment diagnosed
+
     def test_parts_run_when_their_inputs_exist(self):
         d = self.diag([self.wr(i, ["lonely"]) for i in range(5)] + [self.wr(9, [])])
         st = self.status(d, "orphan-work")
@@ -1000,6 +1016,22 @@ class StudioTest(unittest.TestCase):
         d.unit = unit
         d.compute(of_model.build(DOC, d.rows, at=d.now, org="acme", rev="undated:x", window_h=168), unit)
         return d
+
+    def test_the_diagnosis_reads_every_label_of_the_organization(self):
+        """The render's rows span 9 days; the labels are read over all time (Data.history), so one older than the rows
+        still holds (2026-11-24)."""
+        from unittest import mock
+        old = ev("l1", "2026-10-01T10:00Z", "of.issue_labelled", None, {"issue_id": "x", "label": "false_positive"})
+        got, real = {}, of_diagnose.diagnose
+
+        def spy(*a, **k):
+            got.update(k)
+            return real(*a, **k)
+        with mock.patch.object(of_studio.Data, "history",
+                               lambda self, names, since=None: [old] if tuple(names) == ("of.issue_labelled",) else []), \
+                mock.patch.object(of_diagnose, "diagnose", spy):
+            self.data()
+        self.assertEqual(got["label_rows"], [old])
 
     def test_an_organization_joined_through_a_server_only_is_left_out(self):
         """2026-11-20, of_platform: an enrollment writes an organization with server: and no path:, and the agent host's
@@ -2841,7 +2873,7 @@ class EscalationsFromCacheTest(unittest.TestCase):
         def run(told, fresh):
             emitted = []
             args = types.SimpleNamespace(org="acme", write=True, json=False, fresh=fresh, at=None)
-            with mock.patch.object(of_studio_cli, "_org", return_value={"name": "acme", "repo": "/nonexistent"}), \
+            with mock.patch.object(of_studio_cli, "_org", return_value={"name": "acme", "repo": "/nonexistent", "paths": []}), \
                     mock.patch.object(of_studio_cli, "_escalations_told", return_value=told) as t, \
                     mock.patch.object(of_studio_cli, "_rows", return_value=[]), \
                     mock.patch.object(of_studio_cli, "_model", return_value=(None, {}, [])), \
@@ -3962,24 +3994,27 @@ class IssuesAcrossOrgsTest(unittest.TestCase):
         import of_studio_cli
         per = {"acme": [self.issue("aaa111"), self.issue("same00")], "team": [self.issue("bbb222"), self.issue("same00")]}
         orgs = [{"name": "acme", "repo": "/nonexistent", "paths": []}, {"name": "team", "repo": "/nonexistent", "paths": []}]
-        diag = lambda m, rows, a, b, context=None: {"issues": per[m["org"]], "rules": [], "structure_keeper": m["org"] + "_org"}
+        diag = lambda m, rows, a, b, context=None, label_rows=None: {"issues": per[m["org"]], "rules": [],
+                                                                      "structure_keeper": m["org"] + "_org"}
         out = io.StringIO()
         with mock.patch.object(of_studio, "orgs", return_value=orgs), \
                 mock.patch.object(of_studio_cli, "_rows", return_value=[]), \
-                mock.patch.object(of_studio_cli, "_model", lambda args, rows: ({"name": args.org, "repo": "/nonexistent"}, {"org": args.org}, [])), \
+                mock.patch.object(of_studio_cli, "_model", lambda args, rows: ({"name": args.org, "repo": "/nonexistent", "paths": []},
+                                                                               {"org": args.org}, [])), \
                 mock.patch.object(of_diagnose, "diagnose", diag), redirect_stdout(out):
-            of_studio_cli.main(["model", "issues", "--org", "all", "--json"])
+            of_studio_cli.main(["model", "issues", "--org", "all", "--json", "--fresh"])
             got = json.loads(out.getvalue())
             out.seek(0), out.truncate()
-            of_studio_cli.main(["model", "issues", "--org", "team", "--json"])
+            of_studio_cli.main(["model", "issues", "--org", "team", "--json", "--fresh"])
             one = json.loads(out.getvalue())
             out.seek(0), out.truncate()
-            of_studio_cli.main(["model", "issues", "--org", "all"])
+            of_studio_cli.main(["model", "issues", "--org", "all", "--fresh"])
             table = out.getvalue()
         self.assertEqual([(i["org"], i["issue_id"]) for i in got["issues"]],
                          [("acme", "aaa111"), ("acme", "same00"), ("team", "bbb222"), ("team", "same00")])
         self.assertEqual(got["orgs"]["team"]["structure_keeper"], "team_org")
-        self.assertEqual(set(one), {"issues", "rules", "structure_keeper"})     # one organization: the shape the digest reads
+        self.assertEqual(set(one), {"issues", "rules", "structure_keeper", "source", "computed_at"})   # the digest reads issues
+        self.assertEqual(one["source"], "run")                                  # no render file: one diagnose run each
         self.assertTrue(table.startswith("ORG"))
         self.assertIn("rules for team:", table)
 
@@ -4005,7 +4040,7 @@ class IssuesAcrossOrgsTest(unittest.TestCase):
         listed = [self.issue("43b590d385f6", "team"), self.issue("6081a150e82b", "acme"), self.issue("6081a150e82b", "team")]
         calls = []
 
-        def lookup(org, ids=(), log=None, run=True):
+        def lookup(org, ids=(), log=None, run=True, fresh=False):
             calls.append((org, list(ids), run))
             return [i for i in listed if org == "all" or i["org"] == org], "render"
         env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
@@ -4037,7 +4072,7 @@ class IssuesAcrossOrgsTest(unittest.TestCase):
         listed = [self.issue("43b590d385f6", "team"), self.issue("6081a150e82b", "team")]
         calls = []
 
-        def lookup(org, ids=(), log=None, run=True):
+        def lookup(org, ids=(), log=None, run=True, fresh=False):
             calls.append((org, list(ids), run))
             return listed, "render"
         env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
@@ -4082,6 +4117,85 @@ class IssuesAcrossOrgsTest(unittest.TestCase):
                 self.assertEqual(of_studio_cli.issues_for_label("all", ["43b5"])[1], "run")    # acme has no render
                 self.assertEqual(ran, ["team", "team", "acme"])
                 self.assertEqual(of_studio_cli.issues_for_label("all", [], run=False), ([], "none"))
+                self.assertEqual(of_studio_cli.issues_for_label("team", ["43b5"], fresh=True)[1], "run")
+
+    def test_the_list_reads_the_render_and_runs_the_diagnose_only_without_it(self):
+        """A user organization's structure keeper, 2026-11-24: `of issues list <id>` ran a diagnose per organization
+        and printed nothing within two minutes on the founder's laptop, though the render held every id it asked."""
+        import io
+        import json
+        import tempfile
+        from contextlib import redirect_stderr, redirect_stdout
+        from unittest import mock
+        import of_studio_cli
+        rule = {"version": "ap.r@0", "status": "fired", "issues": 2, "missing": [], "parts_blocked": {}, "notes": ["n1"]}
+        now = time.time()
+
+        class D:
+            org, now = "team", time.time() - 600
+            diagnosis = {"issues": [self.issue("43b590d385f6"), dict(self.issue("77aa00000000"), decider="structure_keeper",
+                                                                     decider_position="team_org", summary="x" * 120)],
+                         "rules": [rule], "structure_keeper": "team_org"}
+        label = {"event_id": "l1", "ts": of_model.iso(now - 60), "name": "of.issue_labelled", "org": "team",
+                 "payload": {"issue_id": "43b590d385f6", "rule_version": "ap.r@0", "label": "false_positive"}}
+        ran, read = [], []
+
+        def rows(since, names=None):
+            read.append((since, names))
+            return [label] if names else []
+
+        def run(cmd):
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                rc = of_studio_cli.main(["model", "issues"] + cmd)
+            return rc, out.getvalue(), err.getvalue()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(of_studio, "_pages_dir", lambda: tmp), \
+                mock.patch.object(of_studio, "orgs", lambda *a: [{"name": "team", "paths": []}]), \
+                mock.patch.object(of_studio_cli, "_rows", rows), mock.patch.object(of_studio, "last_render", lambda *a, **k: None), \
+                mock.patch.object(of_studio_cli, "_open_issues",
+                                  lambda a, n, r, b: ran.append(n) or (n, [self.issue("99990000ffff", n)],
+                                                                      {"rules": [], "structure_keeper": None, "computed_at": b})):
+            rc, out, err = run(["--org", "team"])
+            self.assertEqual((rc, ran), (0, ["team"]))                         # no file: one diagnose run
+            self.assertIn("one diagnose run each follows", err)
+            of_studio.write_issues(D())
+            ran.clear()
+            rc, out, err = run(["--org", "team", "--json"])
+            got = json.loads(out)
+            self.assertEqual((rc, ran, got["source"], got["rules"], got["structure_keeper"]), (0, [], "render", [rule], "team_org"))
+            self.assertEqual([i["issue_id"] for i in got["issues"]], ["77aa00000000"])   # labelled false_positive since
+            self.assertEqual(read[-1][1], ("of.issue_labelled",))              # only the labels, never the window
+            rc, out, err = run(["--org", "team"])
+            self.assertTrue(out.startswith("RULE"))
+            self.assertIn("note ap.r@0: n1", out)
+            self.assertIn("as the page render diagnosed them at", out)
+            rc, out, err = run(["--org", "team", "--decider", "owner", "--json"])
+            self.assertEqual(json.loads(out)["issues"], [])
+            rc, out, err = run(["--org", "team", "--id", "77aa"])              # by id: the issue in full
+            self.assertEqual((rc, ran), (0, []))
+            self.assertTrue(out.startswith("77aa00000000  ap.r@0  team  decider team_org"))
+            self.assertIn("x" * 120, out)
+            self.assertNotIn("RULE", out)
+            rc, out, err = run(["--org", "team", "--id", "43b5"])              # held, but labelled since: no run, said
+            self.assertEqual((rc, ran), (1, []))
+            self.assertIn("no open issue 43b5", err)
+            rc, out, err = run(["--org", "team", "--id", "9999"])              # an id the render does not hold: a run
+            self.assertEqual((rc, ran), (0, ["team"]))
+            self.assertIn("99990000ffff", out)
+            ran.clear()
+            rc, out, err = run(["--org", "team", "--fresh", "--json"])
+            self.assertEqual((ran, json.loads(out)["source"]), (["team"], "run"))
+            self.assertNotIn("follows", err)
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(of_studio_cli.main(["model", "works", "--id", "x"]), 2)
+            with open(of_studio.issues_path("team")) as fh:                    # a file written before the rules were kept
+                doc = json.load(fh)
+            doc.pop("rules")
+            with open(of_studio.issues_path("team"), "w") as fh:
+                json.dump(doc, fh)
+            ran.clear()
+            rc, out, err = run(["--org", "team", "--json"])
+            self.assertEqual((ran, json.loads(out)["source"]), (["team"], "run"))
 
 
 class FlowMeasureTest(unittest.TestCase):

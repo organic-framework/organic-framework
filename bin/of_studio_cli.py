@@ -75,6 +75,9 @@ def _table(rows, head):
 
 
 def cmd_model(args):
+    if getattr(args, "ids", None) and args.what != "issues":
+        print(f"of model {args.what}: takes no --id; only `of model issues` does", file=sys.stderr)
+        return 2
     if getattr(args, "days", 0) is None:
         args.days = 14 if args.what == "coupling" else of_model.CODE_DAYS
     if args.what == "measures":
@@ -197,18 +200,18 @@ def _print_flow(fl):
         print(f"  gap: {x['measure']}: {x['why']}")
 
 
-def issues_for_label(org=None, ids=(), log=None, run=True):
+def issues_for_label(org=None, ids=(), log=None, run=True, fresh=False):
     """(open issues, source) that `of issues label` matches ids against: the render's (of_studio.read_issues) when
-    every organization's is fresh and holds each of IDS, else one diagnose run per organization here (source "run").
-    ORG: one organization, or None or "all" for every one in orgs.yaml."""
-    names = [o["name"] for o in of_studio.orgs()] if org in (None, "", "all") else [org]
-    cached = of_studio.read_issues(names)
-    if cached is not None and all(any(str(i.get("issue_id") or "").startswith(x) for i in cached) for x in ids):
+    every organization's is the render's latest and holds each of IDS, else one diagnose run per organization here
+    (source "run"). ORG: one organization, or None or "all" for every one in orgs.yaml. FRESH: the run, always."""
+    names = _issue_orgs(org)
+    cached = None if fresh else of_studio.read_issues(names)
+    if cached is not None and all(any(_names(i, x) for i in cached) for x in ids):
         return cached, "render"
     if not run:   # every id names its issue in full: what the render holds, if anything
         return cached or [], "render" if cached is not None else "none"
-    if log:
-        log(f"reading the issues: {'no fresh render' if cached is None else 'an id the last render does not hold'} for "
+    if log and not fresh:
+        log(f"reading the issues: {'no render to read' if cached is None else 'an id the last render does not hold'} for "
             f"{', '.join(names)}; one diagnose run each follows")
     b = time.time()
     rows = _rows(of_model.iso(b - 16 * 86400))
@@ -216,51 +219,153 @@ def issues_for_label(org=None, ids=(), log=None, run=True):
     return [i for n in names for i in _open_issues(keep, n, rows, b)[1]], "run"
 
 
+def _issue_orgs(org):
+    return [o["name"] for o in of_studio.orgs()] if org in (None, "", "all") else [org]
+
+
+def _names(i, x):
+    """The issue's id begins with X, as `of issues label` takes a short id."""
+    return str(i.get("issue_id") or "").startswith(x)
+
+
+def _decided_by(args, i):
+    return ((not args.decider or i["decider"] == args.decider)
+            and (not getattr(args, "for_", None) or i.get("decider_position") == args.for_))
+
+
 def _open_issues(args, org_name, rows, b):
     """One organization's diagnose run: its open issues (each tagged with `org`) and the run itself."""
     import of_diagnose
     org, m, rows = _model(argparse.Namespace(org=org_name, at=of_model.iso(b)), rows)
-    ctx = {"keeper_since": lambda sysid, k: of_model.keeper_since(org["repo"], sysid, k)}
-    d = of_diagnose.diagnose(m, rows, b - 7 * 86400, b, context=ctx)
-    issues = [dict(i, org=org["name"]) for i in d["issues"] if i["state"] == "open"
-              and (not args.decider or i["decider"] == args.decider)
-              and (not getattr(args, "for_", None) or i.get("decider_position") == args.for_)]
-    return org["name"], issues, d
+    code = {}
+    ctx = {"keeper_since": lambda sysid, k: of_model.keeper_since(org["repo"], sysid, k),
+           "code_activity": lambda: code["a"] if "a" in code else code.setdefault("a", _code_activity(org, m, b))}
+    d = of_diagnose.diagnose(m, rows, b - 7 * 86400, b, context=ctx, label_rows=_labels_of(org))
+    issues = [dict(i, org=org["name"]) for i in d["issues"] if i["state"] == "open" and _decided_by(args, i)]
+    return org["name"], issues, dict(d, computed_at=b)
+
+
+def _labels_of(org, since=None):
+    """The organization's of.issue_labelled rows from the store, every one or those from SINCE (ISO): the diagnose's
+    labels (of_diagnose.diagnose, label_rows)."""
+    return of_studio.org_rows(_rows(since, names=("of.issue_labelled",)), org,
+                              [o for o in of_studio.orgs() if o["name"] != org["name"]])
+
+
+def _code_activity(org, m, b, days=of_model.CODE_DAYS):
+    """The rules' code evidence (RFC 0007 §2.2) as the render gives it (of_studio.Data.code_activity): the merged work
+    records of the last DAYS from the store, the open PRs' states from the listener's view. Until 2026-11-24 a run
+    here passed none, and ap.function-gap@2 read quiet where the render's fired."""
+    a = b - days * 86400
+    others = [o for o in of_studio.orgs() if o["name"] != org["name"]]
+    rows = of_studio.org_rows(_rows(of_model.iso(a - 86400), names=("of.work_record",)), org, others)
+    prs = of_studio._view_rows("PR_STATES", lambda x: x.get("org") == org["name"]) or []
+    return of_model.code_activity(m, rows + [r for r in prs if (of_model.t_of(r) or 0) >= a], a, b)
+
+
+def _rendered_issues(args, names, ids, b):
+    """([(organization, open issues, {rules, structure_keeper, computed_at})], None) as the page render diagnosed them
+    (of_studio.write_issues), or (None, why) when an organization's file is missing or is not the render's latest,
+    holds no rules (a file written before 2026-11-24), or holds no issue an id in IDS names: the caller then runs the
+    diagnose. A label written since the render applies as the diagnose would apply it (of_diagnose.apply_label), so an
+    issue just labelled false_positive or true_but_not_now leaves the list at once, not at the next render."""
+    import of_diagnose
+    docs = of_studio.read_issue_files(names, b)
+    if docs is None:
+        return None, "the last page render wrote no issues for it, or a later render failed for it"
+    if any("rules" not in doc for doc in docs.values()):
+        return None, "the render's file predates the rules' status in it"
+    held = [i for doc in docs.values() for i in doc.get("issues") or []]
+    gone = [x for x in ids if not any(_names(i, x) for i in held)]
+    if gone:
+        return None, f"the last page render holds no open issue {', '.join(gone)}"
+    cfgs = {o["name"]: o for o in of_studio.orgs()}
+    out = []
+    for n in names:
+        doc = docs[n]
+        since = of_model.iso(float(doc.get("computed_at") or 0) - 300)   # re-applying one the render had changes nothing
+        labels = of_diagnose.labels(_labels_of(cfgs[n], since) if n in cfgs else
+                                    [r for r in _rows(since, names=("of.issue_labelled",)) if r.get("org") == n])
+        issues = [i for i in (of_diagnose.apply_label(dict(i, org=n), labels.get(i.get("issue_id")), b)
+                              for i in doc.get("issues") or []) if i.get("state") == "open" and _decided_by(args, i)]
+        out.append((n, issues, {"rules": doc["rules"], "structure_keeper": doc.get("structure_keeper"),
+                                "computed_at": float(doc.get("computed_at") or 0)}))
+    return out, None
+
+
+def _print_issue(i):
+    """One issue in full: `of issues list <id>`."""
+    print(f"{i['issue_id']}  {i['rule_version']}" + (f" part {i['part']}" if i.get("part") else "")
+          + f"  {i.get('org') or ''}  decider {i.get('decider_position') or i['decider']}  {i.get('severity') or ''}"
+          + (f"  label {i['label']}" if i.get("label") else ""))
+    print(f"  {i['summary']}")
+    if i.get("affected"):
+        print(f"  affected: {', '.join(map(str, i['affected']))}")
+    for r in i.get("remedies") or []:
+        print(f"  remedy: {r if isinstance(r, str) else json.dumps(r, ensure_ascii=False)}")
+    if i.get("evidence"):
+        print(f"  evidence: {json.dumps(i['evidence'], ensure_ascii=False, default=str)}")
 
 
 def cmd_issues(args):
     """The diagnosed issues (docs/diagnose.md) and each rule's status; --decider structure_keeper for the keeper's own.
-    --org all: every organization in orgs.yaml, one diagnose run each (`of issues` lists and labels across them)."""
+    --org all: every organization in orgs.yaml (`of issues` lists and labels across them). --id: only the issues whose
+    id begins with one of them, each in full. Read from the last page render while it is the render's latest and holds
+    each id (_rendered_issues), else one diagnose run per organization here; --fresh runs it always. A user
+    organization's structure keeper, 2026-11-24: `of issues list` ran a diagnose each call and on the founder's laptop
+    printed nothing within an agent's two-minute limit, though the render held every id it asked for."""
     b = time.time()
     args.at = of_model.iso(b)
-    rows = _rows(of_model.iso(b - 16 * 86400))
-    names = [o["name"] for o in of_studio.orgs()] if args.org == "all" else [args.org]
-    runs = [_open_issues(args, n, rows, b) for n in names]
+    names = _issue_orgs(args.org)
+    ids = [x for x in getattr(args, "ids", None) or [] if x]
+    runs, why = (None, None) if args.fresh else _rendered_issues(args, names, ids, b)
+    source = "render" if runs is not None else "run"
+    if runs is None:
+        if why:
+            print(f"of model issues: {why} ({', '.join(names)}); one diagnose run each follows", file=sys.stderr, flush=True)
+        rows = _rows(of_model.iso(b - 16 * 86400))
+        runs = [_open_issues(args, n, rows, b) for n in names]
+    if ids:
+        runs = [(n, [i for i in iss if any(_names(i, x) for x in ids)], d) for n, iss, d in runs]
+    missing = [x for x in ids if not any(_names(i, x) for _, iss, _ in runs for i in iss)]
+    for x in missing:
+        print(f"of model issues: no open issue {x}" + (" for this decider" if args.decider or args.for_ else "")
+              + f" in {', '.join(names)}", file=sys.stderr)
+    at = lambda d: of_model.iso(d["computed_at"])
     if args.json:
         if args.org != "all":
             _, issues, d = runs[0]
-            print(json.dumps({"issues": issues, "rules": d["rules"], "structure_keeper": d.get("structure_keeper")},
-                             indent=1, ensure_ascii=False))
+            print(json.dumps({"issues": issues, "rules": d["rules"], "structure_keeper": d.get("structure_keeper"),
+                              "source": source, "computed_at": at(d)}, indent=1, ensure_ascii=False, default=str))
         else:
-            print(json.dumps({"issues": [i for _, iss, _ in runs for i in iss],
-                              "orgs": {n: {"rules": d["rules"], "structure_keeper": d.get("structure_keeper")} for n, _, d in runs}},
-                             indent=1, ensure_ascii=False))
-        return 0
+            print(json.dumps({"issues": [i for _, iss, _ in runs for i in iss], "source": source,
+                              "orgs": {n: {"rules": d["rules"], "structure_keeper": d.get("structure_keeper"),
+                                           "computed_at": at(d)} for n, _, d in runs}},
+                             indent=1, ensure_ascii=False, default=str))
+        return 1 if missing else 0
     several = len(runs) > 1
-    _table([((n,) if several else ()) + (i["rule_version"], i.get("part") or "", i["decider_position"] or i["decider"],
-                                         i["issue_id"], i["summary"][:90])
-            for n, iss, _ in runs for i in iss], (["org"] if several else []) + ["rule", "part", "decider", "issue", "what"])
-    for n, _, d in runs:
-        print()
-        if several:
-            print(f"rules for {n}:")
-        _table([(r["version"], r["status"], r["issues"] or "", r.get("error") or ", ".join(r["missing"]) or
-                 ("parts blocked: " + ", ".join(f"{k} ({', '.join(v)})" for k, v in r["parts_blocked"].items()) if r["parts_blocked"] else ""))
-                for r in d["rules"]], ["rule", "status", "issues", "missing or error"])
-        for r in d["rules"]:
-            for x in r.get("notes") or []:
-                print(f"note {r['version']}: {x}")
-    return 0
+    if ids:
+        for _, iss, _ in runs:
+            for i in iss:
+                _print_issue(i)
+    else:
+        _table([((n,) if several else ()) + (i["rule_version"], i.get("part") or "", i["decider_position"] or i["decider"],
+                                             i["issue_id"], i["summary"][:90])
+                for n, iss, _ in runs for i in iss], (["org"] if several else []) + ["rule", "part", "decider", "issue", "what"])
+        for n, _, d in runs:
+            print()
+            if several:
+                print(f"rules for {n}:")
+            _table([(r["version"], r["status"], r["issues"] or "", r.get("error") or ", ".join(r["missing"]) or
+                     ("parts blocked: " + ", ".join(f"{k} ({', '.join(v)})" for k, v in r["parts_blocked"].items()) if r["parts_blocked"] else ""))
+                    for r in d["rules"]], ["rule", "status", "issues", "missing or error"])
+            for r in d["rules"]:
+                for x in r.get("notes") or []:
+                    print(f"note {r['version']}: {x}")
+    if source == "render":
+        print("\nas the page render diagnosed them at " + ", ".join(f"{at(d)}" + (f" ({n})" if several else "") for n, _, d in runs)
+              + ", labels since applied; --fresh runs the diagnose here")
+    return 1 if missing else 0
 
 
 def cmd_senders(args):
@@ -883,7 +988,8 @@ def cmd_escalations(args):
     else:
         _, m, rows = _model(args, _rows(of_model.iso(b - 9 * 86400), names=of_studio.kinds()))
         diag = of_diagnose.diagnose(m, rows, b - 7 * 86400, b,
-                                    context={"keeper_since": lambda sysid, k: of_model.keeper_since(org["repo"], sysid, k)})
+                                    context={"keeper_since": lambda sysid, k: of_model.keeper_since(org["repo"], sysid, k)},
+                                    label_rows=_labels_of(org))
         esc = of_diagnose.escalations(m, diag, of_studio.budget_used(m, rows, b, refresh_usage=True))
     # both paths read what was told over ESCALATION_KEEP_S, not the 9 days --fresh loads (of_review on PR 522)
     told = _escalations_told(org["name"], b) if args.write else {}
@@ -1127,7 +1233,9 @@ def main(argv=None):
                     help=f"usage: read new transcript lines first (for at most {of_studio.USAGE_BUDGET_S} s; the pulse does it too)")
     mo.add_argument("--exclude-unit", help="polls: leave out this unit's positions (a unit judged apart)")
     mo.add_argument("--write", action="store_true", help="escalations: record newly fired ones as of.escalation_due")
-    mo.add_argument("--fresh", action="store_true", help="escalations: compute from the log instead of the page cache's result")
+    mo.add_argument("--fresh", action="store_true", help="escalations, issues: compute from the log instead of the page cache's result")
+    mo.add_argument("--id", dest="ids", action="append",
+                    help="issues: only the issue whose id begins with this, in full (repeatable)")
     mo.add_argument("--weeks", type=int, default=of_studio.CORRECTION_WEEKS, help="corrections: ISO weeks up to --at")
     mo.add_argument("--days", type=int, help=f"activity, evidence: days of code up to --at (default {of_model.CODE_DAYS}); "
                                               "coupling: days of records (default 14)")
