@@ -6292,7 +6292,9 @@ def cmd_issues(args):
         if note:
             payload["note"] = of_hook_mask(note)
         # the issue's organization: the owner's label has no position to resolve it from, and its model must see it
-        of_events.emit("issue_labelled", payload, position=None if by == "owner" else by, org=i.get("org"))
+        # the session too, when an agent's: the run takes the writer from the position holding it (label_writer)
+        of_events.emit("issue_labelled", payload, position=None if by == "owner" else by, org=i.get("org"),
+                       session=os.environ.get("CLAUDE_CODE_SESSION_ID") if by != "owner" else None)
         print(f"labelled {i['issue_id']} ({i.get('rule_version')}{', ' + i['org'] if i.get('org') else ''}): {label} by {by}")
     if failed:
         print(f"{failed} of {len(entries)} not labelled", file=sys.stderr)

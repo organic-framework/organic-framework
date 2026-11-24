@@ -135,16 +135,56 @@ def label_issue(i, history, keeper, now, carry=()):
     return i
 
 
-def label_history(rows):
-    """{issue_id: [of.issue_labelled payload with its ts and `by`, oldest first]}: `by` is the writer the payload names,
-    else the event's position, else the owner (a shell that is no agent's session records none)."""
+def label_writer(r, sessions=None):
+    """Who wrote label row R, by what the store records about the caller, never by the payload's word alone (of_review
+    on organic-framework PR 630): the position holding the event's session (SESSIONS: fn(session id) -> position or
+    None), else the event's own position, else, with neither recorded, the owner when the payload says so or names
+    none (`of issues label` records no position for the owner). A payload naming a position the event does not record,
+    or a session no position holds, is a writer no rule counts."""
+    pl = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+    sid, pos = r.get("session_id"), r.get("position")
+    if sid and sessions:
+        who = sessions(sid)
+        if who:
+            return who
+    if pos:
+        return pos
+    if sid:
+        return f"session {str(sid)[:8]}, which no position holds"
+    by = pl.get("by")
+    return "owner" if by in (None, "owner") else f"{by}, named in the payload only"
+
+
+def label_history(rows, sessions=None):
+    """{issue_id: [of.issue_labelled payload with its ts and `by`, oldest first]}: `by` is label_writer's, and the
+    payload's own word, when it differs, is kept as `by_claimed`."""
     out = {}
     for r in sorted(rows, key=lambda r: epoch(r.get("ts")) or 0):
         if r["name"] == "of.issue_labelled":
             pl = r.get("payload") or {}
             if isinstance(pl, dict) and isinstance(pl.get("issue_id"), str) and pl["issue_id"]:
-                out.setdefault(pl["issue_id"], []).append(dict(pl, ts=r["ts"], by=pl.get("by") or r.get("position") or "owner"))
+                by = label_writer(r, sessions)
+                x = dict(pl, ts=r["ts"], by=by)
+                if pl.get("by") not in (None, by):
+                    x["by_claimed"] = pl["by"]
+                out.setdefault(pl["issue_id"], []).append(x)
     return out
+
+
+def session_writer(model, rows):
+    """fn(session id) -> the position holding it: the registry's holders first, then the sessions the rows name with a
+    registered position (of_model.session_positions), read only when a label names a session the holders do not."""
+    memo = {}
+
+    def who(sid):
+        if "holders" not in memo:
+            memo["holders"] = of_model.session_index(model.get("positions") or {})
+        if sid in memo["holders"]:
+            return memo["holders"][sid]
+        if "rows" not in memo:
+            memo["rows"] = of_model.session_positions(model, rows)
+        return memo["rows"].get(sid)
+    return who
 
 
 def may_label(by, i, keeper):
@@ -270,7 +310,8 @@ def diagnose(model, rows, a, b, cat=None, context=None, label_rows=None):
     except OSError as exc:
         return {"issues": [], "rules": [], "error": f"no catalogue: {exc}"}
     have = present(model, rows, a, b, cat)
-    labs = label_history(rows if label_rows is None else [r for r in label_rows if (epoch(r.get("ts")) or 0) <= b])
+    labs = label_history(rows if label_rows is None else [r for r in label_rows if (epoch(r.get("ts")) or 0) <= b],
+                         session_writer(model, rows))
     issues, status = [], []
     keeper = structure_keeper(model)
     for name, spec in (cat.get("rules") or {}).items():
