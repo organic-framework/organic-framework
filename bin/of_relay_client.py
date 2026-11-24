@@ -286,6 +286,9 @@ def codex_box_text(screen):
     return "\n".join(out).strip()
 
 
+UNREAD_BOX = "a Codex input box the relay cannot read yet"   # held, not arriving: of status says to take it
+
+
 def pane_input(pane):
     """The input box's text ('' when empty), '[dialog]' when a dialog is open, None when the pane cannot be read."""
     term = _term(pane)
@@ -299,11 +302,13 @@ def pane_input(pane):
         return None
     if dialog_open(out):
         return "[dialog]"
+    plain = _ANSI.sub("", out.replace("\r", ""))
+    if _CODEX_PROMPT.search(plain) and not re.search(r"(?m)^❯", plain):
+        # Codex's › box, read before Claude Code's reader, whose rules alone (two above the box) read as an empty box
+        # and would have the relay type and press Enter on a person's draft (of_review on PR 639)
+        box = codex_box_text(out)
+        return "[unread]" if box is None else box
     box = input_box_text(out)
-    if box is None and _CODEX_PROMPT.search(_ANSI.sub("", out.replace("\r", ""))):
-        box = codex_box_text(out)   # Codex's › box
-        if box is None:
-            return "[unread]"       # one it cannot read: deferred, never typed into
     if box and term is of_screen and of_screen.attached(pane) is False \
             and not (_PASTE_ONLY.fullmatch(box) or _FRAMED.match(box)):
         return ""  # a hardcopy has no dim: in a detached session nobody types, so this is a suggestion (of_screen)
@@ -491,11 +496,12 @@ def herdr_deliver(pane, text, session=None, sender=None, wait_s=DELIVER_WAIT_S, 
     if skip_if and skip_if():  # taken meanwhile (of inbox --mine --take): never typed twice
         return "skipped", "pulled"
     box = pane_input(pane)
-    note_box(pane, box)
+    if box != "[unread]":   # a box it cannot read is no person's draft (of_review on PR 639)
+        note_box(pane, box)
     if box == "[dialog]":
         return "deferred", "a dialog is open in the pane"
     if box == "[unread]":
-        return "deferred", "a Codex input box the relay cannot read yet"
+        return "deferred", UNREAD_BOX
     last = held_delivery(pane, box) if box else None
     if last:  # its own earlier delivery, Enter lost: sent now; this message waits for the next offer
         ok = press_held_enter(pane, last)
@@ -760,7 +766,7 @@ def deliver(conn, m, local, deliverer=herdr_deliver):
             # typed, but the session never took it (a dialog swallowed it): offered again, never marked seen
             set_arriving(m.get("to"), m["msg_id"], False)
             return "deferred", "typed but not recorded by the session"
-        if ok != "deferred":
+        if ok != "deferred" or why == UNREAD_BOX:   # held over an unreadable box: waiting, to be taken
             set_arriving(m.get("to"), m["msg_id"], False)
         if ok == "skipped":
             return "delivered", "duplicate"
@@ -1251,7 +1257,7 @@ def deliver_joined(conn, msgs, local, deliverer=herdr_deliver):
             and not confirmed(conn, target["session_id"], fresh[0]["msg_id"]):
         set_arriving(to, fresh[0]["msg_id"], False)
         return "deferred", "typed but not recorded by the session"
-    if ok != "deferred":
+    if ok != "deferred" or why == UNREAD_BOX:   # held over an unreadable box: waiting, to be taken
         set_arriving(to, fresh[0]["msg_id"], False)
     if ok == "skipped":
         return "delivered", "duplicate"
