@@ -246,20 +246,23 @@ def input_box_text(screen):
 # them: a t in the hooks review trusted the hook, and a prompt at the daemon question restarted the daemon.
 _DIALOG = re.compile(r"(?i:enter to confirm|esc to cancel|enter to select|to navigate · enter|press enter to continue"
                      r"|enter confirm · esc)|Background work is running|Do you want to proceed\?"
-                     r"|We recommend compacting earlier"
-                     r"|Hooks need review|Trust all and continue|Continue without trusting"
-                     r"|Background server has incompatible feature settings|Run without daemon this time"
-                     # Codex 0.170's folder trust, hooks list and sign-in (of_herdr's lab screens, 2026-11-24), and any
-                     # footer of its kind: `enter continue · esc back`, `t trust all · enter review · esc close`
-                     r"|Trust this folder\?|Sign in with ChatGPT|(?i:enter \w+ · esc \w+)|(?m:^\s*t trust all ·)")
+                     r"|We recommend compacting earlier")
+# Codex's start dialogs (of_herdr's W8 report, gap 1, and its lab screens of Codex 0.170, 2026-11-24): its hooks review,
+# its daemon question, its folder trust, hooks list and sign-in, and a footer of its kind. Their words are plain
+# words, which an idle Claude Code pane's answer may quote, so they count only on a screen with no line that starts
+# with ❯, as no Codex screen draws one and every idle Claude Code pane does (of_herdr on PR 639).
+_CODEX_DIALOG = re.compile(r"Hooks need review|Trust all and continue|Continue without trusting"
+                           r"|Background server has incompatible feature settings|Run without daemon this time"
+                           r"|Trust this folder\?|Sign in with ChatGPT|(?i:enter \w+ · esc \w+)|(?m:^\s*t trust all ·)")
 
 
 def dialog_open(screen):
     """Is a dialog drawn on the pane's last lines?"""
     # its last 15 lines that hold anything: Codex draws its dialogs high in a tall pane, with empty lines below them
     # (of_herdr's lab screens, 2026-11-24: the folder trust, the hooks review and the sign-in sat above 30 empty lines)
-    tail = "\n".join([ln for ln in _ANSI.sub("", (screen or "").replace("\r", "")).split("\n") if ln.strip()][-15:])
-    return bool(_DIALOG.search(tail))
+    plain = _ANSI.sub("", (screen or "").replace("\r", ""))
+    tail = "\n".join([ln for ln in plain.split("\n") if ln.strip()][-15:])
+    return bool(_DIALOG.search(tail)) or (not re.search(r"(?m)^❯", plain) and bool(_CODEX_DIALOG.search(tail)))
 
 
 # Codex's prompt line (of_herdr's W8 report, gap 2): `›` at column 0, with no rules around it. input_box_text reads only
