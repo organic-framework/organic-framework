@@ -873,22 +873,17 @@ def launch_command(cwd, config_dir, sid, name, default_dir, model=None, bypass=T
     return " ".join(parts)
 
 
-def plan(p, positions, agents, bind, systems, org_paths, org_root, want_workspace, config_dir=None, cwd=None,
-         capacity_rows=None, best_target=None, trusted=None, default_dir=os.path.expanduser("~/.claude"),
-         model=None, bypass=True, sid=None, memory=None, deny=None, accepted=None, tools=None, effort=None,
-         subagents=False, folders=None):
-    """Everything run() needs, or SpawnError. FOLDERS: {org: [folders]} the registries' positions run in
-    (of_context.rules_folders), so a session is never started in another organization's folder. trusted(config_dir, cwd) -> key or None; accepted(config_dir) -> whether
-    the account accepted the Bypass Permissions warning (bypass_accepted); tools(position, sid, config_dir) ->
-    (argv, settings keys) of its tool profile (of_tools.launch_parts)."""
+def _start_checks(p, positions, agents, bind, systems, org_paths, cwd, folders):
+    """The refusals every start makes, whatever its harness, and the folder it starts in (plan, codex_plan)."""
     live = {q["name"]: a for q, a in bind(positions, agents)[0]}
     if p["name"] in live:
         a = live[p["name"]]
         raise SpawnError(f"{p['name']} already has a live holder in pane {a.get('pane_id')}; spawn only a position "
                          f"without one (of who)")
-    if ((p.get("holder") or {}).get("runtime") or "claude-code") not in ("claude-code", "claude"):
+    if harness_of(p) not in ("claude", "codex"):
         raise SpawnError(f"{p['name']} is held by {(p.get('holder') or {}).get('runtime')} "
-                         f"({(p.get('holder') or {}).get('person') or 'a person'}); of spawn starts Claude Code sessions only")
+                         f"({(p.get('holder') or {}).get('person') or 'a person'}); of spawn starts Claude Code and "
+                         f"Codex sessions only")
     if p.get("status") in ("parked", "finished"):
         raise SpawnError(f"{p['name']} is {p['status']} in the registry; its keeper resumes it first")
     cwd = os.path.expanduser(cwd) if cwd else work_dir(p, systems, org_paths)
@@ -905,6 +900,20 @@ def plan(p, positions, agents, bind, systems, org_paths, org_root, want_workspac
             raise SpawnError(f"{cwd} is a folder of {', '.join(sorted(other))}'s positions: a session of "
                              f"{p.get('_org')} there loads their binding rules; start it in its own organization's "
                              f"folder (--cwd)")
+    return cwd
+
+
+def plan(p, positions, agents, bind, systems, org_paths, org_root, want_workspace, config_dir=None, cwd=None,
+         capacity_rows=None, best_target=None, trusted=None, default_dir=os.path.expanduser("~/.claude"),
+         model=None, bypass=True, sid=None, memory=None, deny=None, accepted=None, tools=None, effort=None,
+         subagents=False, folders=None):
+    """Everything run() needs, or SpawnError. FOLDERS: {org: [folders]} the registries' positions run in
+    (of_context.rules_folders), so a session is never started in another organization's folder. trusted(config_dir, cwd) -> key or None; accepted(config_dir) -> whether
+    the account accepted the Bypass Permissions warning (bypass_accepted); tools(position, sid, config_dir) ->
+    (argv, settings keys) of its tool profile (of_tools.launch_parts)."""
+    cwd = _start_checks(p, positions, agents, bind, systems, org_paths, cwd, folders)
+    if harness_of(p) != "claude":
+        raise SpawnError(f"{p['name']} runs {harness_of(p)}: codex_plan starts it")
     if not config_dir:
         rows = capacity_rows or []
         # an account that trusts the folder first: a founder's task to trust it costs more than some headroom
@@ -925,6 +934,162 @@ def plan(p, positions, agents, bind, systems, org_paths, org_root, want_workspac
             "command": launch_command(cwd, config_dir, sid, p["name"], default_dir, model, bypass, memory, deny,
                                       tools=tools(p["name"], sid, config_dir) if tools else None, effort=effort,
                                       org=p.get("_org"))}
+
+
+# ------------------------------------------------------------------ Codex as a position's harness (W4)
+# Hand-over 9ee1db9f (organic-framework-build reports/codex-main-harness-plan-2026-11-20.md, W4): a position whose
+# registry holder runs Codex starts in its seat's CODEX_HOME, on a layer of its own ($CODEX_HOME/of-<launch>.config.toml,
+# of_codex.layer: W3's profile, W5's start context whole as developer_instructions, W7's tool tables) loaded with
+# `-p of-<launch>`, in the position's folder (-C), with its brief as the first prompt, declared for its pane. The
+# launch's door folder holds door.json; the managed SessionStart hook writes codex.json beside it with Codex's own
+# session id (of_hook.record_codex_door), which is how of spawn learns the id and the listener opens the door.
+
+CODEX_RUNTIMES = ("codex",)
+
+
+def harness_of(p):
+    """'codex' for a position whose registry holder runs Codex, 'claude' for Claude Code, else its runtime."""
+    rt = (p.get("holder") or {}).get("runtime") or "claude-code"
+    return "codex" if rt in CODEX_RUNTIMES else "claude" if rt in ("claude-code", "claude") else rt
+
+
+def codex_seat(seat=None, rows=None, choose=None):
+    """The CODEX_HOME a Codex position starts in: SEAT when given, else the seat of_capacity picks (the most headroom,
+    and a training reading verified off, since a position's work is not only public; of_capacity.codex_seat_for)."""
+    if seat:
+        return os.path.expanduser(seat)
+    import of_capacity
+    rows = of_capacity.codex_status(probe=False) if rows is None else rows
+    row = (choose or of_capacity.codex_seat_for)(rows or [], public=False)
+    if not row or not row.get("home"):
+        raise SpawnError("no Codex seat with headroom and its training reading verified off (of capacity status); "
+                         "pass --config-dir <a CODEX_HOME>, or see the founder's card on Codex seats (OF-169)")
+    return os.path.expanduser(row["home"])
+
+
+def codex_plan(p, positions, agents, bind, systems, org_paths, org_root, want_workspace, seat=None, cwd=None,
+               model=None, deny=None, subagents=False, folders=None, rows=None, launch=None):
+    """What codex_run needs, or SpawnError: the same refusals as plan(), then the seat, a launch id of OF's own, and
+    the command. Nothing is written here (a dry run prints the command)."""
+    cwd = _start_checks(p, positions, agents, bind, systems, org_paths, cwd, folders)
+    home = codex_seat(seat, rows)
+    launch = launch or str(uuid.uuid4())
+    ws, tab = place(p, want_workspace)
+    pl = {"harness": "codex", "position": p["name"], "org": p.get("_org"), "cwd": cwd, "config_dir": home,
+          "session": None, "launch": launch, "model": model, "repo_names": sorted(repo_names(p, org_paths)),
+          "workspace": ws, "tab": tab, "brief": brief_text(p, org_root, subagents), "deny": list(deny or []),
+          "trusted": True, "bypass_ok": True}
+    pl["command"] = codex_command(pl)
+    return pl
+
+
+def codex_command(pl, resume=None):
+    """The shell line: the seat, the launch (OF_LAUNCH, read by the managed hooks), the layer's profile, the folder,
+    an inline screen; the brief as the first prompt, or `resume <session>` for a session that ran before."""
+    import shlex
+    head = ["cd", shlex.quote(pl["cwd"]), "&&", "env", f"CODEX_HOME={shlex.quote(pl['config_dir'])}", "OF_SPAWNED=1",
+            f"OF_LAUNCH={pl['launch']}", "codex"]
+    if resume:
+        head += ["resume", shlex.quote(resume)]
+    head += ["-C", shlex.quote(pl["cwd"]), "-p", f"of-{pl['launch']}", "--no-alt-screen"]
+    if not resume and pl.get("brief"):
+        head.append(shlex.quote(pl["brief"]))
+    return " ".join(head)
+
+
+def codex_prepare(pl, context=None, tool_layer=None, log=print):
+    """Before the start: the launch's door folder with door.json, and the session's layer file. CONTEXT(name, cwd) ->
+    the start context (of_hook.position_context); TOOL_LAYER(name, launch, home, notes=) -> tool tables
+    (of_tools.codex_layer). Returns the layer's path."""
+    import json as _json
+    import of_codex
+    import of_events
+    if context is None:
+        import of_hook
+        context = of_hook.position_context
+    if tool_layer is None:
+        import of_tools
+        tool_layer = of_tools.codex_layer
+    d = of_codex.door_dir(pl["launch"])
+    os.makedirs(os.path.dirname(d), mode=0o700, exist_ok=True)
+    os.makedirs(d, mode=0o700, exist_ok=False)   # a launch's folder is new: never one a session left
+    of_events.write_new(os.path.join(d, "door.json"), _json.dumps(
+        {"position": pl["position"], "org": pl["org"], "cwd": pl["cwd"], "launch": pl["launch"]}))
+    notes = []
+    tables = tool_layer(pl["position"], pl["launch"], pl["config_dir"], notes=notes) or {}
+    for n in notes:
+        log(f"  tools: {n}")
+    doc = of_codex.layer(pl["position"], pl["cwd"], model=pl.get("model"), instructions=context(pl["position"], pl["cwd"]),
+                         tool_tables=tables, deny_rules=pl.get("deny") or None, codex_home=pl["config_dir"],
+                         launch=pl["launch"])
+    of_codex.write_layer(pl["config_dir"], pl["launch"], doc)
+    return of_codex.layer_path(pl["config_dir"], pl["launch"])
+
+
+def declare_first_prompt(pane, text, window_s, injector="of_spawn"):
+    """The brief Codex takes as its first prompt is OF's, not a person's: declared for the pane before the start, as
+    of_capacity declares a move's note (of_hook._injected: a pane's declaration within its window)."""
+    import hashlib
+    import json as _json
+    import time as _time
+    import of_events
+    digest = hashlib.sha256(text.strip().encode()).hexdigest()
+    of_events.emit("injected_prompt", {"injector": injector, "target_pane": pane, "text_sha256": digest,
+                                       "reason": "a Codex position's brief, its first prompt"})
+    of_events.append_own(os.path.join(of_events.STATE_DIR, "injections.jsonl"), _json.dumps(
+        {"ts": _time.time(), "pane": pane, "sha256": digest, "injector": injector, "window": window_s}) + "\n")
+
+
+def codex_session(launch, timeout, sleep=time.sleep, clock=time.time):
+    """Codex's own session id, once its SessionStart hook wrote codex.json in the launch's folder, or None."""
+    import json as _json
+    import of_codex
+    import of_door
+    path = os.path.join(of_codex.door_dir(launch), of_door.CODEX_FILE)
+    end = clock() + timeout
+    while True:
+        try:
+            with open(path) as fh:
+                sid = (_json.load(fh) or {}).get("session")
+            if sid:
+                return sid
+        except (OSError, ValueError):
+            pass
+        if clock() >= end:
+            return None
+        sleep(1)
+
+
+def codex_run(pl, herdr, rename, log=print, of_bin=None, timeout=180, prepare=None, session=None):
+    """Side effects of a Codex start: the door and the layer, the pane, the brief declared, the launch, Codex's session
+    id from its hook, the agent's name, of apply. Returns the pane id."""
+    import of_capacity
+    made = prepare_folder(pl["cwd"], pl.get("org"), pl.get("repo_names") or ())
+    if made:
+        log(f"  wrote {made}")
+    log(f"  layer {(prepare or codex_prepare)(pl, log=log)}")
+    ws = herdr("workspace", "list")["workspaces"]
+    tabs = herdr("tab", "list")["tabs"]
+    panes = herdr("pane", "list")["panes"]
+    cmd, _ = of_capacity.place_command(pl["workspace"], pl["tab"], pl["cwd"], ws, tabs, panes)
+    pane = of_capacity.first_pane_id(herdr(*cmd))
+    if not pane:
+        raise SpawnError(f"herdr {' '.join(cmd[:2])} returned no pane")
+    log(f"  pane {pane} in {pl['workspace']} / {pl['tab']}")
+    declare_first_prompt(pane, pl["brief"], timeout + 60)
+    herdr("pane", "run", pane, pl["command"])
+    sid = (session or codex_session)(pl["launch"], timeout)
+    if not sid:
+        raise SpawnError(f"Codex's session in pane {pane} did not report its id within {timeout}s (its SessionStart "
+                         f"hook writes it; is the managed requirements file installed, `of codex requirements`?)")
+    pl["session"] = sid
+    log(f"  session {sid} (Codex's own id), brief given as its first prompt, declared")
+    log(f"  agent name: {rename(pane, pl['position'], sid)}")
+    if of_bin:
+        import subprocess
+        import sys
+        subprocess.run([sys.executable, of_bin, "apply"], capture_output=True, text=True, timeout=120)
+    return pane
 
 
 def git_root(path, exists=os.path.exists, isdir=os.path.isdir):
@@ -978,7 +1143,8 @@ def carry_trust(pl, ensure, dry_run=False, default_dir=os.path.expanduser("~/.cl
 
 
 def registry_line(pl, pane):
-    return (f"  holder: {{runtime: claude-code, session: {pl['session']}, "
+    rt = "codex" if pl.get("harness") == "codex" else "claude-code"
+    return (f"  holder: {{runtime: {rt}, session: {pl['session']}, "
             f"workplace: \"herdr local, workspace {pl['workspace']}, tab {pl['tab']}, pane {pane}\"}}")
 
 
