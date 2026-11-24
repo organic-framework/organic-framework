@@ -13,12 +13,7 @@ mkdir -p "$RUN/bin"
 # isolation (docs/lab.md, section 9)
 unset SSH_AUTH_SOCK HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_SOCKET_PATH
 unset CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_PID CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_EXECPATH CLAUDE_CODE_SESSION_ATTENDED
-# The persona's account: the caller names it in OFLAB_CLAUDE_DIR, picking one with room from `of capacity status`.
-# It is used without touching its setup: no user settings or hooks (--setting-sources project), no MCP servers, no
-# saved session. There is no default account (the founder's example account ~/.claude-e was removed, of_capacity
-# 2026-11-24); the run refuses without OFLAB_CLAUDE_DIR rather than pick one.
-: "${OFLAB_CLAUDE_DIR:?set OFLAB_CLAUDE_DIR to a logged-in account dir with room (see of capacity status); no default}"
-export OF_AUTOMATION=1 GIT_CONFIG_GLOBAL=/dev/null CLAUDE_CONFIG_DIR="$OFLAB_CLAUDE_DIR"
+export OF_AUTOMATION=1 GIT_CONFIG_GLOBAL=/dev/null
 
 # 1. a fresh machine for every seed
 limactl delete --force "$VM" >/dev/null 2>&1 || true
@@ -69,6 +64,18 @@ chmod +x "$RUN/bin/vm"
 CHECKER=$!
 
 # 4. the persona
+# Its account: the caller names it in OFLAB_CLAUDE_DIR (one with room, from `of capacity status`). There is no
+# default -- the founder's example account ~/.claude-e was removed (of_capacity, 2026-11-24) -- so the run refuses
+# without it rather than pick one. Only the persona needs it, not the setup above (SETUP_ONLY exits before here).
+# The default account ~/.claude runs with CLAUDE_CONFIG_DIR *unset*, never set to the directory, or it is a
+# different, not-logged-in identity (of_capacity.is_default; a resume does the same).
+: "${OFLAB_CLAUDE_DIR:?set OFLAB_CLAUDE_DIR to a logged-in account dir with room (see of capacity status); no default}"
+[ -d "$OFLAB_CLAUDE_DIR" ] || { echo "OFLAB_CLAUDE_DIR=$OFLAB_CLAUDE_DIR is not a directory (pick a logged-in account from of capacity status)" >&2; exit 2; }
+if [ "$(cd "$OFLAB_CLAUDE_DIR" 2>/dev/null && pwd -P)" = "$(cd "$HOME/.claude" 2>/dev/null && pwd -P)" ]; then
+  unset CLAUDE_CONFIG_DIR
+else
+  export CLAUDE_CONFIG_DIR="$OFLAB_CLAUDE_DIR"
+fi
 date +%s > "$RUN/started_at"
 (cd "$RUN" && PATH="$RUN/bin:$PATH" timeout 2700 claude -p "$(cat "$HERE/persona.md")" --model "$MODEL" \
   --allowedTools "Bash(vm:*)" WebSearch WebFetch \

@@ -349,8 +349,10 @@ Every profile drops:
 
 **Models for lab runs.** The founder decided on 2026-11-05 and 06:
 - there is no separate lab API key;
-- lab personas run on an account the caller names in `OFLAB_CLAUDE_DIR` (one with room, from `of capacity status`; there is no default account and no separate lab API key), headless and isolated: no user settings or hooks (`--setting-sources project`), no MCP servers, no saved session, a budget cap per run, and the run directory as the working directory;
+- lab personas use the founder's example account, headless and isolated: no user settings or hooks (`--setting-sources project`), no MCP servers, no saved session, a budget cap per run, and the run directory as the working directory;
 - the account's credential never enters a lab VM. A persona acts on a VM only through a wrapper that runs commands there.
+
+of_capacity removed that example account, `~/.claude-e`, on 2026-11-24. Until the Lab has an account of its own, a lab persona runs on an account the caller names in `OFLAB_CLAUDE_DIR` (one with room from `of capacity status`; the default `~/.claude` runs with the variable *unset*, never set to the directory, `of_capacity.is_default`), and a run refuses rather than pick one when it is not set (of_lab, this change, lab-quickstart-v0 and lab-secrets-v0). Whether the Lab should have an account of its own again is the founder's to decide.
 
 The gateway below stays the design for when the Lab gets its own key.
 

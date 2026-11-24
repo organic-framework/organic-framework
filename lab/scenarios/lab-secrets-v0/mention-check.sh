@@ -32,8 +32,11 @@ json.dump(s, open(dst, "w"), indent=1)
 PY
 printf 'orgs: []\n' > "$RUN/config/orgs.yaml"
 
+: "${OFLAB_CLAUDE_DIR:?set OFLAB_CLAUDE_DIR to a logged-in account dir with room (of capacity status); no default (~/.claude-e was removed, of_capacity 2026-11-24)}"
+ACCT=()  # the default ~/.claude runs with CLAUDE_CONFIG_DIR unset (of_capacity.is_default); under env -i, omit it
+[ "$(cd "$OFLAB_CLAUDE_DIR" 2>/dev/null && pwd -P)" = "$(cd "$HOME/.claude" 2>/dev/null && pwd -P)" ] || ACCT=(CLAUDE_CONFIG_DIR="$OFLAB_CLAUDE_DIR")
 ENVV=(env -i HOME="$HOME" USER="$USER" TERM=xterm PATH="${OFLAB_PATH:-/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:$HOME/.local/bin}"
-      CLAUDE_CONFIG_DIR="$HOME/.claude-e" OF_CONFIG_DIR="$RUN/config" OF_STATE="$RUN/state" OF_ORGS="$RUN/config/orgs.yaml"
+      ${ACCT[@]+"${ACCT[@]}"} OF_CONFIG_DIR="$RUN/config" OF_STATE="$RUN/state" OF_ORGS="$RUN/config/orgs.yaml"
       OF_AUTOMATION=1 GIT_CONFIG_GLOBAL=/dev/null)
 FLAGS=(--model "$MODEL" --setting-sources project --strict-mcp-config --no-session-persistence
        --allowedTools Bash Read Edit Write Grep Glob --max-budget-usd 2 --max-turns 12
