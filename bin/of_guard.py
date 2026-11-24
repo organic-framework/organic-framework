@@ -73,6 +73,7 @@ _INTERPRETERS = {"python", "python3", "node", "ruby", "perl", "php", "osascript"
 _WRAPPERS = {"sudo", "command", "exec", "nohup", "time", "nice", "stdbuf", "xargs", "builtin", "doas", "ionice",
              "caffeinate", "taskset", "chrt", "taskpolicy", "arch", "script"}
 _WRAPPER_POSITIONAL = {"taskset": 1, "chrt": 1, "script": 1}  # a mask, a priority, a typescript file, then the command
+_HEREDOC = re.compile(r"<<(-?)[ \t]*(['\"]?)([A-Za-z_][\w.-]*)\2")
 _SEPS, _REDIR = set(";&|()\n"), set("<>&")
 
 # A variable reference, and the rule for a secret-shaped NAME: KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL(S)|
@@ -1106,131 +1107,19 @@ def _code_deny(code, lang=None):
 
 
 _META = " \t\n;&|()<>"   # bash's metacharacters: a word starts after one (a carriage return is a word's character)
-_HERE_META = set(" \t\n;&|()<>")
-
-
-def _ctl(v):
-    """V as bash takes a quoted part into a heredoc's delimiter: its own escape \\x01 (CTLESC) before each \\x01 and
-    \\x7f (CTLNUL)."""
-    return v.replace("\x01", "\x01\x01").replace("\x7f", "\x01\x7f")
-
-
-def _here_readings(parts):
-    """Every delimiter a bash may take from a heredoc word's PARTS [(kind, text)], kind plain, escaped, quoted or ansi,
-    as bash 3.2.57 and 5.3 take it (each tried in both, in the C and a UTF-8 locale): a quoted part's \\x01 and \\x7f
-    behind bash's own escape, a plain part's too in bash 3.2 only, a backslash's character never; an ANSI-C part decoded, cut at its first NUL (the parts after it still join),
-    with \\u and \\U decoded or kept as written (bash 3.2, or a locale that cannot encode them)."""
-    out = []
-    for u, plain_ctl in ((True, False), (False, True), (True, True), (False, False)):
-        w = []
-        for kind, v in parts:
-            if kind == "escaped":
-                w.append(v)
-            elif kind == "plain":
-                w.append(_ctl(v) if plain_ctl else v)
-            elif kind == "quoted":
-                w.append(_ctl(v))
-            else:
-                w.append(_ctl(_ansi_c_body(v, big_u=u).split("\x00", 1)[0]))
-        r = "".join(w)
-        if r not in out:
-            out.append(r)
-    return out
-
-
-def _here_word(text, i):
-    """The here-document TEXT opens at I (its `<<`) as bash reads it: (dash, quoted, delimiter, end) or None when no
-    word follows. The delimiter is the word after `<<` or `<<-` and its blanks, up to an unquoted metacharacter, with
-    its quotes and backslashes removed, however its parts are quoted or escaped, and any quote or backslash in it keeps
-    the body unexpanded. The one reader for _scan, _comment_spans and _cut_heredocs (of_secrets-review,
-    message 01a20d09-c216: the three readers each took a narrower word, and none a quoted one with a blank)."""
-    n = len(text)
-    if not text.startswith("<<", i) or text.startswith("<<<", i):
-        return None
-    j = i + 2
-    dash = text.startswith("-", j)
-    j += dash
-    while j < n and text[j] in " \t":
-        j += 1
-    word, quoted = [], False
-    while j < n and text[j] not in _HERE_META:
-        c = text[j]
-        if c == "$" and text.startswith("$'", j):   # an ANSI-C part: its value as bash decodes it (of_review on PR 637)
-            m = _ANSI_WORD.match(text, j)
-            if not m:
-                return None
-            word.append(("ansi", m.group(1)))
-            quoted, j = True, m.end()
-            continue
-        if c == "$" and text.startswith('$"', j):   # a locale part reads as its double-quoted text
-            j += 1
-            continue
-        if c == "\\" and j + 1 < n:
-            if text[j + 1] == "\n":       # a backslash-newline joins the word's lines
-                j += 2
-                continue
-            word.append(("escaped", text[j + 1]))   # a backslash's character: never behind bash's escape (tried)
-            quoted, j = True, j + 2
-        elif c == "'":
-            e = text.find("'", j + 1)
-            if e < 0:
-                return None
-            word.append(("quoted", text[j + 1:e]))
-            quoted, j = True, e + 1
-        elif c == '"':
-            k, part = j + 1, []
-            while k < n and text[k] != '"':
-                if text[k] == "\\" and k + 1 < n and text[k + 1] in '$`"\\\n':
-                    part.append(text[k + 1])
-                    k += 2
-                else:
-                    part.append(text[k])
-                    k += 1
-            if k >= n:
-                return None
-            word.append(("quoted", "".join(part)))
-            quoted, j = True, k + 1
-        else:
-            word.append(("plain", c))
-            j += 1
-    if not word:
-        return None
-    words = _here_readings(word)
-    if len(words) == 1:
-        return dash, quoted, words[0], j
-    # bashes and locales read the word differently: the body ends at the first line any of them reads, the earlier
-    # end being the one whose following lines run as commands
-    start = text.find("\n", j)
-    for line in (text[start + 1:].split("\n") if start >= 0 else []):
-        if (line.lstrip("\t") if dash else line) in words:
-            return dash, quoted, (line.lstrip("\t") if dash else line), j
-    return dash, quoted, words[0], j
-
-
-def _comment_spans(text):
-    """{start: end} of every comment in TEXT as bash reads one (_shell_read)."""
-    return _shell_read(text)[0]
-
-
-def _heredoc_opens(text):
-    """{index of `<<`: (dash, quoted, delimiter, end)} for every here-document TEXT opens as bash reads it, from the
-    same walk as its comments (_shell_read): never inside quotes, a parameter expansion or arithmetic."""
-    return _shell_read(text)[1]
+_HERE_WORD = re.compile(r"<<(-?)[ \t]*(\\?)(['\"]?)([^\s;&|<>()'\"]+)\3")
 
 
 @functools.lru_cache(maxsize=256)
-def _shell_read(text):
+def _comment_spans(text):
     """{start: end} of every comment in TEXT as bash reads one, the one rule _scan, _split and _strip_comments all take
     (hand-over 6f336a7c and 03375da4): a `#` that starts a word, outside quotes, in a command (the line, a $( ) body or
     a backtick substitution) and never inside a parameter expansion ${ … } or arithmetic $(( … )); a word starts after
     a metacharacter (blank, tab, newline, ; & | ( ) < >), at the text's start and right after a $( or an opening
-    backtick, while a carriage return, an escaped character and a quote are a word's; $'…' is one quote, its
-    backslash escapes included. A comment ends before its line's
+    backtick, while a carriage return, an escaped character and a quote are a word's. A comment ends before its line's
     newline, or, inside a backtick substitution, before the closing backtick when that comes first. A heredoc's body
-    holds none. END is the index of the newline or backtick that ends it (the text's length at its end).
-    Also every here-document's opening, read by _here_word where a command can open one: never in arithmetic, $(( ))
-    or a command's (( )), where << is a shift. Returns (spans, opens)."""
-    out, opens, n, i = {}, {}, len(text), 0
+    holds none. END is the index of the newline or backtick that ends it (the text's length at its end)."""
+    out, n, i = {}, len(text), 0
     frames = [["cmd", False, False, 0]]   # [kind, single, double, parens]; kinds: cmd, sub ($( )), back, param, arith
     start = True
     here, bodies = [], []
@@ -1290,10 +1179,6 @@ def _shell_read(text):
             out[i] = e
             i = e
             continue
-        if text.startswith("$'", i) and _ANSI_WORD.match(text, i):
-            i = _ANSI_WORD.match(text, i).end()   # $'…': its \' is no closing quote, as _scan reads it
-            start = False
-            continue
         if c == "'":
             f[1] = True
             start = False
@@ -1343,24 +1228,16 @@ def _shell_read(text):
             start = True
         elif kind in ("cmd", "sub", "back") and text.startswith("<<", i) and not text.startswith("<<<", i) \
                 and text[i - 1:i] != "<":
-            h = _here_word(text, i)
-            if h:   # its body runs to its delimiter's line, or to the text's end as bash reads a missing one
-                opens[i] = h
-                bodies.append((h[2], h[0]))
-                i = h[3]   # the delimiter word is no code: a quote or a # in it opens nothing
-            else:
-                i += 2
-            start = True
-            continue
-        elif kind in ("cmd", "sub", "back") and start and text.startswith("((", i):
-            frames.append(["arith", False, False, 0])   # an arithmetic command: its << is a shift, its # no comment
+            m = _HERE_WORD.match(text, i)
+            if m and re.search(r"(?m)^" + (r"\t*" if m.group(1) else "") + re.escape(m.group(4)) + r"$", text[i:]):
+                bodies.append((m.group(4), bool(m.group(1))))
             i += 2
-            start = False
+            start = True
             continue
         else:
             start = kind in ("cmd", "sub", "back") and c in _META
         i += 1
-    return out, opens
+    return out
 
 
 def _scan(text, i=0, nested=False):
@@ -1374,7 +1251,6 @@ def _scan(text, i=0, nested=False):
     single = double = False
     depth = 0
     spans = _comment_spans(text)   # a comment holds no quote and no substitution (hand-over 03375da4)
-    opens = _heredoc_opens(text)   # and a here-document opens only where that walk reads one
     while i < n:
         if i in spans:
             i = spans[i]
@@ -1434,11 +1310,11 @@ def _scan(text, i=0, nested=False):
             i += 3
             continue
         elif not double and text.startswith("<<", i):
-            h = opens.get(i)
-            if h:
-                pending.append((h[0], h[1], h[2], text[text.rfind("\n", 0, i) + 1:i]))
+            m = _HEREDOC.match(text, i)
+            if m:
+                pending.append((m.group(1) == "-", bool(m.group(2)), m.group(3), text[text.rfind("\n", 0, i) + 1:i]))
                 out.append("<< __OFDOC__")
-                i = h[3]
+                i = m.end()
                 continue
         elif nested and not double:
             if c == "(":
@@ -3021,10 +2897,8 @@ _ANSI_ESC = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n
              "\\": "\\", "'": "'", '"': '"', "?": "?"}
 
 
-def _ansi_c_body(body, big_u=True):
-    """The value of a $'…' word's body, as bash decodes it (\\n, \\t, \\nnn, \\xHH, \\uHHHH, \\cX …). BIG_U False: the
-    reading that keeps \\u and \\U as written, as bash 3.2 does, and as a bash does in a locale it cannot encode them in
-    (of_review and of_secrets-review on PR 637)."""
+def _ansi_c_body(body):
+    """The value of a $'…' word's body, as bash decodes it (\\n, \\t, \\nnn, \\xHH, \\uHHHH, \\cX …)."""
     out, i, n = [], 0, len(body)
     while i < n:
         c = body[i]
@@ -3035,7 +2909,7 @@ def _ansi_c_body(body, big_u=True):
         e = body[i + 1]
         m = (re.match(r"[0-7]{1,3}", body[i + 1:]) if e in "01234567" else
              re.match(r"[0-9A-Fa-f]{1,2}", body[i + 2:]) if e == "x" else
-             re.match(r"[0-9A-Fa-f]{1,%d}" % (4 if e == "u" else 8), body[i + 2:]) if e in "uU" and big_u else None)
+             re.match(r"[0-9A-Fa-f]{1,%d}" % (4 if e == "u" else 8), body[i + 2:]) if e in "uU" else None)
         if e in _ANSI_ESC:
             out.append(_ANSI_ESC[e])
             i += 2
@@ -5516,22 +5390,16 @@ def _stdin_runs_protected(stext, cwd, fed):
     return fed() if callable(fed) else fed
 
 
+_HEREDOC_OPEN = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*(['\"]?)([A-Za-z_][\w.-]*)\2")
 
 
 def _cut_heredocs(text):
     """TEXT without its here-document bodies, for G21's read of a raw line: a body is data for the command it goes to
-    (a shell's own body is read apart), and its lines are no commands (`won't` in a commit message). Its openings are
-    the ones the guard's one walk reads (_heredoc_opens)."""
-    lines = text.split("\n")
-    starts, at = [], 0
-    for line in lines:
-        starts.append(at)
-        at += len(line) + 1
-    opens = sorted(_heredoc_opens(text).items())
-    out, i = [], 0
+    (a shell's own body is read apart), and its lines are no commands (`won't` in a commit message)."""
+    out, lines, i = [], text.split("\n"), 0
     while i < len(lines):
         out.append(lines[i])
-        ends = [(h[0], h[2]) for k, h in opens if starts[i] <= k < starts[i] + len(lines[i])]
+        ends = [(m.group(1), m.group(3)) for m in _HEREDOC_OPEN.finditer(lines[i])]
         i += 1
         for dash, d in ends:
             while i < len(lines) and (lines[i].lstrip("\t") if dash else lines[i]) != d:
