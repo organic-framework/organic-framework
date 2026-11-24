@@ -4105,11 +4105,71 @@ class OtherHarnesses(unittest.TestCase):
             self.assertIsNone(of_capacity.connectors_seen(d, now=1000))
         self.assertEqual(cache, {})
 
+    USAGE = {"schemaVersion": 1, "allowance": {"tier": "Muse Code Max Usage",
+                                               "window": {"usedPercent": 97, "resetsAtMs": 1795551346000},
+                                               "weekly": {"usedPercent": 12, "resetsAtMs": 1795996800000},
+                                               "asOfMs": 1795534483443, "source": "mint"}, "reason": None, "hint": None}
+
+    def test_muse_usage_reads_its_allowance_inside_the_runs_sandbox_and_only_on_macos(self):
+        import of_subagent
+        calls = []
+
+        def runner(argv, **kw):
+            calls.append((argv, kw))
+            return subprocess.CompletedProcess(argv, 0, json.dumps(self.USAGE), "")
+        cmd = mock.Mock(return_value=(["/bin/muse-bin", "exec", "--json"], {"HOME": "/fresh"}, ["/r"], ["/w"]))
+        with mock.patch.object(of_capacity.sys, "platform", "darwin"), \
+                mock.patch("of_subagent.command", cmd), mock.patch("of_subagent.sandbox_profile", return_value="(version 1)"):
+            got = of_capacity.muse_usage(runner=runner)
+        self.assertEqual(got["plan"], "Muse Code Max Usage")
+        self.assertEqual(got["windows"], {"window": {"utilization": 97, "resets_at": "2026-11-24T20:15:46Z"},
+                                          "weekly": {"utilization": 12, "resets_at": "2026-11-30T00:00:00Z"}})
+        argv, kw = calls[0]
+        self.assertEqual(argv[:2], ["/usr/bin/sandbox-exec", "-f"])
+        self.assertEqual(argv[3:], ["/bin/muse-bin", "usage", "--json"])
+        self.assertEqual(kw["env"], {"HOME": "/fresh"})                     # the run's own home, never the owner's
+        self.assertEqual(cmd.call_args.args[0], "muse")
+        with mock.patch.object(of_capacity.sys, "platform", "linux"):
+            self.assertIsNone(of_capacity.muse_usage(runner=runner))
+        with mock.patch.object(of_capacity.sys, "platform", "darwin"), \
+                mock.patch("of_subagent.command", side_effect=of_subagent.SubagentError("no login")):
+            self.assertEqual(of_capacity.muse_usage(runner=runner), {"error": "no login"})
+
+    def test_muse_reading_is_kept_for_a_probe_period_and_room_follows_its_windows(self):
+        with tempfile.TemporaryDirectory() as t, mock.patch.object(of_capacity, "STATE_DIR", t):
+            now = 1795534483.443
+            got = {"plan": "p", "observed_at": of_capacity._iso(now),
+                   "windows": {"window": {"utilization": 97, "resets_at": of_capacity._iso(now + 3600)},
+                               "weekly": {"utilization": 12, "resets_at": of_capacity._iso(now + 86400)}}}
+            usage = mock.Mock(return_value=got)
+            self.assertEqual(of_capacity.muse_reading(now=now, usage=usage), got)
+            self.assertEqual(of_capacity.muse_reading(now=now + 60, usage=usage), got)
+            self.assertEqual(usage.call_count, 1)                           # kept: no second reading inside 30 min
+            usage.return_value = {"error": "down"}
+            self.assertEqual(of_capacity.muse_reading(now=now + 1900, usage=usage), got)   # a failed reading keeps the last
+            self.assertIs(of_capacity.muse_room(got, now=now), False)       # 97% of its window
+            self.assertIs(of_capacity.muse_room(got, now=now + 3700), None)  # stale: no run on it
+            ok = dict(got, windows={"window": {"utilization": 10, "resets_at": None},
+                                    "weekly": {"utilization": 89, "resets_at": None}})
+            self.assertIs(of_capacity.muse_room(ok, now=now), True)
+            self.assertIsNone(of_capacity.muse_room({"error": "x"}, now=now))
+            past = dict(got, windows={"window": {"utilization": 100, "resets_at": of_capacity._iso(now - 1)}})
+            self.assertIs(of_capacity.muse_room(past, now=now), True)       # its reset has come
+
     def test_the_lines_say_what_each_harness_reports(self):
         r = {"plan": "pro", "observed_at": of_capacity._iso(self.T0),
              "windows": {"seven_day": {"utilization": 0, "resets_at": of_capacity._iso(self.T0 + 86400)}}}
         text = of_capacity.format_other(r, {"model": "muse-wonder-full-1.0", "contributor_mode": True})
         self.assertIn("ChatGPT pro", text)
+        self.assertIn("limits not read", text)
+        m = {"model": "muse-wonder-full-1.0", "contributor_mode": False, "plan": "Muse Code Max Usage",
+             "observed_at": of_capacity._iso(self.T0),
+             "windows": {"window": {"utilization": 3, "resets_at": of_capacity._iso(self.T0 + 3600)},
+                         "weekly": {"utilization": 40, "resets_at": of_capacity._iso(self.T0 + 86400)}}}
+        line = of_capacity.format_other(None, m)
+        self.assertIn("Muse Code Max Usage", line)
+        self.assertIn("window 3%", line)
+        self.assertIn("week 40%", line)
         self.assertIn("seven_day 0%", text)
         self.assertIn("contributor mode ON", text)
         self.assertEqual(of_capacity.format_other(None, None), "")
