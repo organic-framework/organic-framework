@@ -670,7 +670,7 @@ These three rules come from the token plan's T0 (`of_architect`'s hand-over `b20
   - On the agent host over the 7 days to 2026-11-24, part message raises three senders. of_architect: 41 of 115, 40 of them at of_agent-server, whose pane the founder also types into. of_release: 28 of 82. of_capacity: 15 of 30. Part wake raises none.
 - **Remedies and their owners:**
   - message: the sender sends a message its receiver need not act on with `--fyi`, which starts no turn. It sends one message per receiver per topic, with a pointer instead of the text. Owner: the sender.
-  - wake: wait on the event with a command that exits when it happens, not a timed wake; or let a small model watch and wake the position only when it must act (`of capacity babysit`, RFC 0005 step 5); or make the wake no shorter than the pace of what it waits on. Owners: the position, and `of_capacity` for the babysitter (the plan's T3).
+  - wake: wait on the event with a command that exits when it happens, not a timed wake; or hand the watching to a small model that wakes the position only when it must act (the babysitter of RFC 0005 step 5, not built yet; `of capacity babysit` estimates what it would save); or make the wake no shorter than the pace of what it waits on. Owners: the position, and `of_capacity` for the babysitter (the plan's T3).
 - **Decider:** the structure keeper, or the unit owner inside a delegated unit.
 - It is not chatty's `receiver_flood` (§2.10), which counts how many turns typed-in text starts per hour. This rule reads what those turns come to.
 
@@ -680,6 +680,7 @@ These three rules come from the token plan's T0 (`of_architect`'s hand-over `b20
 
 - **What it reads:** each merged pull request's verdicts. A GitHub work record keeps them as `verdicts`: each comment's "Verdict: approve|changes" line with its "Position:" line (`of_github.verdicts`).
 - **Fires** per author and reviewer when the reviewer gave `changes_rounds_gte` (3) or more "changes" verdicts on each of `long_reviews_gte` (2) pull requests merged in the window. A position's verdicts on its own pull request do not count.
+- **A verdict counts only from a position of the organization's registry,** by its comment's "Position:" line. On a public repository anyone may write that line (`of_review` on PR 651). The comment's author is not checked against the position yet.
 - **Blocked** (`wr.verdicts`) when no work record merged in the window carries verdicts. That is a store with no GitHub import, such as the agent host's, or an organization whose reviews write no verdict comments.
 - **Not recorded yet:** the points each verdict names. With them, the rule could tell a round that repeats earlier points (the author did not fix them) from one with new points (the reviewer did not name every point in one pass). `of_github` keeps only the verdict and the reviewer today.
 - **The reading and where it is taken:** the code host's comments, imported on the machine that runs `of import github` (the laptop, for the OF team). The agent host's store holds none, so v0 has a result only in `lab-drift-v0`.
@@ -693,13 +694,17 @@ These three rules come from the token plan's T0 (`of_architect`'s hand-over `b20
 
 *v0 (2026-11-24), built: `bin/of_diagnose_rules.py` (`spend_reports`, `rule_heavy_context`). Its lever is the plan's T5.*
 
-- **What it reads:** `of.spend_hours`, the one spend event that reaches every organization's store, from its v2 on. Each v2 row adds three fields after v1's nine: `cache_read`, `cache_write` and `max_context`, the largest context one response read (`of_capacity`, message `01a20e41-f086`, under its T0 hand-over `f4fb0959`). For each machine and hour, the latest report holds.
+- **What it reads:** `of.spend_hours`, the one spend event that reaches every organization's store, from its v2 on. Each v2 row adds three fields after v1's nine: `cache_read`, `cache_write` and `max_context`, the largest context one response read. That is `of_capacity`'s format (message `01a20e41-f086`, under its T0 hand-over `f4fb0959`); main's writer still emits v1, so the rule stays blocked until that writer lands. For each machine and hour, the latest report holds.
 - **Fires** for a position whose cached tokens read per response stand at `ratio_gte` (2) times or more the organization's median of the same UTC day, and at `floor_tokens` (300,000) or more, on `heavy_days_gte` (2) or more days of the window.
-  - A day counts a position with `min_responses` (20) responses, and an organization with `min_positions` (3) such positions.
+  - A day counts a position with `min_responses` (20) responses, and an organization with `min_positions` (3) such positions. On a day whose median is 0, a position at the floor is far above it, with no ratio.
   - One issue per position. The evidence gives each such day's cached tokens per response, the median, the ratio, the responses and the largest context.
 - **Blocked** (`spend_hours.v2`) with no v2 row in the window. A v1 row leaves its cache reads unknown, not zero.
 - **The reading and where it is taken:** each machine's own transcripts, summed by its spend view and reported as `of.spend_hours`. The thresholds are hypotheses from this agent host's transcripts, 2026-11-17 to 24: a day's median was 150k to 290k cached tokens per response, and its heaviest position 1.1 to 2.5 times that. They are to be set again from the laptop's v2 rows.
-- **Remedies:** a fresh start where the position's work ends naturally, such as a hand-over closed or a pull request merged, with its memory (`of capacity move --restart`). The position or its keeper chooses; nothing is cut or forced (the founder's answer on card `OF-31`). Or the detail the position rereads moves into files its brief names. Owner: `of_capacity`.
+- **Remedies:**
+  - A fresh start where the position's work ends naturally, such as a hand-over closed or a pull request merged: a new conversation with its memory and brief, as `of spawn` starts one once the session has ended. The position or its keeper chooses; nothing is cut or forced (the founder's answer on card `OF-31`). Ending another position's session needs the founder's yes (AGENTS.md). `of capacity move --restart` is no fresh start: it resumes the same conversation (`claude --resume`, `of_review` on PR 651), so the context comes back whole. A start that does this in one step is the plan's T5, for `of_capacity` to build.
+  - Or the detail the position rereads moves into files its brief names.
+
+  Owner: `of_capacity`.
 
 ## 3. Ranking: expected ΔT per minute of the owner's time
 

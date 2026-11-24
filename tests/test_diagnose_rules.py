@@ -893,6 +893,9 @@ class ReviewRoundsTest(unittest.TestCase):
         self.assertEqual(got[0]["evidence"]["prs"][0], {"pr": "o/r#8", "changes": 4, "verdicts": 7})
         git_only = [self.pr(6, 11, "bot_search", None, source="git")]
         self.assertEqual(R.rule_review_rounds(m, git_only, a, b, cat, spec), ([], ["wr.verdicts"]))
+        # anyone may write a Position line on a public repository: a name the registry does not hold counts for nothing
+        outside = [self.pr(7, 12, "bot_search", ch("someone_else", 4)), self.pr(8, 13, "bot_search", ch("someone_else", 4))]
+        self.assertEqual(R.rule_review_rounds(m, outside, a, b, cat, spec), [])
 
 
 class HeavyContextTest(unittest.TestCase):
@@ -920,6 +923,12 @@ class HeavyContextTest(unittest.TestCase):
                                                          "median": 200000, "ratio": 3.5, "responses": 40, "max_context": 701000})
         v1 = [dict(r, payload=dict(r["payload"], v=1, rows=[x[:9] for x in r["payload"]["rows"]])) for r in rows]
         self.assertEqual(R.rule_heavy_context(m, v1, a, b, cat, spec), ([], ["spend_hours.v2"]))
+        # a day whose median is 0: a position at the floor is far above it, with no ratio
+        zero = [self.report(f"z{k}", f"2026-11-0{3 + k}T10:20:00Z", f"2026-11-0{3 + k}T10:00:00Z",
+                            [row("bot_operator", 0), row("k8s_keeper", 0), row("bot_search", 400000)]) for k in range(2)]
+        got = R.rule_heavy_context(m, zero, a, b, cat, spec)
+        self.assertEqual([(i["affected"], i["evidence"]["days"][0]["ratio"]) for i in got], [(["bot_search"], None)])
+        self.assertIn("median that day was 0", got[0]["summary"])
 
 
 class LoopRulesTest(unittest.TestCase):

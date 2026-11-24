@@ -422,7 +422,7 @@ rules:
     delta_m: "0 (frees holders, not the owner); dT: the turns, each a read of the receiver's whole context"
     remedies:
       message: ["the sender sends a message the receiver need not act on with --fyi, which starts no turn", "one message per receiver per topic, a pointer to a commit or file instead of the text"]
-      wake: ["wait on the event with a command that exits when it happens (a background until-loop), not a timed wake", "a small model watches and wakes the position only when it must act (of capacity babysit)", "a wake no shorter than the pace of what it waits on"]
+      wake: ["wait on the event with a command that exits when it happens (a background until-loop), not a timed wake", "hand the watching to a small model that wakes the position only when it must act (RFC 0005 step 5's babysitter, not built yet; of capacity babysit estimates what it would save)", "a wake no shorter than the pace of what it waits on"]
 
   review-rounds:                 # diagnose.md 2.31; v0 (2026-11-24): token plan T0's rules (of_architect's hand-over b204d311), its lever T4
     version: 0
@@ -444,11 +444,11 @@ rules:
     # hypotheses: on the agent host's store, 2026-11-17 to 24, a day's median was 150k to 290k cached tokens read per
     # response and its heaviest position 1.1 to 2.5 times that (diagnose.md 2.32); to be set again from the laptop's v2 rows
     thresholds: {ratio_gte: 2.0, floor_tokens: 300000, heavy_days_gte: 2, min_responses: 20, min_positions: 3}
-    needs: [of.spend_hours]      # v2 rows (cache_read, cache_write, max_context); the rule reports blocked, spend_hours.v2, without them
+    needs: [of.spend_hours]      # v2 rows (cache_read, cache_write, max_context; of_capacity's format, its writer not on main yet); blocked, spend_hours.v2, without them
     decider: unit_owner_or_structure_keeper
     severity: low
     delta_m: "0; dT: the cached context read again on every response above the organization's median"
-    remedies: ["a fresh start where the position's work ends naturally (a hand-over closed, a pull request merged), with its memory (of capacity move --restart): the position or its keeper chooses, nothing is cut or forced (card OF-31)", "detail the position rereads moved into files its brief names"]
+    remedies: ["a fresh start where the position's work ends naturally (a hand-over closed, a pull request merged): a new conversation with its memory and brief, as of spawn starts one once the session has ended; the position or its keeper chooses, nothing is cut or forced (card OF-31), and ending another's session needs the founder's yes. of capacity move --restart is no fresh start: it resumes the same conversation", "detail the position rereads moved into files its brief names"]
 
 measures:                      # owner-message measures (diagnose.md §7); counted, not rules: they raise no issue
   status-poll:
