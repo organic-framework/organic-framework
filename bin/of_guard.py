@@ -8620,7 +8620,11 @@ def _cred_code(code, cwd, env, keep):
 # that show names, sizes or existence of what lies there. A recursive one from a folder above the root shows its names
 # too (`find ~/.config -name '*.key'`), a plain listing of the folder above shows only the root's own name.
 _LIST_HEADS = {"ls", "stat", "file", "find", "tree", "du", "exa", "eza", "lsd", "fd", "fdfind", "gstat", "gls", "dir",
-               "vdir", "locate", "mdfind", "realpath", "readlink", "namei", "lsattr", "getfacl", "xattr"}
+               "vdir", "locate", "mdfind", "realpath", "readlink", "namei", "lsattr", "getfacl", "xattr",
+               # and the programs that show the names of what they walk or pack (of_secrets-review on PR 649)
+               "compgen", "rg", "ag", "tar", "bsdtar", "gtar", "rsync", "zip", "7z", "git"}
+_LIST_WALKERS = {"find", "tree", "du", "fd", "fdfind", "locate", "mdfind", "compgen", "rg", "ag", "tar", "bsdtar", "gtar",
+                 "rsync", "zip", "7z", "git"}
 _LIST_CODE = re.compile(r"\b(?:listdir|scandir|walk|iglob|glob|iterdir|rglob|stat|lstat|readdir|readdirSync|opendir|"
                         r"Dir\.(?:entries|children|glob)|fs\.stat)\s*\(")   # an existence test is no listing, as test(1)
 _LIST_RECURSIVE_CODE = re.compile(r"\b(?:walk|rglob)\s*\(|\*\*")
@@ -8635,9 +8639,11 @@ def credential_lists(tool, tool_input, cwd=None, roots=(), depth=0):
         return []
     ti = tool_input or {}
 
-    def near(p, recursive):
-        return any(p == r or p.startswith(r.rstrip("/") + "/") or (recursive and r.startswith(p.rstrip("/") + "/"))
-                   for r in roots)
+    reals = {os.path.realpath(r) for r in roots} | set(roots)
+
+    def near(p, recursive):   # by the path as written and as it resolves: a link to the root lists it (of_review, 649)
+        return any(q == r or q.startswith(r.rstrip("/") + "/") or (recursive and r.startswith(q.rstrip("/") + "/"))
+                   for q in {p, os.path.realpath(p)} for r in reals)
     if tool in ("Glob", "LS"):
         base = _cred_expand(str(ti.get("path") or cwd or ""), {}, cwd)
         pattern = str(ti.get("pattern") or "")
@@ -8682,6 +8688,18 @@ def _cred_lists_bash(cmd, cwd, env, near, depth):
             if kind == "sub":
                 out += _cred_lists_bash(stext, cwd, env, near, depth + 1)
                 continue
+            loop = re.match(r"\s*(?:for|select)\s+\w+\s+in\s+(.*)$", stext, re.S)
+            if loop:   # `for f in <root>/*`: the loop's words are a glob the shell lists (of_secrets-review, PR 649)
+                try:
+                    words = _tokens(loop.group(1))
+                except ValueError:
+                    words = loop.group(1).split()
+                for a in words:
+                    if any(ch in a for ch in "*?["):
+                        fixed = _cred_expand(_cred_word(re.split(r"[*?\[]", a, 1)[0].rstrip("/") or "/"), env, cwd)
+                        if fixed and near(fixed, "**" in a):
+                            out.append((fixed, "glob", "**" in a))
+                continue
             try:
                 assigns = _assignments(stext)
                 s = _simple(stext)
@@ -8705,6 +8723,9 @@ def _cred_lists_bash(cmd, cwd, env, near, depth):
                 for flag in ("-c", "-e"):   # as _cred_bash reads them here
                     if flag in args[:-1]:
                         out += _cred_lists_code(args[args.index(flag) + 1], cwd, local, near)
+                kind, code, _ = _py_walk(args) if head.startswith("python") else (None, None, None)
+                if kind == "code":   # `-Ic "…"`, `-c"…"`: python's own reading (of_review on PR 649)
+                    out += _cred_lists_code(code, cwd, local, near)
             try:
                 ws = _command_words(_segments(stext)[-1]) if stext else []
             except (ValueError, IndexError):
@@ -8712,14 +8733,22 @@ def _cred_lists_bash(cmd, cwd, env, near, depth):
             prog = _cred_expand(_cred_word(ws[0]), local, cwd) if ws and "/" in ws[0] else None
             if prog and near(prog, False):   # a program run by its path there: a use, the catalogue's to decide
                 out.append((prog, "run", False))
+            for a in args:   # a glob word lists the names it matches, whatever takes it (`echo <root>/*`, `for f in`)
+                if any(ch in a for ch in "*?[") and not a.startswith("-"):
+                    fixed = _cred_expand(_cred_word(re.split(r"[*?\[]", a, 1)[0].rstrip("/") or "/"), local, cwd)
+                    if fixed and near(fixed, "**" in a):
+                        out.append((fixed, "glob", "**" in a))
             if head not in _LIST_HEADS:
                 continue
-            recursive = head in ("find", "tree", "du", "fd", "fdfind", "locate", "mdfind") or \
+            recursive = head in _LIST_WALKERS or \
                 bool({"-R", "-r", "--recursive"} & set(args)) or any(re.fullmatch(r"-\w*R\w*", a) for a in args)
             ops = [a for a in args if not a.startswith("-")]
-            if head == "find":   # its starting points: the words before its first expression
-                ops = []
-                for a in args:
+            if head == "find":   # its starting points: past its own options (-L, -H, -P, -D x, -O3), before its expression
+                ops, k = [], 0
+                while k < len(args) and args[k] in ("-L", "-H", "-P", "-E", "-X", "-d", "-s", "-x", "-f", "-D") or \
+                        (k < len(args) and re.fullmatch(r"-O\d", args[k])):
+                    k += 2 if args[k] in ("-D", "-f") else 1
+                for a in args[k:]:
                     if a.startswith(("-", "(", "!")):
                         break
                     ops.append(a)
@@ -8741,6 +8770,9 @@ def _cred_lists_code(code, cwd, env, near):
     recursive = bool(_LIST_RECURSIVE_CODE.search(code))
     carried = re.sub(r"'''.*?'''|\"\"\".*?\"\"\"", " ", code, flags=re.S)
     out = []
+    if cwd and near(cwd, recursive) and re.search(r"\b(?:listdir|scandir|walk|iterdir|glob|iglob|rglob)\s*\(\s*(?:\)|['\"](?:\.?/?|\*[^'\"]*)['\"])",
+                                                  carried):
+        out.append((cwd, "code", recursive))   # the folder it runs in (`cd <root> && python3 -c "os.listdir()"`)
     for m in _LITERAL.finditer(carried):
         lit = m.group(2).strip()
         if " " in lit or "/" not in lit:

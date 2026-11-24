@@ -315,13 +315,14 @@ def unlisted_roots(cat):
 def unlisted_hit(path, position, org, cat, recursive=False):
     """(owner org, root, keeper) when listing, stat or a name search of PATH shows names under an unlisted root and the
     caller is not its keeper; a recursive one from a folder above the root counts. None otherwise."""
+    paths = {path, os.path.realpath(path)}   # by the path as written and as it resolves: a link to the root lists it
     for o, ent in (cat or {}).items():
         for u in ent.get("unlisted") or []:
-            r = u["path"]
-            inside = path == r or path.startswith(r.rstrip("/") + "/")
-            above = recursive and r.startswith(path.rstrip("/") + "/")
-            if (inside or above) and not (org == o and position and position == u["keeper"]):
-                return o, r, u["keeper"]
+            for r in {u["path"], os.path.realpath(u["path"])}:
+                inside = any(q == r or q.startswith(r.rstrip("/") + "/") for q in paths)
+                above = recursive and any(r.startswith(q.rstrip("/") + "/") for q in paths)
+                if (inside or above) and not (org == o and position and position == u["keeper"]):
+                    return o, u["path"], u["keeper"]
     return None
 
 
