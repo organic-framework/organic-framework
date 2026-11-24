@@ -238,9 +238,11 @@ def parse_probe(lines, stderr, returncode):
         err = (stderr or "").strip().splitlines()
         r["error"] = r["error"] or (err[-1][:300] if err else f"no reading (exit {returncode})")
         r["probe"]["cost_usd"] = r["probe"]["cost_usd"] if result else None
-        # only the harness saying so means "not logged in"; a missing binary or a timeout is no reading
+        # only the harness saying so means "not logged in", an expired login among it (2026-11-24: "this login reached
+        # its time limit"); a missing binary or a timeout is no reading
         said = " ".join([r["error"] or "", stderr or "", str((result or {}).get("result") or "")]).lower()
-        r["logged_in"] = False if ("not logged in" in said or "/login" in said) else None
+        login_errors = ("not logged in", "/login", "reached its time limit", "claude auth login")
+        r["logged_in"] = False if any(phrase in said for phrase in login_errors) else None
     return r
 
 
