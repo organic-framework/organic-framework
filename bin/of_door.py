@@ -20,7 +20,7 @@ import os
 # value is text that `of` stores or matches and never opens (condition 2), for the review.
 ALLOW = {
     "status": {"actions": {"working", "waiting", "idle", "done"},
-               "options": {"state", "on", "note", "answered", "done_task", "reopen_task", "work", "ask"}},
+               "options": {"state", "on", "note", "answered", "done_task", "reopen_task", "work", "wait_ask"}},
     "ask": {"actions": None,
             "options": {"question", "options", "yes", "task", "command", "where", "work", "tags", "blocking", "due",
                         "to", "amend", "reason"}},
@@ -291,7 +291,8 @@ def run(argv, caller, stdin="", of_bin=None, timeout=120):
     import subprocess
     import sys
     env = {k: v for k, v in os.environ.items() if k in ("HOME", "PATH", "LANG", "LC_ALL", "USER", "LOGNAME", "TZ",
-                                                         "OF_ORGS", "OF_STATE", "OF_AUTOMATION")}
+                                                         "OF_ORGS", "OF_STATE", "OF_AUTOMATION", "OF_DB",
+                                                         "OF_CONFIG_DIR")}   # the listener's own profile
     env.update({"CLAUDE_CODE_SESSION_ID": str(caller["session"]), "OF_POSITION": str(caller["position"]),
                 "OF_DOOR_CALLER": "1"})
     exe = of_bin or os.path.join(os.path.dirname(os.path.realpath(__file__)), "of")
@@ -377,7 +378,9 @@ def read_doors(base=None):
             with open(os.path.join(d, DOOR_FILE)) as fh:
                 door = json.load(fh)
             with open(os.path.join(d, CODEX_FILE)) as fh:
-                door.update(json.load(fh))
+                codex = json.load(fh)
+            # only the session's own two keys: codex.json never replaces the launch's position, org or cwd
+            door.update({k: codex.get(k) for k in ("session", "pid") if isinstance(codex, dict)})
         except (OSError, ValueError):
             continue
         if door.get("launch") != launch or not door.get("position") or not door.get("org") or not door.get("session"):
