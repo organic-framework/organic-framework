@@ -262,6 +262,20 @@ class ServerRouteAct(unittest.TestCase):
                     "subprocess.run(['of', 'send', 'of_y', 'hi'])\""):
             self.assertTrue(deny(cmd), cmd)
 
+    def test_of_live_setup_and_switch_keep_their_caller(self):
+        """of_review on organic-framework PR 628: they move every account's hooks, OF's units and the `of` on PATH."""
+        import of_guard
+        self.assertTrue(of_guard._live_act(["live", "switch"]))
+        self.assertTrue(of_guard._live_act(["live", "--", "setup"]))
+        self.assertFalse(of_guard._live_act(["live", "request"]))
+        self.assertFalse(of_guard._live_act(["live", "status"]))
+        for cmd in ("env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u OF_POSITION script -q /dev/null of live switch",
+                    "env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u OF_POSITION script -q /dev/null of live setup",
+                    "env -i PATH=/usr/bin:/bin HOME=/tmp script -q /dev/null of live switch",
+                    "unset CLAUDECODE CLAUDE_CODE_SESSION_ID OF_POSITION; script -q /dev/null of live switch"):
+            self.assertTrue(deny(cmd), cmd)
+        self.assertIsNone(deny("of live request"))
+
 
 if __name__ == "__main__":
     unittest.main()
