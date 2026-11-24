@@ -854,10 +854,38 @@ class RelayTest(unittest.TestCase):
             self.assertTrue(of_relay.dialog_open(screen))
             res, typed = self._deliver_with_box(screen)
             self.assertEqual((res, typed), (("deferred", "a dialog is open in the pane"), []))
-        for screen in ("some output\n\n› half typed words\n\n  100% context left\n", "output\n\n›\n"):
-            res, typed = self._deliver_with_box(screen)
-            self.assertEqual((res, typed), (("deferred", "a Codex input box the relay cannot read yet"), []))
         self.assertEqual(of_relay.input_box_text(self._screen("")), "")   # Claude Code's box reads as before
+
+    # Codex 0.170's lines as of_herdr's lab read them (herdr pane read --format ansi), the folder made generic
+    CODEX_EMPTY = ("\n" * 8 + "\x1b[0m\x1b[1m› \x1b[0m\x1b[2mAsk Codex to do anything\x1b[0m\n \n"
+                   "  \x1b[0m\x1b[38;2;246;226;183mGPT default \x1b[0m· \x1b[0m\x1b[38;2;171;223;167m/tmp/lab/proj\x1b[0m\n"
+                   "  \x1b[0m\x1b[1m←\x1b[0m for agents · \x1b[0m\x1b[1m?\x1b[0m for shortcuts")
+    CODEX_TYPED = ("\n" * 8 + "\x1b[0m\x1b[1m› \x1b[0mlab typed words\n \n"
+                   "  \x1b[0m\x1b[38;2;246;226;183mGPT default\x1b[0m · \x1b[0m\x1b[38;2;171;223;167m/tmp/lab/proj\x1b[0m")
+
+    def test_codex_box_is_read_empty_or_holding_text(self):
+        """of_herdr's lab screens of Codex 0.170: the empty box's placeholder is dim; typed words defer a message."""
+        self.assertEqual(of_relay.codex_box_text(self.CODEX_EMPTY), "")
+        self.assertEqual(of_relay.codex_box_text(self.CODEX_TYPED), "lab typed words")
+        self.assertIsNone(of_relay.codex_box_text("no prompt here"))
+        res, typed = self._deliver_with_box(self.CODEX_TYPED)
+        self.assertEqual((res, typed), (("deferred", "the input box holds text (15 chars)"), []))
+        res, typed = self._deliver_with_box(self.CODEX_EMPTY)
+        self.assertEqual(res, (True, None))
+        self.assertEqual(len(typed), 1)
+
+    def test_codex_folder_trust_hooks_list_and_sign_in_are_dialogs(self):
+        """of_herdr's lab screens: each draws `› 1. …` like a box, and Enter there would answer it."""
+        trust = ("  Folder access\n  /tmp/lab/proj\n  Trust this folder? Codex can read, edit, and run files here.\n"
+                 "\x1b[1m› 1. Trust and continue\x1b[0m\n  2. Back to Agent Command Center\n  enter continue · esc back")
+        hooks_list = ("  Event   Installed   Active   Review\n› SessionStart   1   0   1\n↓\n"
+                      "  t trust all · enter review · esc close")
+        sign_in = ("  Welcome to Codex, OpenAI's command-line coding agent\n> 1. Sign in with ChatGPT\n"
+                   "  2. Sign in with Device Code\n  Press enter to continue")
+        for screen in (trust, hooks_list, sign_in, trust + "\n \n" * 40):   # high in a tall pane, empty lines below
+            self.assertTrue(of_relay.dialog_open(screen), screen[:40])
+            res, typed = self._deliver_with_box(screen)
+            self.assertEqual((res, typed), (("deferred", "a dialog is open in the pane"), []))
 
     def test_confirmation_by_the_hooks_record_and_a_late_one(self):
         import of_events as ev_
