@@ -138,6 +138,14 @@ class CodexTest(unittest.TestCase):
                 self.assertTrue(all(e["of.harness.name"] == "codex" for e in ev))
                 q = [e for e in ev if e["event.name"] == "of.agent_question"]
                 self.assertEqual(prompts[1]["of.payload"]["reply_to"], q[0]["of.event.id"])
+                # a hooked session: what its hook recorded live is not derived again (of_review on PR 638)
+                rec = of_events.record("session_start", {}, session=sid, source="hook")
+                rec["timestamp"] = "2026-10-30T10:01:30Z"
+                of_store.add_event(conn, rec)
+                of_derive.derive_codex(conn, log=lambda m: None)
+                texts = [json.loads(r[0])["of.payload"]["text"] for r in conn.execute(
+                    "SELECT record FROM event WHERE name = 'of.human_prompt' AND source = 'import' ORDER BY ts")]
+                self.assertEqual(texts, ["почини тест"])                                # "да" came after the hook
                 conn.close()
             finally:
                 of_events.STATE_DIR, of_hook.STATE = saved

@@ -253,7 +253,10 @@ def derive_codex(conn, sessions=None, log=print):
                             "ORDER BY timestamp, line_offset", (sid,)).fetchall()
         if not rows:
             continue
-        s = _Session(sid, index, None, rows[0][0])
+        # what the hook recorded live is not derived again: a hooked Codex position's rollout lies in its seat and is
+        # imported too (of_review on PR 638), so only records before its first hook event count, as for Claude Code
+        live = conn.execute("SELECT min(ts) FROM event WHERE session_id = ? AND source = 'hook'", (sid,)).fetchone()[0]
+        s = _Session(sid, index, live, rows[0][0])
         seen = set()
         for path, sha in rows:
             try:
@@ -262,6 +265,8 @@ def derive_codex(conn, sessions=None, log=print):
                 continue
             p = rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
             ts = rec.get("timestamp") or ""
+            if live and ts and ts >= live:
+                break
             if rec.get("type") == "turn_context":
                 s.last_model = p.get("model") or s.last_model
                 continue
