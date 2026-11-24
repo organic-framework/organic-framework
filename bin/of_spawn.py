@@ -722,6 +722,7 @@ def sandbox_settings(deny=None, platform=None, scratch=None, org=None, rules_dir
             "autoAllowBashIfSandboxed": True,
             "filesystem": {"denyRead": denied,
                            "denyWrite": denied + [os.path.expanduser("~/.local/state/of/index.json")]
+                           + [os.path.expanduser(f"~/.local/state/of/{n}") for n in UNIT_STATE_WRITES]
                            + of_checkouts() + [g for g in guarded if g not in of_checkouts()],
                            "allowRead": allow,
                            "allowWrite": [os.path.expanduser("~/.local/state/of")] + writable + post_door()},
@@ -729,6 +730,14 @@ def sandbox_settings(deny=None, platform=None, scratch=None, org=None, rules_dir
             # (srt 0.0.83; of_lab's guest check of the work clone, message 01a204eb-96d4)
             "network": {"allowAllUnixSockets": True, "strictAllowlist": True,
                         "allowedDomains": list(SANDBOX_DOMAINS), "deniedDomains": []}}
+
+
+# what OF's services, outside any sandbox, read to decide what they do, and no sandboxed command writes: the guard's
+# caches (the hook writes them), the balancer's readings (of capacity never runs sandboxed), the disk refusal list and
+# the units' watchdog and heartbeat files (of_server, 2026-11-24, after of_review's finding on the capacity cache)
+UNIT_STATE_WRITES = ("guard-credentials.json", "guard-grants.json", "passkey-revoked.json", "capacity",
+                     "capacity.json", "scratch-quota.json", "listen-watchdog.json", "relay-watchdog.json",
+                     "relay-heartbeat.json", "listen.heartbeat", "listen.ticks")
 
 
 def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=None, org=None, rules_dirs=None):
