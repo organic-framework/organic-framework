@@ -7749,6 +7749,34 @@ def cmd_protected(args):
           "changed, none that reaches the secret)")
 
 
+def cmd_live(args):
+    """`of live setup|switch|request|status`: the laptop's live checkout, apart from the shared working copy
+    (bin/of_live.py; hand-over cb134c52)."""
+    import of_live
+    if args.action in ("setup", "switch"):
+        import of_asks_answer
+        # it writes every account's hooks and OF's units: the owner's alone. OF_AUTOMATION marks a process OF or an
+        # agent started, never the owner's own terminal (of_review on PR 628, through of_server); G31 refuses both acts
+        # from agents as well
+        if of_asks_answer.not_the_owner() or os.environ.get("OF_AUTOMATION"):
+            raise OfError(f"of live {args.action} is the owner's: it rewrites every account's hooks and OF's services. "
+                          f"The owner runs `of live {args.action}` in a plain terminal")
+    try:
+        if args.action == "setup":
+            of_live.setup(orgs_file=ORGS_FILE, org=args.org, keep_registry_ff=args.keep_registry_ff)
+            print("of live setup: done. Next, once: of live switch")
+        elif args.action == "switch":
+            of_live.switch()
+            print("of live switch: done; every hooked account, the units and the of on PATH run from " + of_live.LIVE)
+        elif args.action == "request":
+            print("of live request: asked the update agent (" + of_live.request() + ")")
+        else:
+            st = of_live.status()
+            print(f"live checkout {st['live']} at {(st['head'] or 'none')[:12]}; the of on PATH runs {st['link']}")
+    except of_live.LiveError as e:
+        raise OfError(f"of live {args.action}: refused: {e}")
+
+
 def cmd_access(args):
     """`of access map|request|grant|revoke` (docs/access.md; bin/of_access.py): the map of who reaches what, a
     position's request to its structure keeper, and the structure keeper's one-line grant and revoke."""
@@ -9200,6 +9228,14 @@ def build_parser():
     gr.add_argument("--source", default="founder")
     gr.add_argument("--note")
     gr.set_defaults(fn=cmd_grant)
+    lv = sub.add_parser("live", help="the laptop's live checkout the hooks and units run from (bin/of_live.py)")
+    lv.add_argument("action", choices=["setup", "switch", "request", "status"])
+    lv.add_argument("--org", help="setup: the organization whose orgs.yaml entry gets the live checkout's "
+                                  "protected_code item (default: the one listing the checkout OF runs from)")
+    lv.add_argument("--keep-registry-ff", action="store_true",
+                    help="setup: also list each registry's fast-forward entries in orgs.yaml, which the first "
+                         "protected_code there would stop from vouching on this machine")
+    lv.set_defaults(fn=cmd_live)
     hk = sub.add_parser("hooks", help="install or remove the recorder hooks in a Claude Code config dir")
     hk.add_argument("action", choices=["install", "uninstall"])
     hk.add_argument("--config-dir", help="default: $CLAUDE_CONFIG_DIR or ~/.claude")
@@ -9209,8 +9245,11 @@ def build_parser():
                     help="also add Claude Code deny rules for secret files and env dumps (RFC 0002 §4.1)")
     hk.add_argument("--guard", action="store_true",
                     help="also run the critical-deny guard before risky tools (PreToolUse; enforced)")
+    hk.add_argument("--replace", action="append", default=[], metavar="BIN_OF",
+                    help="install: first remove the hooks another checkout's bin/of runs (of live switch)")
     hk.set_defaults(fn=lambda a: __import__("of_init").hooks(a.action, a.config_dir, a.yes, a.dry_run,
-                                                             deny_secrets=a.deny_secrets, guard=a.guard))
+                                                             deny_secrets=a.deny_secrets, guard=a.guard,
+                                                             replace=a.replace))
     og = sub.add_parser("org", help="an organization's settings in this machine's orgs.yaml: show [<org>] | set <org> "
                         "hold on|off (`of apply` and the desk leave a held organization's panes alone) | set <org> path "
                         "<its repository's folder>")
