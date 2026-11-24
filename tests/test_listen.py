@@ -1151,6 +1151,28 @@ class WatchdogTest(unittest.TestCase):
         self.assertEqual(of_listen.install_launchd(run=run, plists=units, agents_dir=self.tmp.name),
                          [f"{of_listen.LAUNCHD_LABEL}: unchanged", f"{of_listen.WATCHDOG_LABEL}: unchanged"])
 
+    def test_a_unit_is_never_written_through_a_link(self):
+        """of_review on PR 628: a link at the fixed temporary name took the write and the rename moved it over."""
+        units = of_listen.launchd_plists(python="/py", of_bin="/of")
+        run = lambda argv, **k: type("R", (), {"returncode": 0})()  # noqa: E731
+        victim = os.path.join(self.tmp.name, "victim")
+        with open(victim, "w") as fh:
+            fh.write("mine\n")
+        path = os.path.join(self.tmp.name, f"{of_listen.LAUNCHD_LABEL}.plist")
+        os.symlink(victim, path + ".tmp")
+        of_listen.install_launchd(run=run, plists={of_listen.LAUNCHD_LABEL: units[of_listen.LAUNCHD_LABEL]},
+                                  agents_dir=self.tmp.name)
+        with open(victim) as fh:
+            self.assertEqual(fh.read(), "mine\n")
+        self.assertFalse(os.path.islink(path))
+        os.remove(path)
+        os.symlink(victim, path)
+        out = of_listen.install_launchd(run=run, plists={of_listen.LAUNCHD_LABEL: units[of_listen.LAUNCHD_LABEL]},
+                                        agents_dir=self.tmp.name)
+        self.assertIn("not loaded", out[0])
+        with open(victim) as fh:
+            self.assertEqual(fh.read(), "mine\n")
+
 
 class SystemdTest(unittest.TestCase):
     def test_listener_and_watchdog_units(self):

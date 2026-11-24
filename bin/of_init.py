@@ -1574,10 +1574,13 @@ def install_units(out=print, system=None, run=subprocess.run, wait_s=8, sleep=ti
             path = os.path.join(os.path.expanduser("~/.config/systemd/user"), u["unit"])
             start = [["systemctl", "--user", "daemon-reload"], ["systemctl", "--user", "enable", "--now", u["unit"]]]
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.islink(path):   # its manager would load the file the link names; a dangling one, the write took
+            out(f"  {u['name']}: not started ({path} is a link; remove it and run of init again)")
+            failed.append(u["name"])
+            continue
         new = not os.path.exists(path)
         if new:  # a unit already there (a machine set up earlier, by hand or by of init) is kept as it is
-            with open(path, "w") as fh:
-                fh.write(unit_text(u, system, log=log))
+            of_events.write_new(path, unit_text(u, system, log=log), mode=0o644)
         if new or not unit_running(u, system, run):
             for cmd in start:
                 run(cmd, capture_output=True, text=True)

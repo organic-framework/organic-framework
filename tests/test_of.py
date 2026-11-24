@@ -1769,6 +1769,14 @@ class InitStructureTest(unittest.TestCase):
         state["active"], calls[:] = True, []
         i.install_units(out=lines.append, system="Linux", run=run, sleep=lambda s: None)
         self.assertFalse([c for c in calls if "enable" in c])  # an existing, running unit is left alone
+        unit = os.path.join(os.path.expanduser("~/.config/systemd/user"), relay["unit"])
+        victim = os.path.join(os.path.dirname(unit), "victim.service")
+        os.remove(unit)
+        os.symlink(victim, unit)                             # dangling: the write would have made its target
+        lines = []
+        self.assertIn("relay", i.install_units(out=lines.append, system="Linux", run=run, sleep=lambda s: None))
+        self.assertFalse(os.path.exists(victim))
+        os.remove(unit)
 
     def test_a_source_a_person_hands_over_is_read(self):
         files = self.built()["files"]
