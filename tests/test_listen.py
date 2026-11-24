@@ -570,6 +570,20 @@ class ListenTest(unittest.TestCase):
         self.assertNotIn("matter", text.get(secret) or "")
         self.assertIn("Merge PR 2349", " ".join(t or "" for t in text.values()))     # the others as they were
 
+    def test_a_rewind_reads_no_snapshot_through_a_link_or_a_fifo(self):
+        """of_secrets-review on PR 635: the rewind's read was a plain open, which follows a link and waits on a FIFO."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:
+            fifo, link = os.path.join(t, "f.json"), os.path.join(t, "l.json")
+            os.mkfifo(fifo)
+            with open(os.path.join(t, "real.json"), "w") as fh:
+                fh.write("{}")
+            os.symlink(os.path.join(t, "real.json"), link)
+            for path in (fifo, link):
+                p = of_listen.AsksProcessor()
+                p.snaps, p.rewind, p.max_rowid = [("2026-11-20T00:00:00.000Z", path)], "2026-11-21T00:00:00.000Z", 0
+                self.assertFalse(p._rewind_to_snapshot(self.conn))        # refused at once, no wait
+
     def test_the_start_deletes_only_versions_in_this_users_own_folder(self):
         """of_review on PR 635: a link at asks-snapshots pointed the start's deletion at any folder the user owns, and
         any folder there that was no version was deleted too."""
