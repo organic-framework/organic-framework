@@ -643,6 +643,61 @@ The first user organization's case (2026-11-10):
     - "Assume" as a hedge word matched 3 CI PRs ("assume the publisher role"), so v0 does not use it.
 - **Not covered here:** a claim about people in a registry, such as "a colleague keeps the X bots", the day's first incident. [`registry.md`](registry.md), People, requires `evidence:` beside such a claim, and `of registry check` warns without it (`of_platform`).
 
+### 2.30–2.32 Spend without result (token plan T0)
+
+These rules come from the token plan's T0 (`of_architect`'s hand-over `b204d311`; the founder's prompt `01a20e2d-61a0` of 2026-11-24, on organic-framework-build `reports/token-efficiency-plan-2026-11-24.md`). Every response reads the session's whole context again, so work that ends with nothing done still costs those reads. Each rule names its reading, where it is taken, and its remedy's owner.
+
+#### 2.30 Unacted turns — `ap.unacted-turns@0`
+
+*v0 (2026-11-24), built: `bin/of_diagnose_rules.py` (`session_turns`, `rule_unacted_turns`).*
+
+- **A turn** runs from its start event to its `of.turn_end` (Stop) in one session. Its start can be:
+  - a relayed message the hook saw typed in (`of.agent_message_in`, source `hook`);
+  - a pulse nudge or another tool's note (an injected `of.human_prompt`);
+  - the position's own wake: origin `scheduled`, which covers a cron, a loop, a monitor and a background notice;
+  - a person's prompt.
+
+  Several starts before the turn's first other event make one turn, named in this order: person, relay, pulse, tool, wake. A turn still open at the window's end is left out. A new start after activity with no `of.turn_end` between closes the earlier turn, whose end was not recorded.
+- **An act** is any of these: a message sent, a hand-over step, a declared ask, an ask amended or withdrawn, a diff, an issue label, a loop record, or a file written (`of.mandate_check` with Write or Edit). A status, a read, a command and a question left in the pane are not acts.
+- **Part message**, per sender. Its turns are those its relayed messages started, each with the receiver's own wake turns right after it. Together they make the message's episode, since work a message starts may end after a background command.
+  - It fires when `unacted_messages_gte` (10) or more episodes in the window ended with no act, and they are at least `unacted_share_gte` (0.3) of the sender's episodes.
+  - One issue per sender, `affected: [sender]`.
+  - The evidence names the receivers. It also names those a person typed into in the window, where a report in the pane may be the act.
+- **Part wake**, per position: its own wakes whose turn ended with no act. It fires at `unacted_wakes_gte` (12) or more such wakes that are at least `unacted_wake_share_gte` (0.5) of its wakes.
+- **The reading and where it is taken:** the receiver's own events, recorded by the hooks in its session, on the machine that runs it.
+  - On the agent host's store, 2026-11-21 to 24, 137 of the 432 turns relayed messages started ended with no act, at 1.4 tool uses each. Per sender that was 32% to 57%.
+  - The thresholds are hypotheses from that reading. They are to be set again from `of_capacity`'s T0 readings on the laptop's store, which holds about 99% of the spend (`of_capacity`, message `01a20e30-a5ae`).
+  - On the agent host over the 7 days to 2026-11-24, part message raises three senders. of_architect: 41 of 115, 40 of them at of_agent-server, whose pane the founder also types into. of_release: 28 of 82. of_capacity: 15 of 30. Part wake raises none.
+- **Remedies and their owners:**
+  - message: the sender sends a message its receiver need not act on with `--fyi`, which starts no turn. It sends one message per receiver per topic, with a pointer instead of the text. Owner: the sender.
+  - wake: wait on the event with a command that exits when it happens, not a timed wake; or let a small model watch and wake the position only when it must act (`of capacity babysit`, RFC 0005 step 5); or make the wake no shorter than the pace of what it waits on. Owners: the position, and `of_capacity` for the babysitter (the plan's T3).
+- **Decider:** the structure keeper, or the unit owner inside a delegated unit.
+- It is not chatty's `receiver_flood` (§2.10), which counts how many turns typed-in text starts per hour. This rule reads what those turns come to.
+
+#### 2.31 Review rounds — `ap.review-rounds@0`
+
+*v0 (2026-11-24), built: `bin/of_diagnose_rules.py` (`rule_review_rounds`). Its lever is the plan's T4. PR 475 drew four "Verdict: changes" from 2026-11-20 to 24 (the plan).*
+
+- **What it reads:** each merged pull request's verdicts. A GitHub work record keeps them as `verdicts`: each comment's "Verdict: approve|changes" line with its "Position:" line (`of_github.verdicts`).
+- **Fires** per author and reviewer when the reviewer gave `changes_rounds_gte` (3) or more "changes" verdicts on each of `long_reviews_gte` (2) pull requests merged in the window. A position's verdicts on its own pull request do not count.
+- **Blocked** (`wr.verdicts`) when no work record merged in the window carries verdicts. That is a store with no GitHub import, such as the agent host's, or an organization whose reviews write no verdict comments.
+- **Not recorded yet:** the points each verdict names. With them, the rule could tell a round that repeats earlier points (the author did not fix them) from one with new points (the reviewer did not name every point in one pass). `of_github` keeps only the verdict and the reviewer today.
+- **The reading and where it is taken:** the code host's comments, imported on the machine that runs `of import github` (the laptop, for the OF team). The agent host's store holds none, so v0 has a result only in `lab-drift-v0`.
+- **Remedies and their owners:**
+  - the author runs a Codex pre-review and its own tests before asking for review;
+  - the reviewer names every blocking point in one pass.
+
+  Owners: the author and the reviewer, and `of_release` for the review rules.
+
+#### 2.32 Context far above its organization's — specified, waits on its input
+
+*Specified 2026-11-24, not built.*
+
+- **What it finds:** positions whose cache reads per response stand far above their organization's on the same day.
+- **Fires** at `k` times the organization's median, above a floor of tokens.
+- **Input:** `of.spend_hours`, the one spend event that reaches every organization's store, carrying each row's cache reads and its largest context per response. It was asked of `of_capacity` (message `01a20e3b-8dca`) beside its T0 hand-over `f4fb0959`. Its rows carry fresh tokens, cost and responses today.
+- **Remedy:** the plan's T5, a fresh start at a natural end of the work (`of capacity move --restart`), chosen by the position or its keeper. Nothing is cut or forced (the founder's answer on card `OF-31`). Owner: `of_capacity`.
+
 ## 3. Ranking: expected ΔT per minute of the owner's time
 
 score = *p* · (ΔT_direct + *v_c* · Δ*m_c* − *C_r*) / *m_decide*
