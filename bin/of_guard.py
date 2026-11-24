@@ -1036,7 +1036,7 @@ _CODE_REMOVES = re.compile(r"\bos\.(?:unlink|remove|removedirs|rmdir|rename|rena
 _CODE_WRITE_RE = re.compile(r"""\.open\s*\(\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|"""
                          r"""open\s*\(.*?,\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|open\s*\([^,]*,\s*['"]\s*\+?>|\bmode\s*=\s*['"][rbt]*[wax+]|write_text|"""
                          r"""write_bytes|(?<!sys\.stdout)(?<!sys\.stderr)\.write\s*\(|\bdump\s*\(|"""
-                         r"""os\.(?:replace|rename|remove|unlink|truncate|symlink|link)|"""
+                         r"""os\.(?:replace|rename|remove|unlink|truncate)|\bos\.(?:symlink|link)\s*\(|"""
                          r"""shutil\.|\.unlink\s*\(|\.touch\s*\(|\.rename\s*\(|File\.(?:write|delete|rename)|"""
                          r"""File\.open\s*\(.*?,\s*['"][rbt]*[wa+]|"""
                          r"""FileUtils\.|fs\.(?:write|append|rename|unlink|rm|copy)|writeFile|appendFile|"""
@@ -1045,16 +1045,23 @@ _OS_OPEN = re.compile(r"\bos\.open\s*\(")
 _OS_OPEN_FLAGS = re.compile(r"\bO_(?:WRONLY|RDWR|CREAT|TRUNC|APPEND)\b")
 
 
-_DEST_CALL = re.compile(r"\b(?:copy\w*|move|rename|renames|replace|symlink|link)\s*\(")
+_DEST_CALL = re.compile(r"(?:\b(?:os|shutil)\.(?:copy\w*|move|rename|renames|replace|symlink|link)|"
+                        r"(?<![.\w])(?:copy\w*|move|rename|renames|symlink|link))\s*\(")   # never a str's replace()
 
 
-def _call_args(code, start):
-    """The top-level arguments of the call whose '(' ends at START, as text: quotes and comments kept whole."""
+def _call_args(code, start, limit=4000):
+    """The top-level arguments of the call whose '(' ends at START, as text: quotes and comments kept whole, read
+    for at most LIMIT characters."""
     args, cur, depth, k, quote = [], [], 1, start, None
-    while k < len(code) and depth:
+    end = min(len(code), start + limit)
+    while k < end and depth:
         ch = code[k]
         if quote:
-            quote = None if ch == quote and code[k - 1] != "\\" else quote
+            if ch == "\\":
+                cur.append(code[k:k + 2])
+                k += 2
+                continue
+            quote = None if ch == quote else quote
         elif ch == "#":
             nl = code.find("\n", k)
             k = len(code) if nl < 0 else nl
@@ -1085,7 +1092,7 @@ def _dest_names(code):
     for m in _DEST_CALL.finditer(code):
         args = _call_args(code, m.end())
         if len(args) > 1:
-            lit = re.fullmatch(r"(?:(?:dst|dest|target)\s*=\s*)?(['\"])([^'\"\n]+)\1", args[1])
+            lit = re.fullmatch(r"(?:(?:dst|dest|target)\s*=\s*)?(['\"])((?:(?!\1)[^\n\\]|\\.)+)\1", args[1])
             if lit:
                 out.add(lit.group(2))
     return out
@@ -1099,7 +1106,10 @@ def _os_open_writes(code):
         while k < len(code) and depth:
             ch = code[k]
             if quote:
-                quote = None if ch == quote and code[k - 1] != "\\" else quote
+                if ch == "\\":   # an escape takes the next character, an escaped backslash included (of_review, 629)
+                    k += 2
+                    continue
+                quote = None if ch == quote else quote
             elif ch == "#":   # a comment runs to its line's end: its ')' ends no call (of_review on PR 629)
                 nl = code.find("\n", k)
                 k = len(code) if nl < 0 else nl
@@ -1111,7 +1121,7 @@ def _os_open_writes(code):
             elif ch == ")":
                 depth -= 1
             k += 1
-        if _OS_OPEN_FLAGS.search(code[m.end():k]):
+        if _OS_OPEN_FLAGS.search(re.sub(r"#[^\n]*", "", code[m.end():k])):
             return m
     return None
 
