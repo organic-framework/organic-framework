@@ -492,26 +492,30 @@ def report_codex_session(hook, env=None, run=None):
     return argv
 
 
-def report_claude_fork(hook, env=None, call=None, sleep=None, tries=3):
+def report_claude_fork(hook, env=None, call=None, sleep=None, tries=3, isfile=None):
     """Tell herdr the Claude Code session a fork started in this pane. herdr 0.9.5 lets a Claude report replace the
     pane's session only for clear, resume or compact (src/terminal/state.rs, session_report_allows_session_replacement):
     herdr's own hook sends a fork, the server drops it, and the pane keeps the old session, so the relay sees no holder
     (of_agent-server on the agent host, 2026-11-24, of_herdr; the upstream issue waits on the founder's card OF-420;
     remove this when herdr takes a fork). The same report as herdr's, given as resume. herdr records a dropped report's
     seq too, so the pane is read back and the report sent again with a newer seq while it still names another session.
-    Only on a fork, in a herdr pane, with a transcript, never for a subagent; a short budget, every failure ignored.
-    Returns the number of reports sent."""
+    Only on a fork, in a herdr pane, never for a subagent, and only once the transcript file is there: Claude Code's
+    daemon also starts empty background sessions that inherit the pane's HERDR_PANE_ID and never get a transcript
+    (of_platform's review; of_capacity's reading on the agent host, 2026-11-24), and one of them must never take the
+    pane. A short budget, every failure ignored. Returns the number of reports sent."""
     env = os.environ if env is None else env
     sid, pane = hook.get("session_id"), env.get("HERDR_PANE_ID")
     if hook.get("source") != "fork" or hook.get("agent_id") or not sid or not hook.get("transcript_path"):
         return 0
     if env.get("HERDR_ENV") != "1" or not pane or not env.get("HERDR_SOCKET_PATH"):
         return 0
-    call, sleep = call or herdr_call, sleep or time.sleep
+    call, sleep, isfile = call or herdr_call, sleep or time.sleep, isfile or os.path.isfile
     sent = 0
     try:
         for _ in range(tries):
             sleep(0.25)   # herdr's own report of the fork lands first, and its seq with it
+            if not isfile(str(hook["transcript_path"])):
+                continue  # not yet written, or a background session's, which never is
             call("pane.report_agent_session", {"pane_id": pane, "source": "herdr:claude", "agent": "claude",
                                                "seq": time.time_ns(), "agent_session_id": str(sid),
                                                "agent_session_path": str(hook["transcript_path"]),

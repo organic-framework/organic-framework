@@ -14,7 +14,7 @@ HOOK = {"session_id": "S2", "source": "fork", "transcript_path": "/home/alex/.cl
 
 
 class ClaudeForkToHerdr(unittest.TestCase):
-    def run_it(self, hook, env=ENV, panes=("S1", "S2"), fail=False):
+    def run_it(self, hook, env=ENV, panes=("S1", "S2"), fail=False, files=None):
         calls, seen = [], list(panes)
 
         def call(method, params):
@@ -25,8 +25,19 @@ class ClaudeForkToHerdr(unittest.TestCase):
                 value = seen.pop(0) if seen else "S2"
                 return {"id": "x", "result": {"type": "pane_info", "pane": {"agent_session": {"value": value}}}}
             return {"id": "x", "result": {}}
-        sent = of_hook.report_claude_fork(hook, env=env, call=call, sleep=lambda s: None)
+        files = [True] * 9 if files is None else list(files)
+        sent = of_hook.report_claude_fork(hook, env=env, call=call, sleep=lambda s: None,
+                                          isfile=lambda path: files.pop(0) if files else False)
         return sent, calls
+
+    def test_a_session_with_no_transcript_file_is_never_reported(self):
+        """of_platform's review: a background session inherits the pane and never gets a transcript."""
+        sent, calls = self.run_it(HOOK, files=[False] * 9)
+        self.assertEqual((sent, calls), (0, []))
+
+    def test_a_transcript_written_late_is_waited_for(self):
+        sent, calls = self.run_it(HOOK, panes=("S2",), files=[False, True])
+        self.assertEqual(sent, 1)
 
     def test_a_fork_is_reported_as_resume_until_herdr_names_it(self):
         sent, calls = self.run_it(HOOK)
