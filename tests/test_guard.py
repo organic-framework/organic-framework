@@ -1073,15 +1073,23 @@ class ParserSlipTest(unittest.TestCase):
         self.assertNotIn("ValueError", got[0])
 
     def test_a_quote_only_the_guard_lost_asks_for_a_report(self):
-        """A user organization's structure keeper, message 01a20975-02e4: an apostrophe in a comment opened a quote in
-        the guard's own reader, and a later quoted pipe split a stage; bash -n reads the text whole, so the reason must
-        not say bash stops there. It still denies: the guard could not read it."""
-        cmd = "# that sample's rc\nR='a | b'\necho \"$R\" > /tmp/out.txt\n"
-        got = of_guard.critical_deny("Bash", {"command": cmd}, "/tmp")
+        """PR 619's branch (of_review on PR 621: no test reached it after the comment fix): a quote the guard's reader
+        cannot close, while bash reads the text whole; the reader's failure is made here, since every form found that
+        reached it is now read."""
+        from unittest import mock
+        cmd = "echo plain > /tmp/out.txt\n"
         if of_guard._bash_reads_whole(cmd) is None:
             self.skipTest("no bash here to tell")
+        with mock.patch.object(of_guard, "_tokens", side_effect=ValueError("No closing quotation")):
+            got = of_guard.critical_deny("Bash", {"command": cmd}, "/tmp")
         self.assertTrue(got and "though bash reads the command whole" in got[0] and "report it" in got[0], got)
-        self.assertNotIn("bash would stop", got[0])
+
+    def test_an_apostrophe_in_a_comment_is_read_as_bash_reads_it(self):
+        """A user organization's structure keeper, message 01a20975-02e4: an apostrophe in a comment opened a quote in
+        the guard's own reader, and a later quoted pipe split a stage, so a command bash reads whole was denied as
+        unreadable. _split now reads the comment as bash does (G-parse, hand-over 6f336a7c), and the command passes."""
+        cmd = "# that sample's rc\nR='a | b'\necho \"$R\" > /tmp/out.txt\n"
+        self.assertIsNone(of_guard.critical_deny("Bash", {"command": cmd}, "/tmp"))
 
     def test_a_bench_value_that_is_no_path_is_unreadable(self):
         """of_review on PR 575: a value that raised in the Bench reader dropped the shell's write rules for that call;

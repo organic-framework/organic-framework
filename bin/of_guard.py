@@ -10,6 +10,7 @@ turn their verdicts into the hook's output and of.mandate_check events. Tests: t
 
 import ast
 import errno
+import functools
 import os
 import re
 import shlex
@@ -1105,6 +1106,140 @@ def _code_deny(code, lang=None):
     return None
 
 
+_META = " \t\n;&|()<>"   # bash's metacharacters: a word starts after one (a carriage return is a word's character)
+_HERE_WORD = re.compile(r"<<(-?)[ \t]*(\\?)(['\"]?)([^\s;&|<>()'\"]+)\3")
+
+
+@functools.lru_cache(maxsize=256)
+def _comment_spans(text):
+    """{start: end} of every comment in TEXT as bash reads one, the one rule _scan, _split and _strip_comments all take
+    (hand-over 6f336a7c and 03375da4): a `#` that starts a word, outside quotes, in a command (the line, a $( ) body or
+    a backtick substitution) and never inside a parameter expansion ${ … } or arithmetic $(( … )); a word starts after
+    a metacharacter (blank, tab, newline, ; & | ( ) < >), at the text's start and right after a $( or an opening
+    backtick, while a carriage return, an escaped character and a quote are a word's. A comment ends before its line's
+    newline, or, inside a backtick substitution, before the closing backtick when that comes first. A heredoc's body
+    holds none. END is the index of the newline or backtick that ends it (the text's length at its end)."""
+    out, n, i = {}, len(text), 0
+    frames = [["cmd", False, False, 0]]   # [kind, single, double, parens]; kinds: cmd, sub ($( )), back, param, arith
+    start = True
+    here, bodies = [], []
+    while i < n:
+        f = frames[-1]
+        kind, single, double = f[0], f[1], f[2]
+        c = text[i]
+        if c == "\n" and bodies and not single and not double:
+            i += 1   # a heredoc's body: its lines up to its last, none of them read for comments
+            while bodies and i <= n:
+                word, dash = bodies.pop(0)
+                while i < n:
+                    e = text.find("\n", i)
+                    e = n if e < 0 else e
+                    line, i = text[i:e], e + 1
+                    if (line.lstrip("\t") if dash else line) == word:
+                        break
+            start = True
+            continue
+        if single:
+            if c == "'":
+                f[1] = False
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            i += 2
+            start = False
+            continue
+        if double:
+            if c == '"':
+                f[2] = False
+            elif text.startswith("$(", i) and not text.startswith("$((", i):
+                frames.append(["sub", False, False, 0])
+                i += 2
+                start = True
+                continue
+            elif text.startswith("${", i):
+                frames.append(["param", False, False, 0])
+                i += 2
+                continue
+            elif c == "`":
+                if kind == "back":
+                    frames.pop()
+                else:
+                    frames.append(["back", False, False, 0])
+                    start = True
+                    i += 1
+                    continue
+            i += 1
+            continue
+        if c == "#" and start and kind in ("cmd", "sub", "back"):
+            e = text.find("\n", i)
+            e = n if e < 0 else e
+            if kind == "back":
+                k = text.find("`", i)
+                e = k if 0 <= k < e else e
+            out[i] = e
+            i = e
+            continue
+        if c == "'":
+            f[1] = True
+            start = False
+        elif c == '"':
+            f[2] = True
+            start = False
+        elif text.startswith("$((", i):
+            frames.append(["arith", False, False, 0])
+            i += 3
+            start = False
+            continue
+        elif text.startswith("$(", i):
+            frames.append(["sub", False, False, 0])
+            i += 2
+            start = True
+            continue
+        elif text.startswith("${", i):
+            frames.append(["param", False, False, 0])
+            i += 2
+            start = False
+            continue
+        elif c == "`":
+            if kind == "back":
+                frames.pop()
+                start = False
+            else:
+                frames.append(["back", False, False, 0])
+                start = True
+            i += 1
+            continue
+        elif kind == "param" and c == "}":
+            frames.pop()
+            start = False
+        elif kind == "arith" and text.startswith("))", i):
+            frames.pop()
+            i += 2
+            start = False
+            continue
+        elif kind == "sub" and c == "(":
+            f[3] += 1
+            start = True
+        elif kind == "sub" and c == ")":
+            if f[3]:
+                f[3] -= 1
+            else:
+                frames.pop()
+            start = True
+        elif kind in ("cmd", "sub", "back") and text.startswith("<<", i) and not text.startswith("<<<", i) \
+                and text[i - 1:i] != "<":
+            m = _HERE_WORD.match(text, i)
+            if m and re.search(r"(?m)^" + (r"\t*" if m.group(1) else "") + re.escape(m.group(4)) + r"$", text[i:]):
+                bodies.append((m.group(4), bool(m.group(1))))
+            i += 2
+            start = True
+            continue
+        else:
+            start = kind in ("cmd", "sub", "back") and c in _META
+        i += 1
+    return out
+
+
 def _scan(text, i=0, nested=False):
     """One pass over a command line as the shell reads it, with quotes tracked. Returns
     (the line with heredoc bodies cut and each $( ) / backtick replaced by a placeholder,
@@ -1115,7 +1250,11 @@ def _scan(text, i=0, nested=False):
     n, out, subs, docs, pending = len(text), [], [], [], []
     single = double = False
     depth = 0
+    spans = _comment_spans(text)   # a comment holds no quote and no substitution (hand-over 03375da4)
     while i < n:
+        if i in spans:
+            i = spans[i]
+            continue
         c = text[i]
         if c == "\n" and pending and not single and not double:
             out.append(c)
@@ -1749,27 +1888,11 @@ def _wget_deny(args):
 def _strip_comments(text):
     """The line without its comments, as bash reads them: `#` starts one only at the start of a word, outside quotes.
     shlex took a `#` inside a word for one, so `cat a#b <secret>` read as `cat a` (G0.7, 2026-11-14)."""
-    out, i, n, single, double, start = [], 0, len(text), False, False, True
-    while i < n:
-        c = text[i]
-        if c == "\\" and not single and i + 1 < n:  # an escaped character, a blank too, belongs to the word
-            out.append(text[i:i + 2])               # (`a\ #b` is one word; of_review on organic-framework PR 178)
-            i += 2
-            start = False
-            continue
-        if c == "#" and start and not single and not double:
-            j = text.find("\n", i)
-            if j < 0:
-                break
-            i = j
-            continue
-        if c == "'" and not double:
-            single = not single
-        elif c == '"' and not single:
-            double = not double
-        start = not single and not double and c in " \t\r\n;&|()"
-        out.append(c)
-        i += 1
+    spans, out, i = _comment_spans(text), [], 0
+    for start in sorted(spans):
+        out.append(text[i:start])
+        i = spans[start]
+    out.append(text[i:])
     return "".join(out)
 
 
@@ -1818,7 +1941,11 @@ def _split(text, ops=None):
         elif sep is not None and pending[0] not in ("&&", "||"):
             pending[0] = sep
 
+    spans = _comment_spans(text)   # where bash's comments are, one rule for every reader (hand-over 03375da4)
     while i < n:
+        if i in spans:
+            i = spans[i]   # a comment: what bash runs goes on at its newline (or its substitution's backtick)
+            continue
         c = text[i]
         if single:
             buf.append(c)
@@ -1849,6 +1976,9 @@ def _split(text, ops=None):
             brace = c == "{"
             j, d, s2, d2, pd = i + 1, 1, False, False, 0
             while j < n and d:
+                if j in spans:
+                    j = spans[j]   # a comment inside the group: no quote or bracket opens in it
+                    continue
                 cc = text[j]
                 if s2:
                     s2 = cc != "'"
