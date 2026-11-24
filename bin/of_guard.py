@@ -306,6 +306,24 @@ def _secret_path(p):
             or _env_file(q) or _kube_config(q) or (n is not None and _secret_path(n)))
 
 
+def _opener_folder(opener):
+    """The folder a heredoc's opener runs in: the session's, moved by each `cd <folder>` before it on its line."""
+    here = _DENY_CWD[0]
+    try:
+        segs = _segments(opener)
+    except ValueError:
+        return here
+    for seg in segs[:-1]:
+        try:
+            ws = _command_words(seg)
+        except (ValueError, IndexError):
+            continue
+        if ws and ws[0] == "cd" and len(ws) > 1 and ws[1] != "-":
+            to = _expanduser(ws[1])
+            here = to if os.path.isabs(to) else os.path.join(here or ".", to)
+    return here
+
+
 def _in_folder(here, fn, *a):
     """FN(*A) judged with the session's folder set to HERE, the folder the line moved to; then set back."""
     if not isinstance(here, str) or here == MAYBE_HOME:
@@ -1003,7 +1021,11 @@ def connector_deny(tool, excluded):
 # (of_review and of_secrets-review on organic-framework PR 387: python's open(…, 'a').write, ruby -e, node -e)
 # `.write(` is a write but for sys.stdout and sys.stderr, which print (of_review's note on organic-framework PR 410):
 # a handle may come from Path.open('w'), os.open, a mode held in a name, a node stream (of_secrets-review on PR 413)
-_CODE_WRITE = re.compile(r"""open\s*\(.*?,\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|open\s*\([^,]*,\s*['"]\s*\+?>|\bmode\s*=\s*['"][rbt]*[wax+]|write_text|"""
+_CODE_REMOVES = re.compile(r"\bos\.(?:unlink|remove|removedirs|rmdir|rename|renames|replace|symlink|link)\s*\(|"
+                           r"\bshutil\.(?:rmtree|move)\s*\(|\.(?:unlink|rmdir|symlink_to|hardlink_to)\s*\(|"
+                           r"\bFile\.(?:delete|unlink|symlink|rename)|\bunlink\s*\(|\bFileUtils\.(?:rm|ln|mv)")
+_CODE_WRITE = re.compile(r"""\.open\s*\(\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|\bO_(?:WRONLY|RDWR|CREAT|TRUNC|APPEND)\b|"""
+                         r"""open\s*\(.*?,\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|open\s*\([^,]*,\s*['"]\s*\+?>|\bmode\s*=\s*['"][rbt]*[wax+]|write_text|"""
                          r"""write_bytes|(?<!sys\.stdout)(?<!sys\.stderr)\.write\s*\(|\bdump\s*\(|"""
                          r"""os\.(?:replace|rename|remove|unlink|truncate)|"""
                          r"""shutil\.|\.unlink\s*\(|\.touch\s*\(|\.rename\s*\(|File\.(?:write|delete|rename)|"""
@@ -1069,9 +1091,10 @@ def _code_deny(code, lang=None):
         if _CODE_WRITE.search(code) else None   # G34 in code: a write into the forward's folder (of_review on PR 397)
     if fwd:
         return FORWARD_DENY, fwd
+    gone = bool(_CODE_REMOVES.search(code))   # a removal or a link judges a name by itself (of_review on PR 629)
     live = next((l for l in lits if not re.search(r"\s", l.strip()) and l.strip().lstrip("<>+|& ")
                  and (l.strip().lstrip("<>+|& ").startswith(("/", "~", "$")) or _DENY_CWD[0])
-                 and _in_live(l.strip().lstrip("<>+|& "), _live_box(), _DENY_CWD[0])), None) \
+                 and _in_live(l.strip().lstrip("<>+|& "), _live_box(), _DENY_CWD[0], gone)), None) \
         if _CODE_WRITE.search(code) else None   # G40 in code: a write into OF's live checkout (PR 629's review)
     if live:
         return LIVE_DENY, live
@@ -4747,6 +4770,50 @@ def _live_box():
     return {p.casefold() for p in _live_box_real()}
 
 
+def _ln_targets(args, cwd):
+    """(path, removal) for what ln makes or replaces: a link already at the destination is replaced (with -n, -h or
+    -F, or when it leads to no folder), so it counts as removed, by its own name and by where it led; a folder gets a
+    new name inside it (of_review on PR 629 and PR 631: `ln -sf x <checkout>/docs/reference`, `ln -sfn x <the
+    interpreter's opt link>`)."""
+    flags = "".join(a[1:] for a in args if a.startswith("-") and not a.startswith("--"))
+    nofollow = bool(set(flags) & set("nhF")) or "--no-dereference" in args
+    ops = [a for a in args if not a.startswith("-")]
+    if not ops:
+        return []
+    if len(ops) == 1:
+        return [(os.path.join(cwd or ".", os.path.basename(ops[0].rstrip("/"))), False)]
+    dest = _expanduser(ops[-1].strip("'\""))
+    d = dest if os.path.isabs(dest) else os.path.join(cwd or ".", dest)
+    if os.path.islink(d) and (nofollow or not os.path.isdir(d)):
+        return [(d, True)]
+    if os.path.isdir(d):
+        return [(os.path.join(d, os.path.basename(x.rstrip("/"))), False) for x in ops[:-1]]
+    return [(d, False)]
+
+
+def _box_write(head, args, cwd, files, removal, shvars, inbox):
+    """The first thing one simple command writes, links or removes for which INBOX(path, cwd, removal) holds, read as
+    G34 reads a write; the words with the line's variables filled in (`D=<folder>; touch $D/x`, `-d"$dest"`)."""
+    args = [_expand_vars(a, shvars or {}) for a in args]
+    hit = next((t for t in _tree_targets(head, args, cwd) if inbox(t, cwd, True)), None) or \
+        next((f for f in files if inbox(f, cwd, removal)), None)
+    if not hit and head == "ln":
+        hit = next((t for t, rem in _ln_targets(args, cwd) if inbox(t, cwd, rem)), None)
+    if not hit and head in _LIVE_WRITE_HEADS:
+        hit = next((a for a in _live_operands(head, args) if inbox(a, cwd, head in ("rmdir", "shred"))), None)
+    if not hit and head == "git":   # a file git writes by name lands where it says (`diff --output=<folder>/x`)
+        dirs, sub, rest = _git_targets(args)
+        where = cwd or "."
+        for opt, w in dirs:
+            if opt == "-C":
+                where = os.path.join(where, _expanduser(w.strip("'\"")))
+        if not ((sub or "").lower() == "config" and any(a in ("--get", "--get-all", "--get-regexp", "--list", "-l",
+                                                              "--get-urlmatch") for a in rest)):
+            hit = next((o for o in _git_outputs((sub or "").lower(), rest)
+                        if o and inbox(_expanduser(o.strip("'\"")), where, False)), None)
+    return hit
+
+
 def _live_agent(path, cwd=None):
     """Does PATH name an OF launchd agent's plist, one there or a new name under LIVE_AGENTS? launchd loads every plist
     in that folder at the next login, outside any session (of_review on PR 629)."""
@@ -4757,10 +4824,13 @@ def _live_agent(path, cwd=None):
     if not p.startswith(("/", "~", "$")) and cwd:
         p = os.path.join(cwd, p)
     p = _expanduser(p)
-    named = os.path.join(os.path.realpath(os.path.dirname(p)), os.path.basename(p)).casefold()
-    pat = os.path.join(os.path.realpath(os.path.dirname(_expanduser(LIVE_AGENTS))),
-                       os.path.basename(LIVE_AGENTS)).casefold()
-    return fnmatch.fnmatchcase(named, pat) or fnmatch.fnmatchcase(os.path.realpath(p).casefold(), pat)
+    agents = os.path.realpath(os.path.dirname(_expanduser(LIVE_AGENTS))).casefold()
+    name = os.path.basename(LIVE_AGENTS).casefold()
+    for q in (os.path.join(os.path.realpath(os.path.dirname(p)), os.path.basename(p)), os.path.realpath(p)):
+        q = q.casefold()
+        if os.path.dirname(q) == agents and fnmatch.fnmatchcase(os.path.basename(q), name):
+            return True   # the name alone matched, so `*` never spans a folder (of_review on PR 629)
+    return False
 
 
 def _in_live(path, box, cwd=None, removal=False):
@@ -4793,11 +4863,7 @@ def _live_write(head, args, cwd, files, removal, env=None, shvars=None):
     if _REMOTE_BODY[0]:
         return None
     box = _live_box()
-    hit = next((t for t in _tree_targets(head, args, cwd) if _in_folders(t, box, cwd, removal=True)), None) or \
-        next((f for f in files if _in_live(f, box, cwd, removal)), None)
-    if not hit and head in _LIVE_WRITE_HEADS:
-        hit = next((a for a in _live_operands(head, [_expand_vars(a, shvars) for a in args])
-                    if _in_live(a, box, cwd, removal=head in ("rmdir", "shred"))), None)
+    hit = _box_write(head, args, cwd, files, removal, shvars, lambda p, c, r: _in_live(p, box, c, r))
     if not hit and head == "git":
         hit = _live_git(args, cwd, env or {}, shvars)
     return (LIVE_DENY, hit) if hit else None
@@ -4845,7 +4911,7 @@ def _live_git(args, cwd, env, shvars):
     reads_config = sub == "config" and any(a in ("--get", "--get-all", "--get-regexp", "--list", "-l",
                                                  "--get-urlmatch") for a in rest)
     out = None if reads_config else \
-        next((o for o in _git_outputs(sub, rest) if o and _in_folders(_expanduser(o.strip("'\"")), box, where)), None)
+        next((o for o in _git_outputs(sub, rest) if o and _in_live(_expanduser(o.strip("'\"")), box, where)), None)
     if out:
         return out
     hit = next((c for c in cands if _in_folders(c, _live_box(), cwd)), None)
@@ -5197,16 +5263,20 @@ def _tree_targets(head, args, cwd):
                 return [a.split("=", 1)[1]]
         return [cwd or "."]
     if head == "unzip":
-        # its flags only: an attached -d value is a folder, never letters (`-d/x/live`'s l is no listing; of_review)
-        short = "".join(a[1:] for a in args if a.startswith("-") and not a.startswith("--") and not a.startswith("-d"))
-        if set(short) & set("ltvZpz"):  # list, test, verbose, zipinfo, to stdout, comment: nothing is written
-            return []
+        # its flags, read as unzip groups them: in a cluster the letters before a d are flags and the rest is the
+        # folder (`-d/x/live`, `-qd/x/live`, `-qd /x/live`), never letters (of_review on PR 629)
+        flags, folder = "", None
         for i, a in enumerate(args):
-            if a == "-d" and i + 1 < len(args):
-                return [args[i + 1]]
-            if a.startswith("-d") and len(a) > 2:
-                return [a[2:]]
-        return [cwd or "."]
+            if a.startswith("-") and not a.startswith("--") and folder is None:
+                k = a.find("d", 1)
+                if k > 0:
+                    flags += a[1:k]
+                    folder = a[k + 1:] or (args[i + 1] if i + 1 < len(args) else None)
+                    continue
+                flags += a[1:]
+        if set(flags) & set("ltvZpz"):  # list, test, verbose, zipinfo, to stdout, comment: nothing is written
+            return []
+        return [folder] if folder else [cwd or "."]
     return []
 
 
@@ -6092,7 +6162,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             named = _code_runs_protected(body, _DENY_CWD[0]) if not hit and _ORG_PROTECTION["code"] else None
             hit = hit or ((PROTECTED_RUN_DENY, named) if named else None)
         elif head in _INTERPRETERS or remote == "code":
-            hit = _code_deny(body, lang)
+            hit = _in_folder(_opener_folder(opener), _code_deny, body, lang)   # in its line's folder (G40)
         elif not quoted:  # an unquoted delimiter runs $( ) in the body, whatever reads it
             hit = next(filter(None, (_bash_deny(s, depth + 1) for s in _scan(body)[1])), None)
             if not hit and (head == "tee" or (head == "cat" and ">" not in opener)):  # printed to stdout
@@ -6140,8 +6210,8 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 named = _text_names_protected(stext, here21)
                 if named:
                     return PROTECTED_RUN_DENY, named
-            if kind == "sub":
-                hit = _bash_deny(stext, depth + 1, reaches_agent=reaches_agent and idx == last)
+            if kind == "sub":   # a ( ) group runs in the folder the line moved to (of_review on PR 629)
+                hit = _in_folder(here21, _bash_deny, stext, depth + 1, reaches_agent and idx == last)
                 if hit:
                     return hit
                 continue
@@ -6959,7 +7029,11 @@ def critical_deny(tool, tool_input, cwd=None, caller=None):
         return FORWARD_DENY, str(ti["pattern"])
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and _launch_file(path, cwd):
         return LAUNCH_DENY, path
-    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _in_live(str(path), _live_box(), cwd):
+    # a link counts by its own name too: Codex's Delete File reaches the guard as an Edit (of_review on PR 629)
+    linked = bool(path) and os.path.islink(_expanduser(str(path)) if os.path.isabs(_expanduser(str(path)))
+                                           else os.path.join(cwd or ".", str(path)))
+    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and \
+            _in_live(str(path), _live_box(), cwd, linked):
         return LIVE_DENY, path   # G40
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _in_session_index(path, cwd):  # G36
         if SESSION_INDEX_MODE == "deny":

@@ -1025,6 +1025,28 @@ class LiveCheckoutTest(unittest.TestCase):
         self.assertEqual(of_guard.LIVE_DIR, getattr(of_live, "LIVE_DIR", "~" + of_live.LIVE[len(os.path.expanduser("~")):]
                                                     if of_live.LIVE.startswith(os.path.expanduser("~")) else of_live.LIVE))
 
+    def test_the_forms_of_the_third_pass(self):
+        """of_review on PR 629 at ee37724 (Codex's pass): a heredoc and a group after a cd, a grouped -qd, a -d through a
+        variable, a link inside replaced or removed from code, a new plist named by a git output."""
+        live = self.live
+        outside = os.path.join(self.tmp.name, "outside.txt")
+        open(outside, "w").close()
+        os.makedirs(os.path.join(live, "docs"))
+        os.symlink(outside, os.path.join(live, "docs/reference"))
+        for cmd in (f"cd {live} && python3 <<'EOF'\nopen('bin/x.py', 'w').write('')\nEOF",
+                    f"cd {live} && (python3 -c \"open('bin/x.py','w').write('')\")",
+                    f"unzip -o /tmp/x.zip -qd{live}", f"dest={live}; unzip -o /tmp/x.zip -d\"$dest\"",
+                    f"ln -sf /tmp/evil.py {live}/docs/reference",
+                    f"python3 -c \"import os; os.unlink('{live}/docs/reference')\"",
+                    "git -C /tmp/repo diff --output=~/Library/LaunchAgents/dev.organic-framework.new.plist"):
+            self.assertTrue(self.deny(cmd), cmd)
+        got = of_guard.critical_deny("Edit", {"file_path": f"{live}/docs/reference", "old_string": "a",
+                                              "new_string": "b"}, "/tmp")   # Codex's Delete File reaches us so
+        self.assertTrue(got and "live checkout" in got[0])
+        for cmd in ("unzip -l /tmp/x.zip", "echo x > ~/Library/LaunchAgents/dev.organic-framework.a/b.plist",
+                    f"rm {outside}", "python3 -c \"s=open('docs/a.md').read(); open('docs/a.md','w').write(s.replace('x','y'))\""):
+            self.assertFalse(self.deny(cmd), cmd)
+
     def test_the_forms_of_the_second_pass(self):
         """of_review, private, on PR 629: an attached unzip -d, a link inside removed by itself, a new OF plist, a
         wrapper's folder never the box, and a relative path in code after a cd there."""
