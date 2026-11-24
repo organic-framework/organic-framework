@@ -4842,7 +4842,10 @@ def _live_git(args, cwd, env, shvars):
     # a file git writes by name lands where it says, wherever git runs: `diff --output=<live>/x` writes there too
     # (of_secrets-review on PR 629)
     box = _live_box()
-    out = next((o for o in _git_outputs(sub, rest) if o and _in_folders(_expanduser(o.strip("'\"")), box, where)), None)
+    reads_config = sub == "config" and any(a in ("--get", "--get-all", "--get-regexp", "--list", "-l",
+                                                 "--get-urlmatch") for a in rest)
+    out = None if reads_config else \
+        next((o for o in _git_outputs(sub, rest) if o and _in_folders(_expanduser(o.strip("'\"")), box, where)), None)
     if out:
         return out
     hit = next((c for c in cands if _in_folders(c, _live_box(), cwd)), None)
