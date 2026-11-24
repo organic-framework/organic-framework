@@ -812,8 +812,8 @@ def handle(event, hook):
         prompt = hook.get("prompt") or ""
         if DENY_SECRETS_FLAG:  # gated on --deny-secrets (the whole secrets policy rides one flag)
             _mention_guard(prompt, hook, sess, index)  # block an @mention of a secret path before it is read
+        _disarm_deadline()   # first: an alarm between the two would otherwise drop the block and refuse nothing
         GUARD_DECIDED = True   # the prompt's guard has answered: a later failure here records less, refuses nothing
-        _disarm_deadline()
         origin = prompt_origin(prompt, hook)
         mark = _injected(sid, prompt) if origin == "human" else None
         if origin == "human" and not mark:  # a declared tool's text is settled by its mark; else ask the transcript
