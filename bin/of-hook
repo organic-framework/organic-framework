@@ -30,7 +30,7 @@ def _note_failure(e, event):
                          f"{type(e).__name__}{said}\n".encode("utf-8", "replace"))
         finally:
             os.close(fd)
-    except Exception:  # noqa: BLE001 - the record never stands in the way of the deny
+    except BaseException:  # noqa: BLE001 - the record never stands in the way of the deny, its own text's failure included (of_review on PR 627)
         pass
 
 
@@ -46,10 +46,12 @@ try:
 except BaseException as e:  # noqa: BLE001 - the guard fails closed: a PreToolUse hook that cannot load or run exits 2
     # with its reason on stderr, which Claude Code and Codex both take as a block; this file is what the hooks run
     # (of_architect and of_secrets-review on organic-framework PR 469: a failed import here exited 1, and the call ran)
-    _note_failure(e, (sys.argv[1:2] or ["?"])[0])
     if sys.argv[1:2] == ["PreToolUse"]:
         sys.stderr.write(f"Organic Framework guard failed ({type(e).__name__}), so the call is denied until the guard "
                          "is fixed. Do not retry it another way; tell of_server, which keeps the guard\n")
-        sys.exit(2)
+        sys.stderr.flush()
+        _note_failure(e, "PreToolUse")   # after the deny is out: the record never stands in its way
+        os._exit(2)
+    _note_failure(e, (sys.argv[1:2] or ["?"])[0])
     raise
 sys.exit(code)
