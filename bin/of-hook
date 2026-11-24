@@ -9,6 +9,31 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+
+def _note_failure(e, event):
+    """The failure in OF's hook error log, so an outage leaves a record (of_review, 2026-11-24: the laptop-wide guard
+    failure left none). Written with no OF module, since a broken import may be the failure: a regular file of this
+    user's, one link, opened without following a link or waiting on a pipe. A code error's text, else its type only."""
+    try:
+        import stat as _st
+        import time as _t
+        d = os.environ.get("OF_STATE") or os.path.expanduser("~/.local/state/of")
+        fd = os.open(os.path.join(d, "hook-errors.log"), os.O_WRONLY | os.O_APPEND | os.O_CREAT
+                     | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0), 0o600)
+        try:
+            s = os.fstat(fd)
+            if not _st.S_ISREG(s.st_mode) or s.st_nlink > 1 or s.st_uid != os.getuid():
+                return
+            said = f": {str(e)[:160]}" if isinstance(e, (NameError, ImportError, SyntaxError, AttributeError)) else ""
+            os.write(fd, f"{_t.strftime('%Y-%m-%dT%H:%M:%SZ', _t.gmtime())} {event} launcher "
+                         f"{type(e).__name__}{said}\n".encode("utf-8", "replace"))
+        finally:
+            os.close(fd)
+    except Exception:  # noqa: BLE001 - the record never stands in the way of the deny
+        pass
+
+
 try:
     try:  # the same YAML parser as every other OF process here, before anything parses (bin/of_yaml.py); a machine
         # without PyYAML still runs the hook, any other failure denies below (of_server on organic-framework PR 572)
@@ -21,6 +46,7 @@ try:
 except BaseException as e:  # noqa: BLE001 - the guard fails closed: a PreToolUse hook that cannot load or run exits 2
     # with its reason on stderr, which Claude Code and Codex both take as a block; this file is what the hooks run
     # (of_architect and of_secrets-review on organic-framework PR 469: a failed import here exited 1, and the call ran)
+    _note_failure(e, (sys.argv[1:2] or ["?"])[0])
     if sys.argv[1:2] == ["PreToolUse"]:
         sys.stderr.write(f"Organic Framework guard failed ({type(e).__name__}), so the call is denied until the guard "
                          "is fixed. Do not retry it another way; tell of_server, which keeps the guard\n")
