@@ -185,8 +185,20 @@ GUARD_MATCHER = "Bash|Read|Grep|Glob|Edit|Write|MultiEdit|NotebookEdit"
 GUARD_MCP_MATCHER = "mcp__.*"  # G16 (of_server, 2026-11-11): MCP connectors and browser tools reach outside parties
 
 
-def with_hooks(settings, of_path=OF, deny_secrets=False, guard=False):
+def with_hooks(settings, of_path=OF, deny_secrets=False, guard=False, replace=()):
+    """SETTINGS with OF's hooks run by OF_PATH. REPLACE: other bin/of paths whose hooks go first, so a move to another
+    checkout (of live switch) leaves no hook of the old one running beside the new (of_secrets-review on PR 629)."""
     new = copy.deepcopy(settings)
+    for old in replace:
+        if old != of_path:
+            for event, groups in list((new.get("hooks") or {}).items()):
+                kept = [dict(g, hooks=[h for h in g.get("hooks") or [] if not _is_of(h.get("command"), old)])
+                        for g in groups]
+                kept = [g for g in kept if g["hooks"]]
+                if kept:
+                    new["hooks"][event] = kept
+                else:
+                    del new["hooks"][event]
     hooks = new.setdefault("hooks", {})
     wanted = [(e, None) for e in HOOK_EVENTS] + list(TOOL_HOOKS.items())
     if guard:  # the enforced critical denies run before the tool (a PreToolUse for every risky tool)
@@ -238,7 +250,8 @@ def without_hooks(settings, of_path=OF):
     return new
 
 
-def hooks(action, cfg_dir=None, yes=False, dry_run=False, of_path=OF, out=print, deny_secrets=False, guard=False):
+def hooks(action, cfg_dir=None, yes=False, dry_run=False, of_path=OF, out=print, deny_secrets=False, guard=False,
+          replace=()):
     path = os.path.join(config_dir(cfg_dir), "settings.json")
     try:
         with open(path) as fh:
@@ -246,7 +259,8 @@ def hooks(action, cfg_dir=None, yes=False, dry_run=False, of_path=OF, out=print,
         settings = json.loads(text) if text.strip() else {}
     except FileNotFoundError:
         text, settings = "", {}
-    new = with_hooks(settings, of_path, deny_secrets, guard) if action == "install" else without_hooks(settings, of_path)
+    new = with_hooks(settings, of_path, deny_secrets, guard, replace) if action == "install" \
+        else without_hooks(settings, of_path)
     if new == settings:
         out(f"{path}: nothing to change ({'already installed' if action == 'install' else 'not installed'})")
         return 0

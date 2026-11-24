@@ -9237,8 +9237,11 @@ def build_parser():
                     help="also add Claude Code deny rules for secret files and env dumps (RFC 0002 §4.1)")
     hk.add_argument("--guard", action="store_true",
                     help="also run the critical-deny guard before risky tools (PreToolUse; enforced)")
+    hk.add_argument("--replace", action="append", default=[], metavar="BIN_OF",
+                    help="install: first remove the hooks another checkout's bin/of runs (of live switch)")
     hk.set_defaults(fn=lambda a: __import__("of_init").hooks(a.action, a.config_dir, a.yes, a.dry_run,
-                                                             deny_secrets=a.deny_secrets, guard=a.guard))
+                                                             deny_secrets=a.deny_secrets, guard=a.guard,
+                                                             replace=a.replace))
     og = sub.add_parser("org", help="an organization's settings in this machine's orgs.yaml: show [<org>] | set <org> "
                         "hold on|off (`of apply` and the desk leave a held organization's panes alone) | set <org> path "
                         "<its repository's folder>")
