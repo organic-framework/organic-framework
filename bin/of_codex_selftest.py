@@ -5,7 +5,8 @@ machine's operator, outside any sandbox, against a position `of spawn` started (
   requirements   the managed requirements file holds Codex to OF's hooks, the guard's among them
   credentials    a canary in each folder the position's profile denies is unreadable from inside its sandbox
   checkout       OF's bin folder, which its hooks run, takes no write from inside its sandbox
-  door           of who and of inbox --mine answer through its door; of db stats is refused there
+  door           its door refuses a process that is no child of its Codex, and served the position's own
+                 of status (its state declared under its session)
   guard          the hook, given a Codex call that reads a key, denies it
   store          its session's start, its first prompt (the brief), a turn's end and its rollout with a tool call
                  are in the event store
@@ -13,7 +14,8 @@ machine's operator, outside any sandbox, against a position `of spawn` started (
 
 The sandbox checks run `codex sandbox` under the position's own layer and permission profile (`-p of-<launch>
 -P of_position --include-managed-config`), so no model is called and each answer is the sandbox's. Each canary is a
-file of its own with a fresh random token, removed at the end whatever happened."""
+file of its own with a fresh random mark, removed at the end whatever happened; each sandbox check first reads a
+control canary in the position's own folder, so a sandbox that never ran proves nothing."""
 
 import json
 import os
@@ -68,34 +70,55 @@ def canary_dirs(fs):
     return sorted(out)
 
 
-def sandbox_argv(codex, launch, cwd, cmd):
+def sandbox_argv(codex, launch, cwd, cmd, seat=None):
+    """`codex sandbox` under the position's own layer and profile, in its seat (CODEX_HOME), never the operator's."""
     import of_codex
-    return [codex, "sandbox", "-p", f"of-{launch}", "-P", of_codex.PROFILE, "-C", cwd, "--include-managed-config",
-            "--", *cmd]
+    head = ["env", f"CODEX_HOME={seat}"] if seat else []
+    return head + [codex, "sandbox", "-p", f"of-{launch}", "-P", of_codex.PROFILE, "-C", cwd,
+                   "--include-managed-config", "--", *cmd]
+
+
+def _control(codex, door, run, timeout, seat):
+    """Whether the sandbox runs at all: a canary in the position's own folder is read from inside it. Without that, a
+    refusal proves nothing (of_review on PR 640: a sandbox that never ran passed)."""
+    path, mark = _put(door["cwd"])
+    try:
+        r = run(sandbox_argv(codex, door["launch"], door["cwd"], ["cat", path], seat), capture_output=True, text=True,
+                timeout=timeout)
+        return r.returncode == 0 and mark in (r.stdout or "")
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def _put(folder):
-    token = secrets.token_hex(16)
+    """A canary file of its own in FOLDER and its random mark (no secret: it only tells this canary from any other)."""
+    mark = secrets.token_hex(16)
     path = os.path.join(folder, f"{CANARY}{secrets.token_hex(6)}.txt")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w") as fh:
-        fh.write(token + "\n")
-    return path, token
+        fh.write(f"{mark}\n")
+    return path, mark
 
 
-def check_credentials(codex, door, fs, run=subprocess.run, timeout=60):
-    """(ok, detail): every canary unreadable from inside the sandbox; the canaries removed whatever happened."""
+def check_credentials(codex, door, fs, run=subprocess.run, timeout=60, seat=None):
+    """(ok, detail): every canary unreadable from inside the sandbox, which read the control; the canaries removed
+    whatever happened."""
     dirs = canary_dirs(fs)
     if not dirs:
         return False, "the profile denies no folder a canary can be put in"
+    if not _control(codex, door, run, timeout, seat):
+        return False, "the sandbox did not read the control canary in the position's own folder: nothing is proved"
     made, read = [], []
     try:
         for d in dirs:
             made.append(_put(d))
-        for path, token in made:
-            r = run(sandbox_argv(codex, door["launch"], door["cwd"], ["cat", path]), capture_output=True, text=True,
-                    timeout=timeout)
-            if r.returncode == 0 or token in (r.stdout or ""):
+        for path, mark in made:
+            r = run(sandbox_argv(codex, door["launch"], door["cwd"], ["cat", path], seat), capture_output=True,
+                    text=True, timeout=timeout)
+            if r.returncode == 0 or mark in (r.stdout or ""):
                 read.append(os.path.dirname(path))
     finally:
         for path, _ in made:
@@ -106,11 +129,14 @@ def check_credentials(codex, door, fs, run=subprocess.run, timeout=60):
     return (not read), (f"read from inside: {', '.join(read)}" if read else f"{len(made)} canaries unreadable")
 
 
-def check_checkout(codex, door, bin_dir, run=subprocess.run, timeout=60):
-    """(ok, detail): a write into OF's bin folder from inside the sandbox fails and leaves no file."""
+def check_checkout(codex, door, bin_dir, run=subprocess.run, timeout=60, seat=None):
+    """(ok, detail): a write into OF's bin folder from inside the sandbox, which read the control, fails and leaves no
+    file. The path goes as an argument, never inside the shell's text (an apostrophe in it read as a refusal)."""
+    if not _control(codex, door, run, timeout, seat):
+        return False, "the sandbox did not read the control canary in the position's own folder: nothing is proved"
     target = os.path.join(bin_dir, f"{CANARY}{secrets.token_hex(6)}")
     try:
-        r = run(sandbox_argv(codex, door["launch"], door["cwd"], ["sh", "-c", f"echo x > '{target}'"]),
+        r = run(sandbox_argv(codex, door["launch"], door["cwd"], ["sh", "-c", 'echo x > "$1"', "sh", target], seat),
                 capture_output=True, text=True, timeout=timeout)
         there = os.path.exists(target)
     finally:
@@ -122,31 +148,41 @@ def check_checkout(codex, door, bin_dir, run=subprocess.run, timeout=60):
     return ok, ("refused" if ok else f"{bin_dir} took a write from inside the sandbox")
 
 
-def check_door(codex, door, of_bin, run=subprocess.run, timeout=60):
-    """(ok, detail): of who and of inbox --mine answer through the door, of db stats is refused there."""
+def check_door(conn, door, of_bin, run=subprocess.run, timeout=60):
+    """(ok, detail): the door refuses a process that is no child of the position's Codex (this one, run from the
+    operator's terminal), and it served the position's own of status: a state declared under its session since it
+    started (of_review on PR 640: a run started here is never served, by the door's own rule)."""
     import of_codex
     import of_door
     sock = os.path.join(of_codex.door_dir(door["launch"]), of_door.SOCKET)
-    env = ["env", f"OF_DOOR={sock}", of_bin]
-    bad = []
-    for args, want in ((["who"], True), (["inbox", "--mine"], True), (["db", "stats"], False)):
-        r = run(sandbox_argv(codex, door["launch"], door["cwd"], env + args), capture_output=True, text=True,
-                timeout=timeout)
-        if (r.returncode == 0) != want:
-            bad.append(f"of {' '.join(args)} {'failed' if want else 'was served'} ({(r.stderr or '').strip()[:120]})")
-    return (not bad), ("; ".join(bad) if bad else "who and inbox served, db stats refused")
-
+    if not os.path.exists(sock):
+        return False, f"no door socket at {sock} (is the listener running?)"
+    r = run([sys.executable, of_bin, "who"], env=dict(os.environ, OF_DOOR=sock), capture_output=True, text=True,
+            timeout=timeout)
+    refused = r.returncode != 0 and "its own Codex session" in (r.stderr or "")
+    served = conn.execute("SELECT COUNT(*) FROM event WHERE name = 'of.state_declared' AND session_id = ?",
+                          (door["session"],)).fetchone()[0]
+    bad = ([] if refused else [f"an outside process was not refused ({(r.stderr or r.stdout or '').strip()[:100]})"]) + \
+        ([] if served else ["no of status of the position's own came through it yet (its brief asks one each turn)"])
+    return (not bad), ("; ".join(bad) if bad else f"an outsider refused; {served} of its own states served")
 
 def check_guard(door, of_bin, run=subprocess.run, timeout=60):
     """(ok, detail): the hook, given the call Codex would send for a key's read, denies it."""
     import of_codex
-    payload = {"session_id": door["session"], "turn_id": "of-selftest", "hook_event_name": "PreToolUse",
+    import tempfile
+    state = tempfile.mkdtemp(prefix="of-selftest-state-")   # its records land there, never on the live session
+    payload = {"session_id": f"of-selftest-{secrets.token_hex(6)}", "turn_id": "of-selftest",
+               "hook_event_name": "PreToolUse",
                "cwd": door["cwd"], "tool_name": "Bash", "tool_use_id": "of-selftest",
                "tool_input": {"command": "cat ~/.ssh/id_" + "ed25519"},
                "transcript_path": os.path.join(of_codex.door_dir(door["launch"]),
                                                "sessions/2026/01/01/rollout-of-selftest.jsonl")}
-    r = run([sys.executable, of_bin, "hook", "PreToolUse"], input=json.dumps(payload), capture_output=True, text=True,
-            timeout=timeout)
+    try:
+        r = run([sys.executable, of_bin, "hook", "PreToolUse"], input=json.dumps(payload), capture_output=True,
+                text=True, timeout=timeout, env=dict(os.environ, OF_STATE=state))
+    finally:
+        import shutil
+        shutil.rmtree(state, ignore_errors=True)
     out = (r.stdout or "") + (r.stderr or "")
     ok = "deny" in out or r.returncode == 2
     return ok, ("denied" if ok else f"not denied (exit {r.returncode})")
