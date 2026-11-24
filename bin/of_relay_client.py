@@ -242,15 +242,25 @@ def input_box_text(screen):
 # relay messages; herdr flagged the pane blocked only hours later). Typed text and Enter would answer the dialog.
 # The key footers match in any case: the compaction offer (2026-11-10, of_capacity msg 01a1c64d) ends in
 # "enter confirm · esc not now", and Enter there compacts the conversation.
+# Codex's two start dialogs (of_herdr's W8 report, gap 1, 2026-11-20): herdr reads them as idle, and typed text answers
+# them: a t in the hooks review trusted the hook, and a prompt at the daemon question restarted the daemon.
 _DIALOG = re.compile(r"(?i:enter to confirm|esc to cancel|enter to select|to navigate · enter|press enter to continue"
                      r"|enter confirm · esc)|Background work is running|Do you want to proceed\?"
-                     r"|We recommend compacting earlier")
+                     r"|We recommend compacting earlier"
+                     r"|Hooks need review|Trust all and continue|Continue without trusting"
+                     r"|Background server has incompatible feature settings|Run without daemon this time")
 
 
 def dialog_open(screen):
     """Is a dialog drawn on the pane's last lines?"""
     tail = "\n".join(_ANSI.sub("", (screen or "").replace("\r", "")).split("\n")[-15:])
     return bool(_DIALOG.search(tail))
+
+
+# Codex's prompt line (of_herdr's W8 report, gap 2): `›` at column 0, with no rules around it. input_box_text reads only
+# Claude Code's box, and on every saved Codex screen it returned None, so the relay typed and would have added its
+# message to a person's half-typed words.
+_CODEX_PROMPT = re.compile(r"(?m)^› ?")
 
 
 def pane_input(pane):
@@ -267,6 +277,8 @@ def pane_input(pane):
     if dialog_open(out):
         return "[dialog]"
     box = input_box_text(out)
+    if box is None and _CODEX_PROMPT.search(_ANSI.sub("", out.replace("\r", ""))):
+        return "[unread]"   # Codex's › box, which this reader cannot tell empty yet: deferred, never typed into
     if box and term is of_screen and of_screen.attached(pane) is False \
             and not (_PASTE_ONLY.fullmatch(box) or _FRAMED.match(box)):
         return ""  # a hardcopy has no dim: in a detached session nobody types, so this is a suggestion (of_screen)
@@ -457,6 +469,8 @@ def herdr_deliver(pane, text, session=None, sender=None, wait_s=DELIVER_WAIT_S, 
     note_box(pane, box)
     if box == "[dialog]":
         return "deferred", "a dialog is open in the pane"
+    if box == "[unread]":
+        return "deferred", "a Codex input box the relay cannot read yet"
     last = held_delivery(pane, box) if box else None
     if last:  # its own earlier delivery, Enter lost: sent now; this message waits for the next offer
         ok = press_held_enter(pane, last)
