@@ -133,12 +133,13 @@ class Store(unittest.TestCase):
         of_spend.of_events.STATE_DIR = self.saved
         self.tmp.cleanup()
 
-    def rec(self, sid, mid, t, inp=1000, out=100, cw1=0, cr=0, sub=False, model="claude-opus-5-5", acct="a"):
+    def rec(self, sid, mid, t, inp=1000, out=100, cw1=0, cr=0, sub=False, model="claude-opus-5-5", acct="a",
+            cw5=0, cw=None):
         self.n += 1
         base = f"/h/.claude-{acct}/projects/-w/{sid}"
         path = f"{base}/subagents/agent-1.jsonl" if sub else f"{base}.jsonl"
         self.conn.execute("INSERT INTO transcript_record VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                          (self.n, path, "agent-1" if sub else sid, mid, iso(t), inp, out, cr, None, 0, cw1, model))
+                          (self.n, path, "agent-1" if sub else sid, mid, iso(t), inp, out, cr, cw, cw5, cw1, model))
 
     def ev(self, t, name, sid, pos, payload=None, org="acme", host="H-here", host_name="here"):
         self.conn.execute("INSERT INTO event VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -171,17 +172,30 @@ class Store(unittest.TestCase):
         self.assertEqual(got, {"m1": (4.0, "/h/.claude-a"), "m2": (2.0, "/h/.claude-a"), "m3": (10.0, "/h/.claude-a"),
                                "m4": (4.0, "/h/.claude-b")})
 
-    def test_a_view_of_the_old_shape_is_made_again_and_read_from_the_start(self):
+    def test_each_response_keeps_its_token_split_and_context(self):
+        self.rec("S1", "m1", T0 + H, inp=12, out=34, cr=56, cw5=78, cw1=90, cw=999)
+        self.rec("S1", "m2", T0 + H, inp=9, out=8, cr=7, cw5=None, cw1=None, cw=6)
+        of_spend.ingest(self.conn, T0 + 86400)
+        rows = self.conn.execute("SELECT message_id, input, output, cache_read, cache_write, context, fresh "
+                                 "FROM view_spend_month ORDER BY message_id").fetchall()
+        self.assertEqual(rows, [("m1", 12, 34, 56, 168, 236, 214), ("m2", 9, 8, 7, 6, 22, 23)])
+
+    def test_the_v2_view_is_made_again_and_read_from_the_start(self):
         now = T0 + 10 * 86400
         self.conn.executescript("CREATE TABLE view_spend_month (message_id TEXT PRIMARY KEY, session_id TEXT, "
-                                "epoch REAL, fresh INTEGER, cost REAL);")
+                                "epoch REAL, fresh INTEGER, cost REAL, config_dir TEXT, model TEXT);")
         self.conn.execute("CREATE TABLE IF NOT EXISTS listener_meta (key TEXT PRIMARY KEY, value TEXT)")
-        self.conn.execute("INSERT INTO listener_meta VALUES ('spend_month_version', '1')")
-        self.conn.execute("INSERT INTO listener_meta VALUES ('spend_month_cursor', '99')")
-        self.rec("S1", "m1", T0 + H)
-        of_spend.ingest(self.conn, now)
-        self.assertEqual(self.conn.execute("SELECT message_id, config_dir, model FROM view_spend_month").fetchall(),
-                         [("m1", "/h/.claude-a", "claude-opus-5-5")])
+        self.conn.execute("INSERT INTO listener_meta VALUES ('spend_month_version', '2'), ('spend_month_cursor', '99'), "
+                          "('spend_month_caught_up', '1'), ('spend_hours_final', ?), ('spend_hours_marks', ?)",
+                          (now - 3 * H, json.dumps({"responses": 99, "events": 0})))
+        self.rec("S1", "m1", T0 + H, cr=100, cw1=50)
+        self.assertEqual(of_spend.ingest(self.conn, now), (1, True))
+        self.assertEqual(of_spend._meta(self.conn, "spend_month_version"), "3")
+        self.assertEqual(self.conn.execute("SELECT message_id, input, output, cache_read, cache_write, context "
+                                           "FROM view_spend_month").fetchall(), [("m1", 1000, 100, 100, 50, 1150)])
+        sent = []
+        of_spend.emit_hours(DOCS, self.conn, now, here="H-here", emit=lambda kind, pl, **kw: sent.append(pl))
+        self.assertEqual([pl["hour"] for pl in sent], [T0 + H])
 
     def test_spend_by_day_and_by_hour_by_account_position_work_and_goal(self):
         """The founder, 2026-11-22, prompt 01a204e5-0acb: of capacity spend by day and by hour."""
@@ -200,7 +214,10 @@ class Store(unittest.TestCase):
         d1, d2 = day["periods"]
         self.assertEqual(d1["total"]["cost_usd"], 4.0)
         self.assertEqual(d1["accounts"], {"/h/.claude-a": {"fresh": 1_000_000, "cost_usd": 4.0, "responses": 1,
-                                                          "outside_fresh": 0, "outside_runs": 0}})
+                                                          "outside_fresh": 0, "outside_runs": 0, "input": 1_000_000,
+                                                          "output": 0, "cache_read": 0, "cache_write": 0,
+                                                          "max_context": 1_000_000, "cache_read_m": 0.0,
+                                                          "cache_write_m": 0.0, "max_context_k": 1000.0}})
         self.assertEqual(d1["machines"]["here"]["accounts"]["/h/.claude-a"]["positions"]["acme/acme_a"]["cost_usd"], 4.0)
         self.assertEqual(d1["works"]["acme/w-retry"]["cost_usd"], 4.0)
         self.assertEqual(d1["goals"]["acme/g-orders"]["cost_usd"], 4.0)          # a work's spend counts to its goal
@@ -220,6 +237,36 @@ class Store(unittest.TestCase):
         self.assertIn("  here  $5", text)
         self.assertIn("    /h/.claude-b $4: acme_a $4", text)
         self.assertIn("by account, all machines: /h/.claude-a $5, /h/.claude-b $4", text)
+
+    def test_context_is_a_maximum_across_responses_and_machines(self):
+        now = T0 + 5 * H
+        hour = T0 + 2 * H
+        self.ev(T0 + H, "of.state_declared", "S1", "acme_a", {"work": "w-retry"})
+        self.rec("S1", "m1", hour + 60, inp=10_000, out=2_000, cr=800_000, cw5=100_000)
+        self.rec("S1", "m2", hour + 120, inp=5_000, out=3_000, cr=200_000, cw1=50_000)
+        self.ev(hour + 180, "of.subagent_run", "S1", "acme_a",
+                {"phase": "ended", "usage": {"input": 3_000_000}})
+        self.ev(now, "of.spend_hours", None, None, {"v": 2, "hour": hour, "machine": "host-b", "rows": [
+            ["/h/.claude-a", "acme_a", "w-retry", "g-orders", 120_000, 1.0, 1, 0, 0, 1_400_000, 100_000, 1_515_000]]},
+            host="H-host", host_name="host-b")
+        of_spend.ingest(self.conn, now)
+        month = of_spend.compute(DOCS, self.conn, now=now, here="H-here")
+        goal = month["orgs"]["acme"]["goals"]["g-root"]["total"]
+        self.assertEqual((goal["input"], goal["output"], goal["cache_read"], goal["cache_write"], goal["max_context"]),
+                         (15_000, 5_000, 1_000_000, 150_000, 910_000))
+        out = of_spend.periods(DOCS, self.conn, T0, now, by="hour", now=now, here="H-here")
+        period, = out["periods"]
+        self.assertEqual(period["machines"]["here"]["total"]["max_context"], 910_000)
+        self.assertEqual(period["machines"]["here"]["accounts"]["other harnesses"]["total"]["max_context"], None)
+        for row in (period["total"], period["accounts"]["/h/.claude-a"], period["goals"]["acme/g-orders"], out["total"]):
+            self.assertEqual((row["cache_read_m"], row["cache_write_m"], row["max_context_k"]), (2.4, 0.25, 1515.0))
+        self.assertNotIn("partial_tokens", period)
+        self.assertEqual(period["positions"]["acme/acme_a"]["cache_read_per_response"], 800_000)
+        self.assertEqual(period["works"]["acme/w-retry"]["cache_read_per_response"], 800_000)
+        text = of_spend.render_periods(out)
+        self.assertIn("cache read 2.4M  cache write 0.25M  max context 1515k", text)
+        self.assertIn("    /h/.claude-a $1: acme_a $1 (500k read/resp)", text)        # this machine's position
+        self.assertIn("acme_a $1 (1,400k read/resp)", text)                         # the other machine's v2 row
 
     def test_a_carried_sessions_history_counts_on_the_machine_it_was_spent_on(self):
         """2026-11-22: the agent host's store read the moved sessions' laptop turns again. Each response counts on the
@@ -250,7 +297,7 @@ class Store(unittest.TestCase):
         """The founder, 2026-11-22, prompt 01a204f4-e8e2: the day and hour views missed the agent host's spend."""
         now = T0 + 2 * 86400 + 30 * 60
         self.ev(T0 + H, "of.hook", "S1", "acme_a")
-        self.rec("S1", "m1", T0 + 2 * 86400 + 60, inp=1_000_000, out=0)
+        self.rec("S1", "m1", T0 + 2 * 86400 + 60, inp=1_000_000, out=0, cr=20_000, cw5=1_000)
         self.rec("S9", "m2", T0 + 2 * 86400 + 60, inp=1_000, out=0)     # no position: stays on its machine
         of_spend.ingest(self.conn, now)
         sent = []
@@ -258,7 +305,9 @@ class Store(unittest.TestCase):
         self.assertEqual(of_spend.emit_hours(DOCS, self.conn, now, here="H-here", emit=emit), 1)
         (kind, pl, kw), = sent
         self.assertEqual((kind, kw, pl["hour"]), ("spend_hours", {"org": "acme"}, T0 + 2 * 86400))
-        self.assertEqual(pl["rows"], [["/h/.claude-a", "acme_a", None, None, 1_000_000, 4.0, 1, 0, 0]])
+        self.assertEqual(pl["v"], 2)
+        self.assertEqual(pl["rows"], [["/h/.claude-a", "acme_a", None, None, 1_001_000, 4.009, 1, 0, 0,
+                                      20_000, 1_000, 1_021_000]])
         self.assertEqual(of_spend.emit_hours(DOCS, self.conn, now + 60, here="H-here", emit=emit), 0)  # 15 minutes
         self.assertEqual(of_spend.emit_hours(DOCS, self.conn, now + 1000, here="H-here", emit=emit), 0)  # no change
         # another machine's two reports of the same hour: the latest counts
@@ -269,9 +318,21 @@ class Store(unittest.TestCase):
         out = of_spend.periods(DOCS, self.conn, T0 + 2 * 86400, now + 3600, by="hour", now=now + 700, here="H-here")
         self.assertEqual(out["reported"], ["host-b"])
         self.assertEqual(out["machines"]["host-b"]["accounts"]["~/.claude-b"]["positions"]["acme/acme_b"]["cost_usd"], 2.0)
-        self.assertEqual(out["machines"]["here"]["accounts"]["/h/.claude-a"]["positions"]["acme/acme_a"]["cost_usd"], 4.0)
+        self.assertEqual(out["machines"]["here"]["accounts"]["/h/.claude-a"]["positions"]["acme/acme_a"]["cost_usd"],
+                         4.009)
         self.assertEqual(out["positions"]["acme/acme_b"]["cost_usd"], 2.0)
-        self.assertIn("machines: here (this one), host-b (its reports)", of_spend.render_periods(out))
+        period, = out["periods"]
+        self.assertTrue(out["partial_tokens"])
+        self.assertTrue(period["partial_tokens"])
+        old = period["machines"]["host-b"]["total"]
+        self.assertTrue(old["partial_tokens"])
+        for key in ("cache_read", "cache_write", "max_context", "cache_read_m", "cache_write_m", "max_context_k"):
+            self.assertIsNone(old[key])
+        self.assertEqual((period["total"]["cache_read"], period["total"]["cache_write"], period["total"]["max_context"]),
+                         (20_000, 1_000, 1_021_000))
+        text = of_spend.render_periods(out)
+        self.assertIn("machines: here (this one), host-b (its reports)", text)
+        self.assertIn("cache read ?  cache write ?  max context ?", text)
 
     def test_an_hour_reported_before_is_reported_again_when_late_records_change_it(self):
         """of_review on PR 567: an hour once reported was never sent again, so a response read late (a transcript read
