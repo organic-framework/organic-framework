@@ -114,6 +114,14 @@ class SubagentTest(unittest.TestCase):
             {"harness": harness, "passed": passed, "failed": None if passed else ["the model cannot read its login"],
              "kinds": kinds})))
 
+    def test_a_selftest_with_its_real_login_readable_does_not_start(self):
+        """of_server on PR 652: the selftest ran with the gates off and asked the model to read the real login."""
+        fake = Fake("muse")
+        with self.assertRaises(of_subagent.SubagentError) as e:
+            of_subagent.selftest("muse", session="S1", log=lambda m: None, popen=fake)
+        self.assertIn("could read its own login", str(e.exception))
+        self.assertEqual(fake.calls, [])
+
     def test_a_run_needs_its_harness_latest_selftest_passed(self):
         """of_secrets-review on PR 328: Muse's file tools read its own login, and withholding catches only a verbatim
         copy, so a harness runs only while its latest live selftest passed every check."""
@@ -129,7 +137,8 @@ class SubagentTest(unittest.TestCase):
         self.assertIn("no live selftest", str(e.exception))
 
     def test_a_harness_whose_run_could_read_its_login_is_refused(self):
-        """of_secrets-review on PR 328: a selftest whose model declines to read its login passes; the read rules decide."""
+        """of_secrets-review on PR 328: a selftest whose model declines to read its login passes; the read rules decide.
+        Muse's sign-in lies where its process, so its tools, read: refused (of_server, message 01a20e67-96ff)."""
         login = of_subagent.login_files("muse")[0]
         os.makedirs(os.path.dirname(login), exist_ok=True)
         with open(login, "w") as fh:
@@ -931,19 +940,23 @@ class SubagentTest(unittest.TestCase):
         self.assertIn("no prompt_check", str(e.exception))
         self.assertEqual(self.go("muse", registry=no_check)[0]["exit"], 0)
 
-    def test_muse_never_gets_the_owners_keychain(self):
+    def test_muse_never_gets_the_owners_keychain_and_none_of_the_runs_own_files(self):
+        """Of its run folder Muse's sandbox reads only its material, prompt and homes, never the run's own files (the
+        laptop's selftest, 2026-11-24, read the run's canary through Muse's file tools); its sign-in is its own
+        keychain's, never the owner's."""
         _, m = self.go("muse")
         prof = m["profile"]
         self.assertNotIn(os.path.expanduser("~/Library/Keychains"), prof)
         self.assertIn(os.path.realpath(os.path.join(of_events.STATE_DIR, of_subagent.MUSE_LOGIN)), prof)
-        link = os.path.join(m["env"]["HOME"], "Library", "Keychains")
+        self.assertNotIn("run-canary.txt", prof)
+        self.assertEqual(m["env"].get("MUSE_EXPERIMENTAL_MONITOR"), "0")      # its monitor tool off
+        self.assertNotIn("--api-key-stdin", m["argv"])
         self.assertFalse(os.path.exists(m["env"]["HOME"]))                      # gone with the run
         import shutil
         shutil.rmtree(os.path.join(of_events.STATE_DIR, of_subagent.MUSE_LOGIN))
         with self.assertRaises(of_subagent.SubagentError) as e:
             self.go("muse")
         self.assertIn("of subagent muse-login", str(e.exception))
-        self.assertTrue(link)
 
     def test_a_diff_run_never_carries_a_key_the_head_removed(self):
         """of_secrets-review on PR 328: the diff holds the base's text of every file the head removes or changes."""
@@ -973,7 +986,7 @@ class SubagentTest(unittest.TestCase):
         os.makedirs(os.path.dirname(login), exist_ok=True)
         token = "tok_" + "9f8e7d6c5b4a" * 3
         with open(login, "w") as fh:
-            json.dump({"access": token, "kind": "meta"}, fh)
+            fh.write(token + "\n")   # a text login: its lines are its markers
 
         class Leaky(Fake):
             def __call__(s2, argv, **kw):
@@ -1178,3 +1191,16 @@ class OrgChoiceTest(unittest.TestCase):
         self.assertEqual(len(got), 2)
         self.assertTrue(all(g.startswith("b:") for g in got))
         self.assertTrue(of_subagent.choice_problems(docs, known=None)[0].startswith("warning: "))
+
+
+class OutsideToolsLimitTest(unittest.TestCase):
+    def test_an_outside_tool_is_a_limit_only_while_the_sandbox_held(self):
+        base = [(c, True, "-") for c in of_subagent.SANDBOX_CHECKS]
+        tools = ("no tool outside the kind's is called", False, "monitor")
+        got = dict((c, ok) for c, ok, _ in of_subagent.outside_tools_limit(base + [tools], True))
+        self.assertEqual(got["no tool outside the kind's is called"], "limit")
+        broken = [("nothing is written", False, "x")] + base[1:] + [tools]
+        got = dict((c, ok) for c, ok, _ in of_subagent.outside_tools_limit(broken, True))
+        self.assertIs(got["no tool outside the kind's is called"], False)
+        got = dict((c, ok) for c, ok, _ in of_subagent.outside_tools_limit(base + [tools], False))
+        self.assertIs(got["no tool outside the kind's is called"], False)          # no record of the attempts
