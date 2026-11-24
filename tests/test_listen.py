@@ -1172,6 +1172,13 @@ class WatchdogTest(unittest.TestCase):
         self.assertIn("not loaded", out[0])
         with open(victim) as fh:
             self.assertEqual(fh.read(), "mine\n")
+        fifo = os.path.join(self.tmp.name, "fifo.plist")   # a FIFO at a plist's name never holds the install
+        os.remove(path) if os.path.lexists(path) else None
+        os.mkfifo(path)
+        out = of_listen.install_launchd(run=run, plists={of_listen.LAUNCHD_LABEL: units[of_listen.LAUNCHD_LABEL]},
+                                        agents_dir=self.tmp.name)
+        self.assertEqual(out, [f"{of_listen.LAUNCHD_LABEL}: loaded"])
+        self.assertTrue(os.path.isfile(path) and not os.path.islink(path))
         # an uninstall boots a linked unit out and removes the link, a dangling one too (of_review on PR 659)
         ran = []
         run2 = lambda argv, **k: ran.append(argv) or type("R", (), {"returncode": 0})()  # noqa: E731

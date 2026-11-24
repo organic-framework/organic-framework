@@ -5260,7 +5260,7 @@ def _install_user_service(command, action):
         lines = service.install_launchd(uninstall=uninstall)
         if command == "relay":  # the relay's launchd installer returns its own formatted message
             print(lines)
-            return 0
+            return 1 if "not loaded" in str(lines) else 0   # a failed bootstrap fails the install (of_review, PR 659)
     for line in lines:
         print(f"of {command}: {line}")
     # an agent launchd did not load fails the install (Codex on PR 655: of live switch said done after it)

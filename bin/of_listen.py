@@ -1677,9 +1677,16 @@ def install_launchd(uninstall=False, run=None, plists=None, agents_dir=None):
         if os.path.islink(path) and not uninstall:   # launchd would load the file it names, maybe not the owner's;
             out.append(f"{label}: not loaded ({path} is a link; remove it and run again)")  # an uninstall still
             continue                                 # boots it out and removes the link (of_review on PR 659)
-        try:
-            with open(path) as fh:
-                same = fh.read() == text
+        same = False
+        try:   # a plain file only: a FIFO there would hold the open (of_review on PR 659)
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                import stat
+                if stat.S_ISREG(os.fstat(fd).st_mode):
+                    with os.fdopen(os.dup(fd)) as fh:
+                        same = fh.read() == text
+            finally:
+                os.close(fd)
         except OSError:
             same = False
         if same and not uninstall and run(["launchctl", "print", f"{domain}/{label}"],

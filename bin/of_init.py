@@ -1575,7 +1575,10 @@ def install_units(out=print, system=None, run=subprocess.run, wait_s=8, sleep=ti
             start = [["systemctl", "--user", "daemon-reload"], ["systemctl", "--user", "enable", "--now", u["unit"]]]
         os.makedirs(os.path.dirname(path), exist_ok=True)
         if os.path.islink(path):   # its manager would load the file the link names; a dangling one, the write took
-            out(f"  {u['name']}: not started ({path} is a link; remove it and run of init again)")
+            # failed whether or not it runs: what its manager loads is the file the link names (of_review on PR 659:
+            # a running unit read "not started")
+            state = "runs, but from" if unit_running(u, system, run) else "not started:"
+            out(f"  {u['name']}: {state} a link at {path}; remove the link and run of init again")
             failed.append(u["name"])
             continue
         new = not os.path.exists(path)
