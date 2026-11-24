@@ -1109,6 +1109,18 @@ _META = " \t\n;&|()<>"   # bash's metacharacters: a word starts after one (a car
 _HERE_META = set(" \t\n;&|()<>")
 
 
+def _here_ansi(body):
+    """An ANSI-C part of a heredoc's word as bash takes it into the delimiter: decoded, cut at its first NUL (bash's
+    strings end there; the parts after it still join), and each \\x01 and \\x7f behind bash's own escape \\x01 (its
+    quote marks CTLESC and CTLNUL); a str, or (bash 5's reading, bash 3.2's) when they differ (of_review on PR 637;
+    each tried in both bashes, 3.2.57 and 5.3)."""
+    def fix(v):
+        v = v.split("\x00", 1)[0]
+        return v.replace("\x01", "\x01\x01").replace("\x7f", "\x01\x7f")
+    new, old = fix(_ansi_c_body(body)), fix(_ansi_c_body(body, big_u=False))
+    return new if new == old else (new, old)
+
+
 def _here_word(text, i):
     """The here-document TEXT opens at I (its `<<`) as bash reads it: (dash, quoted, delimiter, end) or None when no
     word follows. The delimiter is the word after `<<` or `<<-` and its blanks, up to an unquoted metacharacter, with
@@ -1130,7 +1142,7 @@ def _here_word(text, i):
             m = _ANSI_WORD.match(text, j)
             if not m:
                 return None
-            word.append(_ansi_c_body(m.group(1)))
+            word.append(_here_ansi(m.group(1)))
             quoted, j = True, m.end()
             continue
         if c == "$" and text.startswith('$"', j):   # a locale part reads as its double-quoted text
@@ -1166,7 +1178,17 @@ def _here_word(text, i):
             j += 1
     if not word:
         return None
-    return dash, quoted, "".join(word), j
+    words = {"".join(w if isinstance(w, str) else w[0] for w in word),
+             "".join(w if isinstance(w, str) else w[1] for w in word)}
+    if len(words) == 1:
+        return dash, quoted, words.pop(), j
+    # bash 3.2 and 5.x read a \U part differently: the body ends at the first line either reads, the earlier end being
+    # the one whose following lines run as commands
+    start = text.find("\n", j)
+    for line in (text[start + 1:].split("\n") if start >= 0 else []):
+        if (line.lstrip("\t") if dash else line) in words:
+            return dash, quoted, (line.lstrip("\t") if dash else line), j
+    return dash, quoted, "".join(w if isinstance(w, str) else w[0] for w in word), j
 
 
 def _comment_spans(text):
@@ -2983,8 +3005,9 @@ _ANSI_ESC = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n
              "\\": "\\", "'": "'", '"': '"', "?": "?"}
 
 
-def _ansi_c_body(body):
-    """The value of a $'…' word's body, as bash decodes it (\\n, \\t, \\nnn, \\xHH, \\uHHHH, \\cX …)."""
+def _ansi_c_body(body, big_u=True):
+    """The value of a $'…' word's body, as bash decodes it (\\n, \\t, \\nnn, \\xHH, \\uHHHH, \\cX …). BIG_U False: bash
+    3.2's reading, which keeps \\U as written (macOS's /bin/bash; of_review on PR 637)."""
     out, i, n = [], 0, len(body)
     while i < n:
         c = body[i]
@@ -2995,7 +3018,8 @@ def _ansi_c_body(body):
         e = body[i + 1]
         m = (re.match(r"[0-7]{1,3}", body[i + 1:]) if e in "01234567" else
              re.match(r"[0-9A-Fa-f]{1,2}", body[i + 2:]) if e == "x" else
-             re.match(r"[0-9A-Fa-f]{1,%d}" % (4 if e == "u" else 8), body[i + 2:]) if e in "uU" else None)
+             re.match(r"[0-9A-Fa-f]{1,%d}" % (4 if e == "u" else 8), body[i + 2:]) if e == "u" or (e == "U" and big_u)
+             else None)
         if e in _ANSI_ESC:
             out.append(_ANSI_ESC[e])
             i += 2

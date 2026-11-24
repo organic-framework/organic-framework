@@ -360,6 +360,19 @@ class AnsiHereWordTest(unittest.TestCase):
         self.assertEqual(of_guard._here_word("cat <<$'A\\tB'", 4)[:3], (False, True, "A\tB"))
         self.assertEqual(of_guard._here_word('cat <<$"EOF"', 4)[:3], (False, True, "EOF"))
 
+    def test_an_ansi_c_part_is_taken_as_bash_takes_it_into_the_delimiter(self):
+        """Each tried in bash 3.2.57 and 5.3: a part ends at its first NUL, the parts after it join, and bash's own
+        escape goes before each \\x01 and \\x7f."""
+        self.assertEqual(of_guard._here_ansi("A\\0B"), "A")
+        self.assertEqual(of_guard._here_ansi("A\\x01B"), "A\x01\x01B")
+        self.assertEqual(of_guard._here_ansi("A\\177B"), "A\x01\x7fB")
+        self.assertEqual(of_guard._here_ansi("A\\U00000042"), ("AB", "A\\U00000042"))   # bash 5's, bash 3.2's
+
+    def test_of_two_readings_the_earlier_end_holds(self):
+        both = "cat <<$'E\\U0000004fF'\nx\n%s\nls\n%s\n"
+        self.assertEqual(of_guard._here_word(both % ("EOF", "E\\U0000004fF"), 4)[2], "EOF")
+        self.assertEqual(of_guard._here_word(both % ("E\\U0000004fF", "EOF"), 4)[2], "E\\U0000004fF")
+
 
 class SplitCommentTest(unittest.TestCase):
     """G-parse (hand-over 6f336a7c; a user organization's structure keeper, message 01a20975-02e4): _split read an
