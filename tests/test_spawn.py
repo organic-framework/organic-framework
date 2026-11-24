@@ -906,11 +906,14 @@ class SandboxBlock(unittest.TestCase):
         self.assertIn("/home/alex/.config/other", box["filesystem"]["denyRead"])      # the catalogue's root, as a folder
         self.assertNotIn("/home/alex/x/*.key", box["filesystem"]["denyRead"])         # a glob: its present matches only
         cos = of_spawn.of_checkouts()
-        n = 1 + len(cos)
+        units = [os.path.expanduser(f"~/.local/state/of/{x}") for x in of_spawn.UNIT_STATE_WRITES]
+        n = 1 + len(units) + len(cos)
         self.assertEqual(box["filesystem"]["denyWrite"][:-n], box["filesystem"]["denyRead"])   # never written either
         self.assertEqual(box["filesystem"]["denyWrite"][-n:],
-                         [os.path.expanduser("~/.local/state/of/index.json")] + cos)  # G36, the code OF runs
+                         [os.path.expanduser("~/.local/state/of/index.json")] + units + cos)  # G36, the units', OF's code
         self.assertIn(os.path.expanduser("~/.ssh"), box["filesystem"]["denyRead"])
+        for n in of_spawn.UNIT_STATE_FOLDERS:   # made first: the sandbox would leave an empty file at a missing path
+            self.assertTrue(os.path.isdir(os.path.expanduser(f"~/.local/state/of/{n}")), n)
         self.assertEqual(box["filesystem"]["allowWrite"], [os.path.expanduser("~/.local/state/of")])
         self.assertEqual((box["network"]["allowAllUnixSockets"], box["network"]["strictAllowlist"]), (True, True))
         self.assertIn("github.com", box["network"]["allowedDomains"])                # bypass mode: the list binds

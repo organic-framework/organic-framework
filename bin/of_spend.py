@@ -38,6 +38,7 @@ import of_events
 VERSION = "3"                 # rebuild the view from the first record when its columns change
 TICK_BUDGET_S = 20            # the listener's share per tick while the view catches up
 REFRESH_S = 1800              # the sums are recomputed at most this often by the listener
+SPEND_MAX_BYTES = 512 << 20
 DECLARING = ("of.state_declared",)  # `of status --work` only: an ask about a work is not the work being done (PR 86)
 DONE = {"done", "parked", "park"}
 
@@ -1025,19 +1026,16 @@ def render_periods(out, top=10):
 
 
 def write(out, path=None):
+    # A session can link the listener's state files (docs/guard.md, Gaps, "A process outside the sandbox follows a link").
     path = path or cache_path()
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump(out, fh, indent=1, sort_keys=True)
-    os.replace(tmp, path)
+    of_events.own_dir(os.path.dirname(path))
+    of_events.write_new(path, json.dumps(out, indent=1, sort_keys=True))
 
 
 def load(path=None):
     """The last sums the listener wrote (this month's), or None."""
     try:
-        with open(path or cache_path()) as fh:
-            return json.load(fh)
+        return json.loads(of_events.read_own(path or cache_path(), cap=SPEND_MAX_BYTES))
     except (OSError, ValueError):
         return None
 

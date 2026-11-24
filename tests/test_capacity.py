@@ -6,12 +6,14 @@ import glob
 import hashlib
 import json
 import os
+from pathlib import Path
 import re
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -386,6 +388,80 @@ class PassiveCapacity(unittest.TestCase):
         self.assertFalse(os.path.exists(old))
         self.assertTrue(os.path.exists(keep))
         self.assertTrue(os.path.exists(other))
+
+
+class CapacityStateFiles(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patch = mock.patch.object(of_capacity, "STATE_DIR", tmp.name)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.target = Path(tmp.name, "target.json")
+        self.cache = Path(of_capacity._cache_path())
+        self.index = Path(of_capacity._spend_path())
+        self.index.parent.mkdir()
+
+    def test_the_cache_lives_in_capacitys_own_folder(self):
+        self.assertEqual(self.cache.parent, self.index.parent)
+
+    def test_the_old_cache_name_is_read_once_and_removed_at_the_next_save(self):
+        old = Path(of_capacity._old_cache_path())
+        old.write_text('{"_balanced": {"s": [1, 2]}}')
+        os.chmod(old, 0o600)
+        self.assertEqual(of_capacity.load_cache(), {"_balanced": {"s": [1, 2]}})
+        of_capacity.save_cache({"_balanced": {"s": [1, 2]}, "d": {}})
+        self.assertFalse(old.exists())
+        old.write_text('{"forged": true}')
+        self.assertEqual(of_capacity.load_cache(), {"_balanced": {"s": [1, 2]}, "d": {}})
+
+    def test_a_link_at_the_old_cache_name_is_removed_never_its_target(self):
+        self.target.write_text("untouched")
+        old = Path(of_capacity._old_cache_path())
+        old.symlink_to(self.target)
+        self.assertEqual(of_capacity.load_cache(), {})
+        of_capacity.save_cache({"a": 1})
+        self.assertFalse(old.is_symlink() or old.exists())
+        self.assertEqual(self.target.read_text(), "untouched")
+
+    def test_load_cache_ignores_a_symlink(self):
+        self.target.write_text('{"from_target": true}')
+        self.cache.symlink_to(self.target)
+        self.assertEqual(of_capacity.load_cache(), {})
+
+    def test_save_cache_replaces_a_symlink(self):
+        self.target.write_text("untouched")
+        self.cache.symlink_to(self.target)
+        os.symlink(self.target, f"{self.cache}.{os.getpid()}.tmp")
+        of_capacity.save_cache({"a": 1})
+        self.assertEqual(self.target.read_text(), "untouched")
+        self.assertFalse(self.cache.is_symlink())
+        self.assertTrue(self.cache.is_file())
+        self.assertEqual(self.cache.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(self.cache.read_text()), {"a": 1})
+
+    def test_spend_index_ignores_and_replaces_a_symlink(self):
+        original = json.dumps({"files": {}, "msgs": {"m": [100, "session", 1, "account", False]}})
+        self.target.write_text(original)
+        self.index.symlink_to(self.target)
+        os.symlink(self.target, f"{self.index}.{os.getpid()}.tmp")
+        self.assertEqual(of_capacity.spend_index([], now=100), {})
+        self.assertEqual(self.target.read_text(), original)
+        self.assertFalse(self.index.is_symlink())
+        self.assertTrue(self.index.is_file())
+        self.assertEqual(self.index.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(self.index.read_text()), {"files": {}, "msgs": {}, "copied": {}, "born": {}})
+
+    def test_fifos_do_not_block_a_service(self):
+        for path, read in ((self.cache, of_capacity.load_cache), (self.index, lambda: of_capacity.spend_index([]))):
+            with self.subTest(path=path.name):
+                os.mkfifo(path)
+                result = []
+                thread = threading.Thread(target=lambda: result.append(read()), daemon=True)
+                thread.start()
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive(), f"blocked reading {path.name}")
+                self.assertEqual(result, [{}])
 
 
 class StatusAndTarget(unittest.TestCase):
