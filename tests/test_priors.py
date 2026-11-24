@@ -1,5 +1,6 @@
-"""The priors tally (bin/of_priors.py, docs/diagnose.md §5.2): latest label, the current version's issues only,
-distinct judgements, p; and a table that carries no issue id, note or case. Pure logic: no store, no replay."""
+"""The priors tally (bin/of_priors.py, docs/diagnose.md §5.2): the latest label that counts (its writer may label the
+issue, as diagnose reads it), the current version's issues only, distinct judgements, p; and a table that carries no
+issue id, note or case. TallyTest is pure logic; MainTest runs main over a scratch store."""
 import os
 import sys
 import unittest
@@ -13,18 +14,27 @@ CAT = {"rules": {"chatty": {"version": 4, "labels_carry_from": [3], "p": 0.6},
 TS = "2026-11-16T10:20:00Z"
 
 
-def lab(rule, v, label, note=None, ts=TS):
-    return {"rule": f"ap.{rule}", "rule_version": f"ap.{rule}@{v}", "label": label, "note": note, "ts": ts}
+def lab(rule, v, label, note=None, ts=TS, by=None):
+    out = {"rule": f"ap.{rule}", "rule_version": f"ap.{rule}@{v}", "label": label, "note": note, "ts": ts}
+    return dict(out, by=by) if by else out
+
+
+def hist(labels):
+    """{issue id: a label, or its labels oldest first} as of_diagnose.label_history gives them."""
+    return {k: v if isinstance(v, list) else [v] for k, v in labels.items()}
 
 
 class TallyTest(unittest.TestCase):
-    def run_tally(self, labels, raised=None, blocked=()):
+    def run_tally(self, labels, raised=None, blocked=(), who=None, keeper=None):
+        """RAISED: the ids the replays raise (all by default); WHO: {id: affected and decider_position} of those."""
         seen = []
 
         def r(b):
             seen.append(b)
-            return {"ids": set(labels) if raised is None else raised, "blocked": blocked}
-        out, meta = of_priors.tally(labels, CAT, r)
+            ids = set(labels) if raised is None else raised
+            return {"issues": {i: (who or {}).get(i, {"affected": [], "decider_position": None}) for i in ids},
+                    "keeper": keeper, "blocked": blocked}
+        out, meta = of_priors.tally(hist(labels), CAT, r)
         return out, meta, seen
 
     def test_distinct_judgements_and_p(self):
@@ -62,6 +72,30 @@ class TallyTest(unittest.TestCase):
         r = out["ap.chatty@4"]
         self.assertEqual((r["older_version"], r["replay_blocked"], r["not_raised"], r["counted"]), (1, 3, 0, 1))
 
+    def test_a_label_counts_only_from_a_writer_who_may_label_the_issue(self):
+        # of_diagnose.may_label (organic-framework PR 630): the owner on any issue; the keeper and the position the
+        # issue routes to, unless the issue names them; the latest label that counts stands for the issue
+        who = {"k": {"affected": ["a", "b"], "decider_position": "kp"},
+               "self": {"affected": ["a", "b"], "decider_position": "kp"},
+               "later": {"affected": ["a", "b"], "decider_position": "kp"},
+               "unit": {"affected": ["c"], "decider_position": "u1"},
+               "stranger": {"affected": ["c"], "decider_position": "u1"},
+               "named": {"affected": ["kp", "d"], "decider_position": "kp"}}
+        labels = {"k": lab("chatty", 4, "true_positive", "k note", by="kp"),
+                  "self": lab("chatty", 4, "false_positive", "not me", by="a"),          # the issue names a
+                  "later": [lab("chatty", 4, "true_positive", "kept", by="kp"),
+                            lab("chatty", 4, "false_positive", "mine", ts="2026-11-16T11:00:00Z", by="a")],
+                  "unit": lab("chatty", 4, "true_positive", "unit note", by="u1"),      # routed to its unit owner
+                  "stranger": lab("chatty", 4, "false_positive", "x", by="zz"),
+                  "named": lab("chatty", 4, "false_positive", "about me", by="kp"),      # the keeper, named by it
+                  "owner": lab("chatty", 4, "false_positive", "owner says no"),          # no writer: the owner
+                  "unseen": lab("chatty", 4, "true_positive", "y", by="kp")}             # its replay does not raise it
+        out, meta, seen = self.run_tally(labels, raised=set(who), who=who, keeper="kp")
+        r = out["ap.chatty@4"]
+        self.assertEqual((r["labels"], r["other_writer"], r["not_raised"], r["counted"], r["distinct"],
+                          r["false_positive"]), (8, 3, 1, 4, 4, 1))
+        self.assertEqual(len(seen), 7)          # the owner's label on the current version needs no replay
+
     def test_sittings_replay_only_carried_labels(self):
         h = "2026-11-16T"
         labels = {"a": lab("chatty", 3, "true_positive", ts=h + "09:10:00Z"),
@@ -69,7 +103,7 @@ class TallyTest(unittest.TestCase):
                   "c": lab("chatty", 3, "true_positive", ts=h + "10:05:00Z"),     # 55 min after a: the same sitting
                   "d": dict(lab("off-map-work", 1, "true_positive", ts=h + "12:00:00Z"), rule_version=None),
                   "e": lab("chatty", 2, "true_positive", ts=h + "13:00:00Z")}      # @2 is not carried: none
-        plan, end_of = of_priors.sittings(labels, CAT)
+        plan, end_of = of_priors.sittings(hist(labels), CAT)
         e = of_priors.of_model.epoch
         self.assertEqual(plan, [(e(h + "11:00:00Z"), {"chatty"}), (e(h + "12:00:00Z"), {"off-map-work"})])
         self.assertEqual(end_of, {"a": e(h + "11:00:00Z"), "c": e(h + "11:00:00Z"), "d": e(h + "12:00:00Z")})
@@ -86,8 +120,11 @@ class TallyTest(unittest.TestCase):
                          "evidence": {"merged": {"ap.inbound-backlog@3": {}}}}]}
         d["rules"] = [{"rule": "ap.bottleneck-broker", "status": "fired"}, {"rule": "ap.chatty", "status": "blocked"},
                       {"rule": "ap.lingering", "status": "quiet"}, {"rule": "ap.loop-wip", "status": "failed"}]
-        self.assertEqual(of_priors.replayed(d), {"ids": {"host", of_priors.of_model.issue_id("inbound-backlog", ["p1"])},
-                                                 "blocked": {"ap.chatty", "ap.loop-wip"}})
+        d["structure_keeper"] = "kp"
+        host = {"affected": ["p1"], "decider_position": None}
+        self.assertEqual(of_priors.replayed(d), {"issues": {"host": host,
+                                                            of_priors.of_model.issue_id("inbound-backlog", ["p1"]): host},
+                                                 "keeper": "kp", "blocked": {"ap.chatty", "ap.loop-wip"}})
 
     def test_table_carries_no_id_note_or_case(self):
         labels = {"9f3c2a1b7e44": lab("off-map-work", 1, "false_positive", "obs_keeper covers the alert rules"),
@@ -140,18 +177,21 @@ class MainTest(unittest.TestCase):
             conn = of_store.connect(os.path.join(t, "of.db"))
             iid = of_priors.of_model.issue_id
             now = of_priors.current(of_priors.of_diagnose.catalogue(), "ap.unkept-system")[0]   # @0 is carried by it
-            for i, (org, rule, v, label, note, ts, issue) in enumerate((
+            for i, (org, rule, v, label, note, ts, issue, *by) in enumerate((
                     ("acme", "unkept-system", 0, "true_positive", "db has no keeper", "2026-11-10T09:00:00Z",
                      iid("unkept-system", ["db"])),                               # @0, carried by @1: replayed, raised
                     ("acme", "unkept-system", 0, "false_positive", "kept by the vendor", "2026-11-10T09:20:00Z",
                      iid("unkept-system", ["app"])),                              # replayed: app has a keeper
+                    ("acme", "unkept-system", 0, "false_positive", "not mine to keep", "2026-11-10T09:40:00Z",
+                     iid("unkept-system", ["db"]), "acme_lead"),   # a position that may not label it: the owner's stands
                     ("acme", "unkept-system", now, "true_positive", "a note", "2026-11-12T09:00:00Z", "a1b2c3d4e5f6"),
                     ("beta", "unkept-system", 0, "false_positive", "beta's own", "2026-11-10T09:00:00Z",
                      iid("unkept-system", ["cache"])))):
                 of_store.add_event(conn, {"of.event.id": f"e{i}", "timestamp": ts, "event.name": "of.issue_labelled",
                                           "of.org": org, "of.payload": {"issue_id": issue, "rule": f"ap.{rule}",
                                                                         "rule_version": f"ap.{rule}@{v}",
-                                                                        "label": label, "note": note, "by": "owner"}})
+                                                                        "label": label, "note": note,
+                                                                        "by": (by or ["owner"])[0]}})
             conn.close()
             saved = {k: os.environ.get(k) for k in ("OF_ORGS", "OF_DB")}
             os.environ.update(OF_ORGS=os.path.join(t, "orgs.yaml"), OF_DB=os.path.join(t, "of.db"))
@@ -168,10 +208,11 @@ class MainTest(unittest.TestCase):
         d = json.loads(out.getvalue())
         self.assertEqual((d["labels"], d["replays"]), (3, 1))                 # beta's label is not acme's
         r = d["rules"][f"ap.unkept-system@{now}"]
-        self.assertEqual((r["labels"], r["older_version"], r["replay_blocked"], r["not_raised"], r["counted"],
-                          r["distinct"], r["false_positive"], r["p"]), (3, 0, 0, 1, 2, 2, 0, None))
+        self.assertEqual((r["labels"], r["older_version"], r["other_writer"], r["replay_blocked"], r["not_raised"],
+                          r["counted"], r["distinct"], r["false_positive"], r["p"]), (3, 0, 0, 0, 1, 2, 2, 0, None))
         self.assertIn("replay 1/1", err.getvalue())
-        for secret in ("db has no keeper", "vendor", "a1b2c3d4e5f6", iid("unkept-system", ["db"]), "acme_lead", '"db"'):
+        for secret in ("db has no keeper", "vendor", "not mine", "a1b2c3d4e5f6", iid("unkept-system", ["db"]), "acme_lead",
+                       '"db"'):
             self.assertNotIn(secret, out.getvalue() + text.getvalue())
 
 
