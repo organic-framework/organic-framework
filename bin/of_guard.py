@@ -1126,6 +1126,16 @@ def _here_word(text, i):
     word, quoted = [], False
     while j < n and text[j] not in _HERE_META:
         c = text[j]
+        if c == "$" and text.startswith("$'", j):   # an ANSI-C part: its value as bash decodes it (of_review on PR 637)
+            m = _ANSI_WORD.match(text, j)
+            if not m:
+                return None
+            word.append(_ansi_c_body(m.group(1)))
+            quoted, j = True, m.end()
+            continue
+        if c == "$" and text.startswith('$"', j):   # a locale part reads as its double-quoted text
+            j += 1
+            continue
         if c == "\\" and j + 1 < n:
             if text[j + 1] == "\n":       # a backslash-newline joins the word's lines
                 j += 2
