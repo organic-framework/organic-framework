@@ -1104,7 +1104,7 @@ def _code_deny(code, lang=None):
     # a removal call's own argument counts a folder above a kept one at any depth (`rmtree('~/.local')`, the home:
     # of_secrets-review on PR 629); any other literal only when it lies deep enough (_deep_lit)
     gone_args = {m.group(2) for m in _REMOVAL_ARG.finditer(code)} if gone else set()
-    opened = {m.group(2) for m in _OPENED_ARG.finditer(code)}
+    opened = {m.group(2) for m in _OPENED_ARG.finditer(code)} | {m.group(3) for m in _DEST_ARG.finditer(code)}
     live = next((l for l in lits if not re.search(r"\s", l.strip()) and l.strip().lstrip("<>+|& ")
                  and (l.strip().lstrip("<>+|& ").startswith(("/", "~", "$")) or _rel_path_lit(l.strip().lstrip("<>+|& "), opened))
                  and _in_live(l.strip().lstrip("<>+|& "), _live_box(), _DENY_CWD[0], gone, gone and (l.strip().lstrip("<>+|& ") in gone_args or _deep_lit(l.strip().lstrip("<>+|& "))))), None) \
@@ -4890,9 +4890,14 @@ def _live_box_real():
     return sorted(out)
 
 
-_OPENED_ARG = re.compile(r"(?<![.\w])(?:open|Path|copy\w*|move|rename|replace)\s*\(\s*"
+_OPENED_ARG = re.compile(r"(?:(?<![.\w])(?:open|Path|copy\w*|move|rename|replace)|\b(?:pathlib\.)?Path|"
+                         r"\b(?:os|shutil)\.(?:copy\w*|move|rename|replace))\s*\(\s*"
                          r"(?:[^'\"()]*,\s*)?(?:(?:file|path|name|dst|src)\s*=\s*)?(['\"])([^'\"\n]+)\1")
-# (a builtin's or a module's call, never a method's: `p.open('w')` names a mode; a keyword argument too: open(file='x'))
+# (a builtin's, pathlib's Path or os's and shutil's calls, never another method's: `p.open('w')` names a mode;
+# a keyword argument too: open(file='x'); of_secrets-review on PR 629: pathlib.Path('stamp').touch())
+# a copy's, a move's or a rename's destination, its second argument (shutil.copy('/tmp/x', 'stamp'))
+_DEST_ARG = re.compile(r"\b(?:copy\w*|move|rename|renames|replace|symlink|link)\s*\(\s*(['\"])[^'\"\n]+\1\s*,\s*"
+                       r"(?:(?:dst|dest|target)\s*=\s*)?(['\"])([^'\"\n]+)\2")
 _REMOVAL_ARG = re.compile(r"\b(?:rmtree|remove|removedirs|rmdir|unlink|rename|renames|replace|move|delete)\s*\(\s*"
                           r"(?:(?:os\.path\.)?(?:expanduser|abspath|realpath|expandvars)\s*\(\s*|Path\s*\(\s*)*"
                           r"(['\"])([^'\"\n]+)\1")
