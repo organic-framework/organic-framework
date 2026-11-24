@@ -1002,7 +1002,10 @@ def codex_seat(seat=None, rows=None, choose=None, training=None):
             raise SpawnError(f"{seat}: its account's Codex training reading is not verified off (of capacity status), "
                              "so it takes no position's start context")
         return os.path.expanduser(seat)
-    row = (choose or of_capacity.codex_seat_for)(rows or [], public=False)
+    if choose is None:   # the training map a caller gave reaches the choice (of_review's note on PR 634)
+        def choose(r, public):
+            return of_capacity.codex_seat_for(r, public=public, training=training)
+    row = choose(rows or [], public=False)
     if not row or not row.get("home"):
         raise SpawnError("no Codex seat with headroom and its training reading verified off (of capacity status); "
                          "pass --config-dir <a CODEX_HOME>, or see the founder's card on Codex seats (OF-169)")

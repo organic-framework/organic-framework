@@ -71,6 +71,10 @@ class RulesFileTest(unittest.TestCase):
             ctx = of_context.build("a_keeper", self.positions, cwd=self.work)
             self.assertNotIn("Commit locally", ctx)
             self.assertIn("reach you whole from " + os.path.join(self.work, ".claude", "rules", "of-acme.md"), ctx)
+            # a Codex session reads no .claude/rules: its context holds them whole (of_review on PR 634)
+            ctx = of_context.build("a_keeper", self.positions, cwd=self.work, harness="codex")
+            self.assertIn("Commit locally", ctx)
+            self.assertNotIn("which Claude Code loads", ctx)
         finally:
             of_spawn.work_dir = saved
 
