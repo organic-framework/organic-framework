@@ -3539,8 +3539,8 @@ def _line_act(words):
             return True
         if rest[:1] == ["access"] and any(x in ("grant", "revoke", "link", "record") for x in rest[1:]):
             return True
-        if _org_path_act(rest) or _server_route_act(rest) or _issues_label_act(rest):
-            return True   # and of issues label, as the per-command reading takes it
+        if _org_path_act(rest) or _server_route_act(rest) or _live_act(rest) or _issues_label_act(rest):
+            return True   # and of live setup|switch and of issues label, as the per-command reading takes them
     return False
 
 
@@ -3948,7 +3948,7 @@ def _actor_act(words):
         return False  # `of asks withdraw --help` records nothing (of_review on organic-framework PR 387)
     return (words[:1] == ["asks"] and len(words) > 1 and words[1] in ACTOR_ACTS) or \
         (words[:1] == ["access"] and len(words) > 1 and words[1] in ("grant", "revoke", "link", "record")) or \
-        _org_path_act(words) or _server_route_act(words) or _issues_label_act(words)
+        _org_path_act(words) or _server_route_act(words) or _live_act(words) or _issues_label_act(words)
 
 
 def _issues_label_act(words):
@@ -3956,6 +3956,14 @@ def _issues_label_act(words):
     caller is refused as for every act here (of_review on organic-framework PR 630). A session's own label passes."""
     words = [w for w in words if w != "--"]
     return words[:1] == ["issues"] and "label" in words[1:]
+
+
+def _live_act(words):
+    """`of live setup` and `of live switch`: the hooks of every account, OF's units and the `of` on PATH moved to the
+    live checkout, the owner's by the positive test (of_review on organic-framework PR 628). By its word anywhere after
+    `live`, as `of server route` is read; `of live request` and `status` are anyone's."""
+    words = [w for w in words if w != "--"]
+    return words[:1] == ["live"] and any(w in ("setup", "switch") for w in words[1:])
 
 
 def _server_route_act(words):
