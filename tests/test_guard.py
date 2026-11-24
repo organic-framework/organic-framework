@@ -1021,8 +1021,17 @@ class MuseLoginTest(unittest.TestCase):
             self.assertTrue(self.deny(cmd), cmd)
         got = of_guard.critical_deny("Write", {"file_path": f, "content": "x"}, "/tmp")
         self.assertTrue(got and "Muse's login" in got[0])
-        for cmd in (f"ls {self.dir}", "of subagent run --harness muse --kind read"):
+        for cmd in (f"ls {self.dir}", "of subagent run --harness muse --kind read",
+                    "of send of_x 'run of subagent muse-login in your terminal'"):
             self.assertFalse(self.deny(cmd), cmd)
+        for cmd in ("of subagent muse-login", "python3 bin/of subagent muse-login",   # of_review on PR 655
+                    f"python3 -c \"open('{f}', 'w').write('x')\""):
+            self.assertTrue(self.deny(cmd), cmd)
+        from unittest import mock
+        other = os.path.join(self.tmp.name, "state2")   # with OF_STATE elsewhere, an interpreter's write too
+        os.makedirs(os.path.join(other, "subagent/muse-login"))
+        with mock.patch.dict(os.environ, {"OF_STATE": other}):
+            self.assertTrue(self.deny(f"python3 -c \"open('{other}/subagent/muse-login/a', 'w').write('x')\""))
 
 
 class LiveCheckoutTest(unittest.TestCase):

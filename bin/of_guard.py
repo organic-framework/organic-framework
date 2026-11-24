@@ -1341,6 +1341,13 @@ def _code_deny(code, lang=None):
         # where it writes, whatever call takes it; a file mode in its place excepted (of_review on PR 629)
     if live:
         return LIVE_DENY, live
+    muse = next((l for l in lits if not re.search(r"\s", l.strip()) and l.strip().lstrip("<>+|& ")
+                 and (l.strip().lstrip("<>+|& ").startswith(("/", "~", "$")) or _rel_path_lit(l.strip().lstrip("<>+|& "), opened))
+                 and _in_folders(l.strip().lstrip("<>+|& "), _muse_login_box(), _DENY_CWD[0], gone,
+                                 gone and (l.strip().lstrip("<>+|& ") in gone_args or _deep_lit(l.strip().lstrip("<>+|& "))))),
+                None) if _CODE_WRITE.search(code) else None   # G44 in code
+    if muse:
+        return MUSE_LOGIN_DENY, muse
     idx = next((l for l in lits if not re.search(r"\s", l.strip())
                 and l.strip().lstrip("<>+|& ").startswith(("/", "~", "$"))
                 and (_in_session_index(l.strip().lstrip("<>+|& "))
@@ -4217,6 +4224,21 @@ def _actor_act(words):
         (words[:1] == ["access"] and len(words) > 1 and words[1] in ("grant", "revoke", "link", "record")) or \
         _org_path_act(words) or _server_route_act(words) or _live_act(words) or _issues_label_act(words) or \
         _muse_login_act(words)
+
+
+def _muse_login_run(cmd):
+    """G44: `of subagent muse-login` run from an agent's session at all (of_review on PR 655): the owner's, once, in a
+    plain terminal, where no hook runs, so any call a hook sees is refused."""
+    if "muse-login" not in cmd:
+        return None
+    words = _line_words(_without_prose(_without_code_text(cmd)))
+    for k, w in enumerate(words):
+        if _fold_name(os.path.basename(w)) in ("of", "of.py") and words[k + 1:k + 2] == ["subagent"] and \
+                "muse-login" in words[k + 2:k + 6]:
+            return MUSE_LOGIN_DENY, "of subagent muse-login"
+    return None
+
+
 
 
 def _muse_login_act(words):
@@ -7328,7 +7350,7 @@ def critical_deny(tool, tool_input, cwd=None, caller=None):
         cmd = ti.get("command") or ""
         _DENY_CWD[0] = cwd
         try:
-            hit = _actor_line_deny(cmd) or _actor_set_deny(cmd) or _bash_deny(cmd)
+            hit = _actor_line_deny(cmd) or _actor_set_deny(cmd) or _muse_login_run(cmd) or _bash_deny(cmd)
         except Exception as e:  # a parser slip: the old text match first, then a deny unless the shell would refuse
             # the line itself (of_review on PR 575)
             bare = _strip_quoted(cmd)
