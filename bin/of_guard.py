@@ -4810,17 +4810,25 @@ def _live_git(args, cwd, env, shvars):
         v = env.get(k) or (shvars or {}).get(k)
         if v:
             cands.append(os.path.join(where, _expanduser(str(v).strip("'\""))))
+    sub = (sub or "").lower()
+    # a file git writes by name lands where it says, wherever git runs: `diff --output=<live>/x` writes there too
+    # (of_secrets-review on PR 629)
+    box = _live_box()
+    out = next((o for o in _git_outputs(sub, rest) if o and _in_folders(_expanduser(o.strip("'\"")), box, where)), None)
+    if out:
+        return out
     hit = next((c for c in cands if _in_folders(c, _live_box(), cwd)), None)
     if not hit:
         return None
-    sub = (sub or "").lower()
     if sub in _LIVE_GIT_READS:
         return None
     if sub == "config" and any(a in ("--get", "--get-all", "--get-regexp", "--list", "-l", "--get-urlmatch")
                                for a in rest):
         return None
-    if sub in ("branch", "stash", "worktree", "remote", "tag", "notes") and \
+    if sub in ("branch", "worktree", "remote", "tag", "notes") and \
             (not rest or rest[0] in ("list", "-v", "-vv", "-a", "-r", "--list", "show")):
+        return None
+    if sub == "stash" and rest and rest[0] in ("list", "show"):   # a bare `git stash` pushes (of_secrets-review)
         return None
     return hit
 
