@@ -718,6 +718,7 @@ def sandbox_settings(deny=None, platform=None, scratch=None, org=None, rules_dir
         top = os.path.realpath(cwd)
         guarded += [os.path.join(top, x) for x in POSITION_TOP]
         guarded += [os.path.join(c, x) for c in position_clones(top) for x in CLONE_CONTROL]
+    _unit_folders()
     return {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
             "autoAllowBashIfSandboxed": True,
             "filesystem": {"denyRead": denied,
@@ -737,7 +738,22 @@ def sandbox_settings(deny=None, platform=None, scratch=None, org=None, rules_dir
 # the units' watchdog and heartbeat files (of_server, 2026-11-24, after of_review's finding on the capacity cache)
 UNIT_STATE_WRITES = ("guard-credentials.json", "guard-grants.json", "passkey-revoked.json", "capacity",
                      "capacity.json", "scratch-quota.json", "listen-watchdog.json", "relay-watchdog.json",
-                     "relay-heartbeat.json", "listen.heartbeat", "listen.ticks")
+                     "relay-heartbeat.json", "listen.heartbeat", "listen.ticks", "studio")
+# those of them that are folders, made before the sandbox is written: the sandbox leaves an empty read-only file at a
+# denied path that does not exist (agent-host_keeper on the host, 2026-11-24: subagent/muse-login), and a folder's
+# owner could then never make it (of_capacity's own_dir, Studio's render). Studio's folder feeds what people are told:
+# the render's pages and issues, the keepers' history, the usage files (of_studio, 2026-11-24: only OF's units render).
+UNIT_STATE_FOLDERS = ("capacity", "studio")
+
+
+def _unit_folders():
+    """Make each of UNIT_STATE_FOLDERS a folder of this user's (0700), so the sandbox binds a folder there."""
+    import of_events
+    for n in UNIT_STATE_FOLDERS:
+        try:
+            of_events.own_dir(os.path.expanduser(f"~/.local/state/of/{n}"))
+        except OSError:
+            pass   # not ours, or a file already: the sandbox denies it all the same; its owner reports it
 
 
 def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=None, org=None, rules_dirs=None):

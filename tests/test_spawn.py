@@ -912,6 +912,8 @@ class SandboxBlock(unittest.TestCase):
         self.assertEqual(box["filesystem"]["denyWrite"][-n:],
                          [os.path.expanduser("~/.local/state/of/index.json")] + units + cos)  # G36, the units', OF's code
         self.assertIn(os.path.expanduser("~/.ssh"), box["filesystem"]["denyRead"])
+        for n in of_spawn.UNIT_STATE_FOLDERS:   # made first: the sandbox would leave an empty file at a missing path
+            self.assertTrue(os.path.isdir(os.path.expanduser(f"~/.local/state/of/{n}")), n)
         self.assertEqual(box["filesystem"]["allowWrite"], [os.path.expanduser("~/.local/state/of")])
         self.assertEqual((box["network"]["allowAllUnixSockets"], box["network"]["strictAllowlist"]), (True, True))
         self.assertIn("github.com", box["network"]["allowedDomains"])                # bypass mode: the list binds
