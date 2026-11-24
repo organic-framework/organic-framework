@@ -27,7 +27,7 @@ MCP = """
    2. Skip for now
 """
 ENTER = "Something happened.\n\n Press Enter to continue…\n"
-LIMIT = "\n  5-hour limit reached ∙ resets 3pm\n  /upgrade to increase your usage limit.\n"
+LIMIT = "\n  ⎿  5-hour limit reached ∙ resets 3pm\n     /upgrade to increase your usage limit.\n"
 LOGIN = "\n Invalid API key · Please run /login\n"
 EXIT = "\n Exit and stop tasks?\n ❯ 1. Yes, exit and stop 2 background tasks\n   2. No, keep running\n"
 COMPACT = "\n".join(["─" * 40, " We recommend compacting earlier", "", "   ❯ Autocompact at ‹ 400k › tokens",
@@ -58,6 +58,17 @@ class BlockedTest(unittest.TestCase):
                 "  You've used 90% of your 5-hour limit · resets 3:10am\n  ⏵⏵ bypass permissions on\n")
         self.assertIsNone(of_blocked.detect(warn))
         self.assertEqual(of_blocked.detect(warn + LIMIT)["type"], "limit")  # a real stop on the same screen still is
+
+    def test_a_limit_quoted_in_a_typed_message_is_no_stop(self):
+        """of_capacity, message 01a20c14-3ba1: an escalation note typed into its pane quoted "stopped on a usage limit"
+        and the dialog's options; Claude Code's own line carries its marker."""
+        quoted = ("> Question from accounting_keeper (via of pulse): accounting_keeper stopped on a usage limit.\n"
+                  "  1. Stop and wait for limit to reset\n  2. Upgrade your plan\n  ⏵⏵ bypass permissions on\n")
+        self.assertIsNone(of_blocked.detect(quoted))
+        for line in ("  ⏺ 5-hour limit reached · resets 3am", "  ⚠ Weekly limit reached · resets Mon 9:00",
+                     "  ⎿  You've reached your usage limit"):
+            with self.subTest(line=line):
+                self.assertEqual(of_blocked.detect("\n" + line + "\n")["type"], "limit")
 
     def test_a_limit_line_before_a_finished_turn_is_history(self):
         """2026-11-11, ask ce572545 (of_capacity): a scheduled run's old limit line above an idle prompt."""

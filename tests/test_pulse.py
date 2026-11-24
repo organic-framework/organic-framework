@@ -617,6 +617,11 @@ class DelegationAskTest(unittest.TestCase):
                  "tags": [], "tags_declared": False}
         self.assertEqual([r for _, r, _ in of_pulse.escalations(positions, [filed], T0)], ["ask.blocking"])
         self.assertEqual(of_pulse.escalations(positions, [dict(filed, kind="question (declared)")], T0), [])
+        # a limit screen the detector told its receiver in the inbox never goes up, however long it stays open
+        # (of_capacity, message 01a20c14-3ba1: 26 such cards reached the founder overnight)
+        limit = dict(filed, kind="blocked:limit", blocking=False)
+        self.assertEqual(of_pulse.escalations(positions, [limit], T0 + 5 * 3600), [])
+        self.assertTrue(of_pulse.escalations(positions, [dict(limit, kind="blocked:login")], T0 + 5 * 3600))
         # ask_due < 7d (hand-over 2b2289a8; a user organization's compliance duties): its own --due, at filing and later
         due_pos = [dict(positions[0], _delegation=dict(deleg, reporting={"escalate_when": ["ask_due < 7d"]}))]
         duty = dict(filed, kind="question (declared)", due=of_pulse._iso(T0 + 10 * 86400))

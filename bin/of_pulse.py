@@ -865,8 +865,15 @@ def escalations(positions, asks, now, already=()):
     import re
     by_name = {p["name"]: p for p in positions}
     out, cache = [], {}
+    import of_blocked
     for a in asks:
         if a["state"] != "open" or a.get("to") in ("founder", "owner", None) or a["event_id"] in already:
+            continue
+        kind = str(a.get("kind") or "")
+        if kind.startswith("blocked:") and kind.split(":", 1)[1] in of_blocked.FYI:
+            # a screen the detector tells its receiver in the inbox only (a usage limit, to of_capacity): its rescue or
+            # the pool question covers it, never the founder's queue (of_capacity, message 01a20c14-3ba1: 26 limit
+            # cards went up overnight while every account was spent and the pool question was already filed)
             continue
         d = (by_name.get(a.get("position")) or {}).get("_delegation") or {}
         rules = [str(x).strip() for x in ((d.get("reporting") or {}).get("escalate_when") or [])]
