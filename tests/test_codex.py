@@ -147,6 +147,39 @@ class LayerTest(unittest.TestCase):
                                                            "review@openai-curated": {"enabled": True}}},
                                   checkout_bin="/home/alex/organic-framework/bin", **kw)
 
+    def test_one_string_of_paths_is_one_path_and_never_the_root(self):
+        """of_review on PR 475: `paths: /srv/team` gave its characters, and each / mapped the whole disk readable."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:
+            f = os.path.join(t, "orgs.yaml")
+            with open(f, "w") as fh:
+                fh.write("orgs:\n  - name: a\n    path: /\n    paths: /srv/team\n  - name: b\n    paths: [~]\n")
+            got = of_codex.org_repos(f)
+        self.assertEqual(got, ["/srv/team"])
+
+    def test_no_profile_without_its_deny_list(self):
+        from unittest import mock
+        import of_spawn
+        with mock.patch.object(of_spawn, "sandbox_settings", return_value=None):
+            with self.assertRaises(ValueError):
+                of_codex.filesystem("/home/alex/wt")
+
+    def test_the_layer_takes_the_positions_own_credential_rules(self):
+        import tempfile
+        from unittest import mock
+        import of_spawn
+        with tempfile.TemporaryDirectory() as t:
+            secret = os.path.realpath(t)
+            with mock.patch.object(of_spawn, "deny_rules", return_value=[f"Read(/{secret}/**)"]) as dr:
+                fs = self.doc()["permissions"][of_codex.PROFILE]["filesystem"]
+        dr.assert_called_once()
+        self.assertEqual(dr.call_args[0][0], "of_docs")
+        self.assertEqual(fs.get(secret), "deny")
+
+    def test_a_working_folder_that_is_the_seat_home_is_refused(self):
+        with self.assertRaises(ValueError):
+            of_codex.filesystem("/home/alex/.codex-z", deny_rules=[], codex_home="/home/alex/.codex-z")
+
     def test_it_round_trips_and_holds_w3(self):
         d = tomllib.loads(of_codex.to_toml(self.doc()))
         self.assertEqual((d["approval_policy"], d["sandbox_mode"], d["default_permissions"]),

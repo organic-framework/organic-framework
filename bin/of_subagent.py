@@ -879,10 +879,12 @@ def hook_dirs():
         dirs = [os.path.dirname(of_codex.default_of_bin())]
         named = of_codex.installed_of_bin()   # a file written with --of-bin names its own (of_review on PR 475)
         if named:
-            dirs.append(os.path.dirname(os.path.realpath(named)))
+            folder = os.path.dirname(os.path.realpath(named))
+            # a checkout's bin folder whole; a launcher anywhere else alone, never the broad folder it lies in
+            dirs.append(folder if os.path.isfile(os.path.join(folder, "of_hook.py")) else os.path.realpath(named))
     except Exception:  # noqa: BLE001
         return []
-    return sorted({d for d in dirs if os.path.isdir(d)})
+    return sorted({d for d in dirs if os.path.isdir(d) or os.path.isfile(d)})   # a launcher alone is a file
 
 
 def bwrap_argv(argv, run_dir, work_dir, write_dir, exe, login, login_at):
