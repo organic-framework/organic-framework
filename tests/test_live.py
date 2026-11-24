@@ -93,10 +93,23 @@ class FfEntry(unittest.TestCase):
             self.assertEqual(of_live.checkout_org(f, checkout=t), "alpha")
             self.assertIsNone(of_live.checkout_org(f, checkout="/nowhere"))
 
-    def test_the_move_keeps_the_user_site_where_pyyaml_lives(self):
+    def test_the_move_runs_isolated_with_pyyaml_from_the_kept_copy(self):
+        """of_secrets-review on PR 629: -E loaded the user site, a folder sessions may write."""
         text = open(os.path.join(ROOT, "deploy", "laptop", "of-checkout-update.sh")).read()
-        self.assertIn('"$PY" -E -P -B', text)
-        self.assertNotIn('"$PY" -I', text)
+        self.assertIn('"$PY" -I -B', text)
+        self.assertNotIn('"$PY" -E', text)
+        self.assertIn("SITE=$LIVE/.git/of-site", text)
+
+    def test_setup_copies_pyyaml_and_the_isolated_run_imports_it(self):
+        with tempfile.TemporaryDirectory() as t:
+            os.makedirs(os.path.join(t, ".git"))
+            site = of_live.copy_pyyaml(live=t)
+            self.assertTrue(os.path.isfile(os.path.join(site, "yaml", "__init__.py")))
+            self.assertFalse(os.path.exists(os.path.join(site, "yaml", "__pycache__")))
+            r = subprocess.run([sys.executable, "-I", "-c", "import sys; sys.path.insert(0, sys.argv[1]); import yaml; "
+                                "print(yaml.__file__)", site], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(os.path.realpath(r.stdout.strip()).startswith(os.path.realpath(site)))
 
 
 class Switch(unittest.TestCase):
