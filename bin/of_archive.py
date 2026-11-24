@@ -58,8 +58,9 @@ def codex_roots(seats=None):
                 # under HOME as it is written, never its resolved form: a copy is kept at the path relative to HOME,
                 # and a resolved one against an unresolved HOME lay outside raw/files (of_review on PR 638)
                 out.append(os.path.join(HOME, os.path.relpath(home, real_home), "sessions"))
-    except Exception:  # noqa: BLE001 - no seat list: ~/.codex alone, as before
-        pass
+    except Exception as e:  # noqa: BLE001 - no seat list: ~/.codex alone, as before, and said
+        print(f"of archive: the Codex seats could not be read ({type(e).__name__}); ~/.codex/sessions alone",
+              file=sys.stderr)
     seen, roots = set(), []
     for r in out:
         if os.path.realpath(r) not in seen:
@@ -68,7 +69,8 @@ def codex_roots(seats=None):
     return roots
 
 
-ROLLOUT = re.compile(r"(?:^|/)rollout-[^/]*\.jsonl(?:\.zst)?$")
+# Codex's own name for a rollout: rollout-<time>-<thread id>.jsonl[.zst] (of_review's note on PR 638: any rollout- name)
+ROLLOUT = re.compile(r"(?:^|/)rollout-\d{4}-\d{2}-\d{2}T[\d-]+-[0-9a-f]{8}-[0-9a-f-]{27}\.jsonl(?:\.zst)?$")
 
 
 def harness_of(path):
@@ -77,11 +79,18 @@ def harness_of(path):
 
 
 def sources():
+    import stat
     roots = glob.glob(os.path.join(HOME, ".claude*", "projects")) + codex_roots()
     for root in roots:
         for dirpath, _, files in os.walk(root):
             for f in files:
-                yield os.path.join(dirpath, f)
+                p = os.path.join(dirpath, f)
+                try:   # a plain file only: never a link, a FIFO or a socket, which the copy would follow or wait on
+                    if not stat.S_ISREG(os.lstat(p).st_mode):   # (of_review's note on PR 638)
+                        continue
+                except OSError:
+                    continue
+                yield p
 
 
 def lower_priority():

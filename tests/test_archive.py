@@ -224,10 +224,25 @@ class CodexSeatsTest(unittest.TestCase):
 
     def test_a_rollout_is_codexs_in_whichever_seat_it_lies(self):
         import of_archive
-        self.assertEqual(of_archive.harness_of("/h/.codex-b/sessions/2026/11/24/rollout-2026-11-24T10-00-00-a.jsonl"),
+        self.assertEqual(of_archive.harness_of("/h/.codex-b/sessions/2026/11/24/rollout-2026-11-24T10-00-00-019dd3ac-47bf-7682-aba2-d629a586bdcd.jsonl"),
                          "codex")
-        self.assertEqual(of_archive.harness_of("/h/.codex-b/sessions/2026/11/24/rollout-x.jsonl.zst"), "codex")
+        self.assertEqual(of_archive.harness_of("/h/.codex-b/sessions/2026/11/24/rollout-2026-11-24T10-00-00-019dd3ac-47bf-7682-aba2-d629a586bdcd.jsonl.zst"), "codex")
         self.assertEqual(of_archive.harness_of("/h/.claude/projects/p/0a1b.jsonl"), "claude-code")
+        self.assertEqual(of_archive.harness_of("/h/.claude/projects/p/rollout-notes.jsonl"), "claude-code")
+
+    def test_sources_take_plain_files_only(self):
+        import tempfile
+        from unittest import mock
+        import of_archive
+        with tempfile.TemporaryDirectory() as t:
+            proj = os.path.join(t, ".claude", "projects", "p")
+            os.makedirs(proj)
+            open(os.path.join(proj, "a.jsonl"), "w").close()
+            os.mkfifo(os.path.join(proj, "f.jsonl"))
+            os.symlink("/etc/hosts", os.path.join(proj, "l.jsonl"))
+            with mock.patch.object(of_archive, "HOME", t), mock.patch.object(of_archive, "codex_roots", return_value=[]):
+                got = sorted(os.path.basename(p) for p in of_archive.sources())
+        self.assertEqual(got, ["a.jsonl"])
 
 
 if __name__ == "__main__":
