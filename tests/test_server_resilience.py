@@ -262,6 +262,14 @@ class WatchdogTest(unittest.TestCase):
             with open(os.path.join(agents, "dev.example.one.plist")) as fh:
                 self.assertEqual(fh.read(), "<plist/>")
             self.assertEqual([f for f in os.listdir(agents) if not f.endswith(".plist")], [])   # no temporary left
+            bait = os.path.join(home, "bait.txt")   # a link at the old fixed temporary name is never written through
+            open(bait, "w").close()
+            os.symlink(bait, os.path.join(agents, "dev.example.three.plist.tmp"))
+            of_server.load_launchd({"dev.example.three": "<plist/>"}, run=run)
+            with open(bait) as fh:
+                self.assertEqual(fh.read(), "")
+            os.mkfifo(os.path.join(agents, "dev.example.four.plist"))   # a FIFO at the name never blocks the read
+            of_server.load_launchd({"dev.example.four": "<plist/>"}, run=run)
             target = os.path.join(home, "mine.txt")
             open(target, "w").close()
             os.symlink(target, os.path.join(agents, "dev.example.two.plist"))
