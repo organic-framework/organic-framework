@@ -317,8 +317,10 @@ class SubagentTest(unittest.TestCase):
                     return run(argv, **kw)
                 out = io.StringIO()
                 self.assertEqual(g.check(snap, exe="/bin/true", run=stalls, out=out), 1)
-                self.assertIn("did not finish within 300 s on a batch of 2 files (2 files scanned before it)",
+                self.assertIn("did not finish within 300 s on a batch of 2 files (2 files scanned before it): ",
                               out.getvalue())
+                said = out.getvalue()   # the stalled batch's files by their path in the snapshot, with their size
+                self.assertRegex(said, r"src/f\d\.py \(\d+\.\d MiB\), src/f\d\.py \(\d+\.\d MiB\): fail closed")
 
     def test_what_a_patch_may_not_change(self):
         """RFC 0008 §3.3 (of_review on PR 336): agent settings and instructions, git control, CI, a new or converted

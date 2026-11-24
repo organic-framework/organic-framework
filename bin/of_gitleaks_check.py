@@ -339,8 +339,13 @@ def _check_batches(root, exe, run, out, env):
             if got is None:
                 return 1
             if got == "timeout":
+                # the batch's files by their path in the snapshot, largest first: the run's own position finds the one
+                # that stalls the scan and may exclude it (a user organization's structure keeper, 2026-11-24)
+                named = ", ".join(f"{rel} ({size / 1048576:.1f} MiB)" for rel, _, size in
+                                  sorted(batch, key=lambda x: -x[2])[:5])
+                more = f" and {len(batch) - 5} more" if len(batch) > 5 else ""
                 print(f"gitleaks did not finish within {SCAN_TIMEOUT_S} s on a batch of {len(batch)} files "
-                      f"({done} files scanned before it): fail closed", file=out)
+                      f"({done} files scanned before it): {named}{more}: fail closed", file=out)
                 return 1
             for f in got:
                 if checksummed_address(f.get("File") or "", f):
