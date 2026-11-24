@@ -98,12 +98,16 @@ def hooked_accounts(dirs=None):
         if not any("of-hook" in c or " hook " in c for c in cmds):
             continue
         flags = []
-        for c in cmds:   # the checkouts its hooks run from today: `<python> <checkout>/bin/of-hook <Event>`
-            for w in c.split():
-                if w.endswith("/bin/of-hook") or w.endswith("/bin/of"):
-                    old = os.path.join(os.path.dirname(w), "of")
-                    if old not in flags and os.path.realpath(old) != os.path.realpath(os.path.join(LIVE, "bin", "of")):
-                        flags += ["--replace", old]
+        for c in cmds:   # the checkouts its hooks run from today: `<python> <checkout>/bin/of-hook <Event>`, whose
+            # checkout may hold a blank, as the hook command writes it unquoted (of_review on PR 628)
+            head, _, rest = c.strip().partition(" ")
+            # the interpreter first, or (an older install) the program itself
+            prog = c.strip() if re.search(r"/bin/of(?:-hook)?$", head) else rest
+            m = re.match(r"(/.*?/bin/of(?:-hook)?)(?:\s+(?:hook\s+)?[A-Z]\w*\b|$)", prog)
+            if m:
+                old = os.path.join(os.path.dirname(m.group(1)), "of")
+                if old not in flags and os.path.realpath(old) != os.path.realpath(os.path.join(LIVE, "bin", "of")):
+                    flags += ["--replace", old]
         import of_init
         if any(m.get("matcher") == of_init.GUARD_MATCHER for m in hooks.get("PreToolUse") or []):
             flags.append("--guard")   # the guard's own group, never a recorder's PreToolUse (of_review on PR 628)
@@ -198,7 +202,9 @@ def setup(python=None, run=subprocess.run, live=LIVE, log=print, orgs_file=None,
     os.replace(path + ".new", path)
     dom = f"gui/{os.getuid()}"
     run(["launchctl", "bootout", f"{dom}/{LABEL}"], capture_output=True)
-    run(["launchctl", "bootstrap", dom, path], capture_output=True)
+    r = run(["launchctl", "bootstrap", dom, path], capture_output=True)
+    if getattr(r, "returncode", 1) != 0:   # of_review on PR 628: its exit was dropped and setup said it watched
+        raise LiveError(f"launchctl bootstrap {path} failed: the update agent is not loaded")
     log(f"  the update agent {LABEL} watches {REQUEST}")
     return live
 
@@ -218,7 +224,7 @@ def ff_entry(orgs_file, live=LIVE):
         return None
     for o in doc.get("orgs") or []:
         for e in (o.get("protected_code") or []) if isinstance(o, dict) else []:
-            if isinstance(e, dict) and e.get("ff") and \
+            if isinstance(e, dict) and isinstance(e.get("ff"), dict) and \
                     os.path.realpath(os.path.expanduser(str(e.get("path")))) == os.path.realpath(live):
                 return e
     return None

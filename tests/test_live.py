@@ -37,6 +37,9 @@ class Accounts(unittest.TestCase):
                 json.dump(sa, fh)
             settings(b, ["py /wc/bin/of-hook Stop", "py /wc/bin/of-hook PreToolUse"])   # a recorder's, no guard
             settings(c, ["echo other Stop"])
+            d = os.path.join(t, "d")
+            settings(d, ["/py /my code/bin/of-hook Stop", "/py /my code/bin/of-hook UserPromptSubmit --deny-secrets"])
+            self.assertEqual(of_live.hooked_accounts([d])[0][1][:2], ["--replace", "/my code/bin/of"])
             got = dict(of_live.hooked_accounts([a, b, c, os.path.join(t, "none")]))
             self.assertEqual(got, {a: ["--replace", "/wc/bin/of", "--guard", "--deny-secrets"],
                                    b: ["--replace", "/wc/bin/of"]})
@@ -104,10 +107,17 @@ class FfEntry(unittest.TestCase):
                 with mock.patch.object(of_live.plistlib, "dumps", return_value=b""), \
                         mock.patch.object(of_live, "AGENTS", t), mock.patch.object(of_live, "REQUEST", f + ".req"):
                     of_live.setup(live=t, orgs_file=f, org="alpha", keep_registry_ff=True,
-                                  run=lambda *a, **k: None, log=lambda m: 0)
+                                  run=lambda *a, **k: subprocess.CompletedProcess(a, 0), log=lambda m: 0)
             doc = yaml.safe_load(open(f))
             self.assertEqual(os.path.expanduser(doc["orgs"][0]["protected_code"][0]["path"]), t)
             self.assertEqual(doc["orgs"][1]["protected_code"], reg["beta"])
+
+    def test_ff_true_is_no_entry(self):
+        with tempfile.TemporaryDirectory() as t:
+            f = os.path.join(t, "orgs.yaml")
+            with open(f, "w") as fh:
+                fh.write("orgs:\n  - name: a\n    protected_code:\n      - path: /L\n        ff: true\n")
+            self.assertIsNone(of_live.ff_entry(f, live="/L"))
 
     def test_the_org_is_the_one_listing_the_running_checkout(self):
         with tempfile.TemporaryDirectory() as t:
@@ -237,6 +247,15 @@ class Script(unittest.TestCase):
     def test_the_tree_is_checked_before_a_restart_at_the_tip(self):
         text = open(self.SCRIPT).read()
         self.assertLess(text.index("private diff-files --quiet"), text.index('if [ "$old" = "$tip" ]'))
+
+    def test_the_update_restarts_only_the_units_this_machine_runs(self):
+        with tempfile.TemporaryDirectory() as t:
+            os.makedirs(os.path.join(t, "Library", "LaunchAgents"))
+            open(os.path.join(t, "Library", "LaunchAgents", "dev.organic-framework.listen.plist"), "w").close()
+            env = dict(os.environ, OF_PYTHON=sys.executable, HOME=t)
+            r = subprocess.run(["bash", "-c", 'source "$1"; echo "[$UNITS]"', "u", self.SCRIPT], capture_output=True,
+                               text=True, env=env)
+            self.assertEqual(r.stdout.strip(), "[ dev.organic-framework.listen]")
 
     def test_the_private_store_lies_in_the_kept_checkout(self):
         self.assertIn('mktemp -d "$LIVE/.git/of-update.', open(self.SCRIPT).read())
