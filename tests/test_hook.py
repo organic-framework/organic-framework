@@ -736,6 +736,42 @@ class HandleTest(unittest.TestCase):
         import signal
         self.assertEqual(signal.alarm(0), 0)                     # disarmed after the decision
 
+    def test_a_recording_that_waits_before_the_guard_still_denies_in_time(self):
+        """of_server, 2026-11-24 (docs/guard.md G0.14): the hook records the raw event before the guard runs, and that
+        record may wait (a busy store, a spool lock someone holds); the deadline starts with the hook, so the call is
+        denied and the prompt refused in time, never left to a hook killed at its limit."""
+        import contextlib
+        import io
+        import signal
+        import time as _t
+        from unittest import mock
+
+        def run(event, payload):
+            of_hook.OUTPUT, of_hook.GUARD_DECIDED = None, False
+            out, err, stdin = io.StringIO(), io.StringIO(), sys.stdin
+            sys.stdin = io.StringIO(json.dumps(payload))
+            start = _t.monotonic()
+            try:
+                with mock.patch.object(of_hook, "GUARD_STALL_S", 1), \
+                        mock.patch.object(of_hook, "_store_raw", side_effect=lambda *a, **k: _t.sleep(5)), \
+                        contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = of_hook.main([event])
+            finally:
+                sys.stdin = stdin
+            self.assertLess(_t.monotonic() - start, 4, event)
+            self.assertEqual(signal.alarm(0), 0, event)          # nothing left armed
+            return code, out.getvalue(), err.getvalue()
+        code, out, _ = run("PreToolUse", {"hook_event_name": "PreToolUse", "session_id": "S", "cwd": "/tmp",
+                                          "tool_name": "Bash", "tool_input": {"command": "ls"}})
+        decision = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(decision["permissionDecision"], "deny")
+        self.assertIn("guard failed (GuardStalled)", decision["permissionDecisionReason"])
+        code, out, err = run("UserPromptSubmit", {"hook_event_name": "UserPromptSubmit", "session_id": "S",
+                                                  "cwd": "/tmp", "prompt": "hello"})
+        self.assertEqual(code, 2)
+        self.assertIn("guard failed (GuardStalled)", err)
+        of_hook.OUTPUT, of_hook.GUARD_DECIDED = None, False
+
     def test_a_stall_a_handler_takes_or_an_unreadable_file_still_denies(self):
         """of_secrets-review, 2026-11-23: a handler in the guard's work may take the stall, and a file that is there
         but not regular was read as empty."""

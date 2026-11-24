@@ -813,6 +813,7 @@ def handle(event, hook):
         if DENY_SECRETS_FLAG:  # gated on --deny-secrets (the whole secrets policy rides one flag)
             _mention_guard(prompt, hook, sess, index)  # block an @mention of a secret path before it is read
         GUARD_DECIDED = True   # the prompt's guard has answered: a later failure here records less, refuses nothing
+        _disarm_deadline()
         origin = prompt_origin(prompt, hook)
         mark = _injected(sid, prompt) if origin == "human" else None
         if origin == "human" and not mark:  # a declared tool's text is settled by its mark; else ask the transcript
@@ -1229,6 +1230,39 @@ def _stalled(signum, frame):
     raise GuardStalled()
 
 
+_DEADLINE = [None]   # the monotonic time a call's or a prompt's decision is due by, from the hook's start
+
+
+def _arm_deadline():
+    """Start the decision's deadline when the hook starts, before it records anything: a recording that waits (a busy
+    store, a spool lock someone holds) would otherwise use the hook's own limit up before the guard runs, and a hook
+    killed at its limit lets the call through. The guard then has what is left of GUARD_STALL_S, not a fresh one."""
+    import signal
+    import threading
+    if not hasattr(signal, "SIGALRM") or threading.current_thread() is not threading.main_thread():
+        return
+    signal.signal(signal.SIGALRM, _stalled)
+    signal.alarm(GUARD_STALL_S)
+    _DEADLINE[0] = time.monotonic() + GUARD_STALL_S
+
+
+def _disarm_deadline():
+    """The decision is made: what records after it has no deadline of the guard's."""
+    if _DEADLINE[0] is None:
+        return
+    import signal
+    signal.alarm(0)
+    _DEADLINE[0] = None
+
+
+def _left():
+    """Seconds the guard has: what is left of the hook's deadline, else GUARD_STALL_S; at least one."""
+    if _DEADLINE[0] is None:
+        return GUARD_STALL_S
+    import math
+    return max(1, math.ceil(_DEADLINE[0] - time.monotonic()))
+
+
 def _guard(hook, sess):
     """The guard fails closed: an error of its own denies the call. Claude Code and Codex both run a call whose
     PreToolUse hook raised (2026-11-11: a NameError in _scratch_guard let every call through unguarded;
@@ -1248,7 +1282,7 @@ def _guard(hook, sess):
             signal.alarm(0)
             signal.signal(signal.SIGALRM, old)
     if armed:
-        signal.alarm(GUARD_STALL_S)
+        signal.alarm(_left())
     try:
         _guard_checked(hook, sess)
         disarm()
@@ -1262,6 +1296,7 @@ def _guard(hook, sess):
         _deny_failed(type(e).__name__)
         _log_error("PreToolUse guard", e)
     GUARD_DECIDED = True
+    _DEADLINE[0] = None   # disarm() above stopped the alarm: the hook's deadline is spent on this decision
 
 
 # A Codex session's tool calls, as of_guard's rules read them (W3 of organic-framework-build's
@@ -2417,6 +2452,8 @@ def main(argv):
         # when it is given (of_server on PR 475: Codex sets that field, not the model; defence only)
         if is_codex(hook):
             answer = sys.stdout = _CodexAnswer(sys.stdout)
+        if event in ("PreToolUse", "UserPromptSubmit"):
+            _arm_deadline()   # before the first recording, which may wait (docs/guard.md G0.14)
         _store_raw(event, hook, raw)
         handle(event, hook)
         if OUTPUT and not BLOCK_SENT[0]:
@@ -2426,7 +2463,8 @@ def main(argv):
             _ingest_detached(hook["transcript_path"])
         if event == "SessionEnd" and hook.get("transcript_path"):  # the raw tier keeps the session's file as it ended
             _archive_detached(hook["transcript_path"])
-    except (SystemExit, Exception) as e:  # never fail the agent; leave a trace for debugging
+    except (SystemExit, Exception, GuardStalled) as e:  # never fail the agent; leave a trace for debugging
+        _disarm_deadline()
         try:
             of_events.append_own(os.path.join(STATE, "hook-errors.log"),
                                  f"{of_events.now_iso()} {event} {type(e).__name__}: {e}\n")
@@ -2447,6 +2485,7 @@ def main(argv):
             refused = 2
             if answer is not None:
                 answer.code = 2
+    _disarm_deadline()
     if answer is not None:
         answer.flush()
         sys.stdout = answer.real
