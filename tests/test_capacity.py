@@ -79,7 +79,11 @@ class ProbeParsing(unittest.TestCase):
                "Run `claude auth login` to sign in again, or use `claude setup-token` and set "
                "CLAUDE_CODE_OAUTH_TOKEN for unattended jobs")
         self.assertIs(of_capacity.parse_probe([], err, 1)["logged_in"], False)
-        self.assertIsNone(of_capacity.parse_probe([], "probe timed out after 120s", 124)["logged_in"])
+        expired = "Failed to authenticate: this login reached its time limit"
+        self.assertIs(of_capacity.parse_probe([], expired, 1)["logged_in"], False)       # the expiry alone
+        for other in ("probe timed out after 120s", "the request reached its time limit",
+                      "see `claude auth login` in the docs"):     # a timeout, or text naming the command: no reading
+            self.assertIsNone(of_capacity.parse_probe([], other, 124 if "probe" in other else 1)["logged_in"], other)
 
     def test_no_reading_is_not_logged_out(self):
         for err, rc in (("claude not found", 127), ("probe timed out after 120s", 124), ("", 1)):
@@ -1408,6 +1412,13 @@ class Rescue(unittest.TestCase):
         m = of_capacity.rescue_plan(rows, self.SESS, self.POS, {"st1": self.NOW - 600}, dict(self.STOPS_ONLY),
                                     self.NOW)
         self.assertEqual([(x["position"], x["from"]) for x in m], [("st1", "/mm")])
+
+    def test_a_run_reads_an_expired_login_with_a_live_session(self):
+        rows = [{"config_dir": "/in", "logged_in": True},
+                {"config_dir": "/expired", "logged_in": False},
+                {"config_dir": "/out", "logged_in": False}]
+        with mock.patch.object(of_capacity, "live_sessions", lambda d: [{"session": "st1"}] if d == "/expired" else []):
+            self.assertEqual(of_capacity.run_dirs(rows), ["/in", "/expired"])
 
     def test_stopped_sessions_go_to_accounts_that_accept_work_most_headroom_first(self):
         pol = dict(self.STOPS_ONLY, rescue_step=30)

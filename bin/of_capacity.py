@@ -241,7 +241,7 @@ def parse_probe(lines, stderr, returncode):
         # only the harness saying so means "not logged in", an expired login among it (2026-11-24: "this login reached
         # its time limit"); a missing binary or a timeout is no reading
         said = " ".join([r["error"] or "", stderr or "", str((result or {}).get("result") or "")]).lower()
-        login_errors = ("not logged in", "/login", "reached its time limit", "claude auth login")
+        login_errors = ("not logged in", "/login", "this login reached its time limit")
         r["logged_in"] = False if any(phrase in said for phrase in login_errors) else None
     return r
 
@@ -6896,12 +6896,13 @@ def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib
 
 
 def run_dirs(rows):
-    """The accounts whose sessions a balancer run reads: all but a logged-out one (logged_in False). A probe with no
+    """A balancer run skips a logged-out account (logged_in False) only when it has no live sessions. A probe with no
     reading (logged_in None: a timeout, a dropped link) is no evidence the account is gone; blocked_until takes it as
     refusing work, so its stopped sessions are rescued and nothing is moved onto it. 2026-11-15: an account's week
     ran out and its probes timed out for half an hour; the run left its sessions out, so a dozen stood stopped there
-    while another account accepted work."""
-    return [r["config_dir"] for r in rows if r.get("logged_in") is not False]
+    while another account accepted work. On 2026-11-24 a login expired under live sessions. The run includes that
+    account so it can rescue those sessions."""
+    return [r["config_dir"] for r in rows if r.get("logged_in") is not False or live_sessions(r["config_dir"])]
 
 
 def stall_report(rows, sessions, positions, stopped, moves, now, woken=None):
