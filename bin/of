@@ -7771,7 +7771,7 @@ def cmd_live(args):
                           f"The owner runs `of live {args.action}` in a plain terminal")
     try:
         if args.action == "setup":
-            of_live.setup(orgs_file=ORGS_FILE, org=args.org)
+            of_live.setup(orgs_file=ORGS_FILE, org=args.org, keep_registry_ff=args.keep_registry_ff)
             print("of live setup: done. Next, once: of live switch")
         elif args.action == "switch":
             of_live.switch()
@@ -9241,6 +9241,9 @@ def build_parser():
     lv.add_argument("action", choices=["setup", "switch", "request", "status"])
     lv.add_argument("--org", help="setup: the organization whose orgs.yaml entry gets the live checkout's "
                                   "protected_code item (default: the one listing the checkout OF runs from)")
+    lv.add_argument("--keep-registry-ff", action="store_true",
+                    help="setup: also list each registry's fast-forward entries in orgs.yaml, which the first "
+                         "protected_code there would stop from vouching on this machine")
     lv.set_defaults(fn=cmd_live)
     hk = sub.add_parser("hooks", help="install or remove the recorder hooks in a Claude Code config dir")
     hk.add_argument("action", choices=["install", "uninstall"])

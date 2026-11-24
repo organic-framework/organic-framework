@@ -85,6 +85,30 @@ class FfEntry(unittest.TestCase):
             with self.assertRaises(of_live.LiveError):          # a second one is the owner's to add by hand
                 of_live.add_ff_entry(f, "alpha", live="/L2")
 
+    def test_setup_stops_before_it_turns_a_registrys_ff_entries_off(self):
+        """of_review on PR 628: orgs.yaml's first protected_code stops every registry's ff entry from vouching."""
+        from unittest import mock
+        import yaml
+        with tempfile.TemporaryDirectory() as t:
+            f = os.path.join(t, "orgs.yaml")
+            with open(f, "w") as fh:
+                fh.write(ORGS)
+            reg = {"beta": [{"path": "~/beta/.wt/main", "ff": {"repo": "b/b", "branch": "main", "checks": ["unit"]}}]}
+            with mock.patch.object(of_live, "registry_ff_items", return_value=reg), \
+                    mock.patch.object(of_live, "check_live"), mock.patch.object(of_live, "copy_pyyaml", return_value=t), \
+                    mock.patch.object(of_live.os.path, "isfile", return_value=True):
+                with self.assertRaises(of_live.LiveError) as e:
+                    of_live.setup(live=t, orgs_file=f, org="alpha", run=lambda *a, **k: None, log=lambda m: 0)
+                self.assertIn("beta: ~/beta/.wt/main", str(e.exception))
+                self.assertEqual(open(f).read(), ORGS)            # nothing written
+                with mock.patch.object(of_live.plistlib, "dumps", return_value=b""), \
+                        mock.patch.object(of_live, "AGENTS", t), mock.patch.object(of_live, "REQUEST", f + ".req"):
+                    of_live.setup(live=t, orgs_file=f, org="alpha", keep_registry_ff=True,
+                                  run=lambda *a, **k: None, log=lambda m: 0)
+            doc = yaml.safe_load(open(f))
+            self.assertEqual(os.path.expanduser(doc["orgs"][0]["protected_code"][0]["path"]), t)
+            self.assertEqual(doc["orgs"][1]["protected_code"], reg["beta"])
+
     def test_the_org_is_the_one_listing_the_running_checkout(self):
         with tempfile.TemporaryDirectory() as t:
             f = os.path.join(t, "orgs.yaml")
@@ -240,6 +264,8 @@ class Agent(unittest.TestCase):
 
     def test_the_unexpanded_folder_is_the_guards(self):
         import of_guard
+        if not hasattr(of_guard, "LIVE_DIR"):   # G40 (its own pull request) holds the guard's side
+            self.skipTest("no G40 in this tree")
         self.assertEqual(of_live.LIVE_DIR, of_guard.LIVE_DIR)
 
     def test_a_live_folder_that_is_no_checkout_is_refused(self):
