@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "bin"))
 import of_hook  # noqa: E402
@@ -37,8 +38,147 @@ def fire(tool, tool_input, cwd="/w"):
     return out.getvalue()
 
 
+def run_main(event, payload, flags=()):
+    """of_hook.main as Codex runs it: (exit code, stdout, stderr)."""
+    of_hook.OUTPUT = None
+    out, err = io.StringIO(), io.StringIO()
+    stdin = sys.stdin
+    sys.stdin = io.StringIO(json.dumps(payload))
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = of_hook.main([event, *flags])
+    finally:
+        sys.stdin = stdin
+        of_hook.CODEX[0] = False
+    return code, out.getvalue(), err.getvalue()
+
+
+def run_main_in_process(event, payload, flags=()):
+    of_hook._CodexAnswer.exit_now = False
+    of_hook.GUARD_DECIDED = False
+    try:
+        return run_main(event, payload, flags)
+    finally:
+        of_hook._CodexAnswer.exit_now = True
+
+
 def patch(*entries):
     return "\n".join(["*** Begin Patch", *entries, "*** End Patch"])
+
+
+class CodexAnswerTest(unittest.TestCase):
+    """A Codex session's refusals leave as exit 2 with the reason on stderr (of_review on organic-framework PR 475:
+    a line printed by the user's shell start files makes a JSON deny unparsable, and Codex runs the call)."""
+
+    BASE = {"session_id": "codex-thread-1", "cwd": "/w", "turn_id": "t1", "model": "gpt",
+            "permission_mode": "bypassPermissions", "tool_use_id": "u1"}
+
+    def test_a_deny_is_exit_2_with_its_reason_and_nothing_on_stdout(self):
+        code, out, err = run_main_in_process("PreToolUse", dict(self.BASE, hook_event_name="PreToolUse", tool_name="Bash",
+                                                     tool_input={"command": "cat ~/" + KEY}))
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("Organic Framework", err)
+
+    def test_an_allowed_call_is_exit_0(self):
+        code, out, err = run_main_in_process("PreToolUse", dict(self.BASE, hook_event_name="PreToolUse", tool_name="Bash",
+                                                     tool_input={"command": "ls"}))
+        self.assertEqual(code, 0)
+        self.assertIsNone(of_hook.codex_refusal(out or "{}"))
+
+    def test_each_refusal_shape_is_read(self):
+        self.assertEqual(of_hook.codex_refusal(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PermissionRequest", "decision": {"behavior": "deny", "message": "no"}}})), "no")
+        self.assertEqual(of_hook.codex_refusal(json.dumps({"decision": "block", "reason": "mention"})), "mention")
+        self.assertIsNone(of_hook.codex_refusal(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}})))
+        self.assertIsNone(of_hook.codex_refusal("not json"))
+
+    def test_an_input_that_does_not_parse_is_exit_2(self):
+        of_hook.OUTPUT, of_hook.GUARD_DECIDED = None, False
+        out, err = io.StringIO(), io.StringIO()
+        stdin = sys.stdin
+        sys.stdin = io.StringIO('{"tool_name": "Bash", "tool_input": ')
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = of_hook.main(["PreToolUse"])
+        finally:
+            sys.stdin = stdin
+        self.assertEqual((code, out.getvalue()), (2, ""))
+        self.assertIn("guard failed (JSONDecodeError)", err.getvalue())
+
+    def test_a_claude_session_still_answers_json(self):
+        p = {"session_id": "claude-1", "cwd": "/w", "transcript_path": "/home/alex/.claude/projects/w/claude-1.jsonl",
+             "permission_mode": "bypassPermissions", "tool_use_id": "u1", "hook_event_name": "PreToolUse",
+             "tool_name": "Bash", "tool_input": {"command": "cat ~/" + KEY}}
+        code, out, _ = run_main_in_process("PreToolUse", p)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+
+class ReviewForms(unittest.TestCase):
+    """of_server's verdict on PR 475 (comment 7045021722)."""
+
+    def test_an_end_patch_inside_a_line_does_not_end_the_body(self):
+        text = patch("*** Add File: a.txt", "+say *** End Patch in prose", "*** Update File: " + ENV, "@@", "-a", "+b")
+        bodies = of_hook._PATCH_BODY.findall("apply_patch <<'EOF'\n" + text + "\nEOF")
+        self.assertEqual(len(bodies), 1)
+        self.assertIn("Update File", bodies[0])
+
+    def test_an_argv_list_is_read_as_one_command(self):
+        out = fire("Bash", {"command": ["cat", "~/" + KEY]})
+        self.assertIn("deny", out)
+        self.assertEqual(fire("Bash", {"command": ["ls", "-la"]}), "")
+
+    def test_a_call_that_names_no_tool_is_refused(self):
+        code, out, err = run_main_in_process("PreToolUse", {"session_id": "codex-thread-1", "turn_id": "t1",
+                                                            "hook_event_name": "PreToolUse", "cwd": "/w"})
+        self.assertEqual(code, 2)
+
+
+class SecondReview(unittest.TestCase):
+    """of_server's second verdict on PR 475 (comment 7123144248), its four blocking points."""
+
+    def test_a_context_line_reading_as_the_end_marker_ends_no_body(self):
+        text = patch("*** Update File: a.txt", "@@", " *** End Patch", "-x", "+y", "*** Update File: " + ENV, "@@",
+                     "-a", "+b")
+        bodies = of_hook._PATCH_BODY.findall("apply_patch <<'EOF'\n" + text + "\nEOF")
+        self.assertEqual(len(bodies), 1)
+        self.assertIn("Update File: " + ENV, bodies[0])                     # the later header stays in the body
+        with self.assertRaises(of_hook.PatchUnreadable):                    # and the indented marker is unreadable
+            of_hook.patch_calls(bodies[0], "/w")
+        self.assertIn("deny", fire("apply_patch", {"input": text}))
+        # a context line holding *** text that is no marker is still context
+        ok = of_hook.patch_calls(patch("*** Update File: a.md", "@@", " *** a footnote ***", "-x", "+y"), "/w")
+        self.assertEqual([c["tool_name"] for c in ok], ["Edit"])
+
+    def test_a_failed_fork_exits_2_at_once(self):
+        ans = of_hook._CodexAnswer(io.StringIO())
+        exits = []
+
+        class Exit(Exception):
+            pass
+
+        def fake_exit(code):
+            exits.append(code)
+            raise Exit()
+        with mock.patch.object(of_hook.os, "fork", side_effect=OSError("no memory")), \
+                mock.patch.object(of_hook.os, "_exit", side_effect=fake_exit), contextlib.redirect_stderr(io.StringIO()):
+            ans.write(json.dumps({"decision": "block", "reason": "no"}))
+            with self.assertRaises(Exit):
+                ans.flush()
+        self.assertEqual(exits, [2])
+
+    def test_a_prompt_whose_guard_failed_is_refused(self):
+        payload = {"session_id": "codex-thread-1", "cwd": "/w", "turn_id": "t1", "model": "gpt",
+                   "permission_mode": "bypassPermissions", "hook_event_name": "UserPromptSubmit", "prompt": "hello"}
+        with mock.patch.object(of_hook, "_mention_guard", side_effect=RuntimeError("boom")):
+            code, out, err = run_main_in_process("UserPromptSubmit", payload, ["--deny-secrets"])
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("guard failed (RuntimeError)", err)
+        # once the guard answered, a later failure refuses nothing
+        with mock.patch.object(of_hook, "prompt_origin", side_effect=RuntimeError("later")):
+            code, _, _ = run_main_in_process("UserPromptSubmit", payload, ["--deny-secrets"])
+        self.assertEqual(code, 0)
 
 
 class PatchCalls(unittest.TestCase):
