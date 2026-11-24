@@ -1674,6 +1674,9 @@ def install_launchd(uninstall=False, run=None, plists=None, agents_dir=None):
     out = []
     for label, text in (plists or launchd_plists()).items():
         path = os.path.join(agents_dir, f"{label}.plist")
+        if os.path.islink(path):   # launchd would load the file it names, which need not be the owner's
+            out.append(f"{label}: not loaded ({path} is a link; remove it and run again)")
+            continue
         try:
             with open(path) as fh:
                 same = fh.read() == text
@@ -1690,9 +1693,9 @@ def install_launchd(uninstall=False, run=None, plists=None, agents_dir=None):
             out.append(f"removed {label}")
             continue
         os.makedirs(agents_dir, exist_ok=True)
-        with open(path + ".tmp", "w") as fh:
-            fh.write(text)
-        os.replace(path + ".tmp", path)
+        # a new file of an unguessable name, never through a link (of_review on PR 628: a link at a fixed temporary
+        # name took the write, and the rename put the link where launchd loads the agent from)
+        of_events.write_new(path, text, mode=0o644)
         for _ in range(4):  # right after a bootout launchd may answer "Input/output error" for a moment
             r = run(["launchctl", "bootstrap", domain, path], capture_output=True)
             if r.returncode == 0:

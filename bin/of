@@ -5263,7 +5263,8 @@ def _install_user_service(command, action):
             return 0
     for line in lines:
         print(f"of {command}: {line}")
-    return 0
+    # an agent launchd did not load fails the install (Codex on PR 655: of live switch said done after it)
+    return 1 if any(": not loaded" in line for line in lines) else 0
 
 
 def cmd_herdr(args):
