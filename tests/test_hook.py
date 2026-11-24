@@ -826,11 +826,24 @@ class HandleTest(unittest.TestCase):
             shutil.copy(os.path.join(os.path.dirname(of_hook.__file__), name), os.path.join(d, name))
         with open(os.path.join(d, "of_hook.py"), "w") as fh:
             fh.write("raise ImportError('a module the hook needs is broken')\n")
+        state = os.path.join(d, "state")
+        os.makedirs(state)
+        env = dict(os.environ, OF_STATE=state)
+        log = os.path.join(state, "hook-errors.log")
         for argv in (["of", "hook", "PreToolUse"], ["of-hook", "PreToolUse"]):
             r = subprocess.run([sys.executable, os.path.join(d, argv[0]), *argv[1:]], input="{}",
-                               capture_output=True, text=True, timeout=30)
+                               capture_output=True, text=True, timeout=30, env=env)
             self.assertEqual(r.returncode, 2, argv)
             self.assertIn("guard failed (ImportError)", r.stderr, argv)
+            with open(log) as fh:   # of_review, 2026-11-24: the failure leaves a record (it left none that day)
+                last = fh.read().splitlines()[-1]
+            self.assertIn("PreToolUse launcher ImportError: a module the hook needs is broken", last, argv)
+        os.unlink(log)
+        os.symlink(os.path.join(d, "elsewhere"), log)   # a link in its place: followed nowhere, the deny still stands
+        r = subprocess.run([sys.executable, os.path.join(d, "of-hook"), "PreToolUse"], input="{}",
+                           capture_output=True, text=True, timeout=30, env=env)
+        self.assertEqual(r.returncode, 2)
+        self.assertFalse(os.path.exists(os.path.join(d, "elsewhere")))
         for argv in (["of", "hook", "Stop"], ["of-hook", "Stop"]):
             r = subprocess.run([sys.executable, os.path.join(d, argv[0]), *argv[1:]], input="{}",
                                capture_output=True, text=True, timeout=30)
