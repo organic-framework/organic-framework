@@ -57,9 +57,18 @@ def _still(lines, hit):
     return bool(hits) and not any(_TURN_DONE.search(ln) for ln in lines[hits[-1] + 1:])
 
 
+# Claude Code's own limit line starts with its marker (⎿ under a reply, ⏺, or ⚠ in the status): 606 of the matching lines
+# in the 400 newest limit cards in the event store on 2026-11-24, the rest typed or agents' text; the same words in a message typed into the pane (an escalation note quoting
+# "stopped on a usage limit" and the dialog's options) or in an agent's text are no stop (of_capacity, message
+# 01a20c14-3ba1: such quoted notes filed limit cards for of_capacity itself)
+_LIMIT_MARK = ("⎿", "⏺", "⚠")
+
+
 def _limit_stop(lines):
-    """A usage-limit line that is still the session's state: no warning-only line, and no finished turn after it."""
-    return _still(lines, lambda ln: _LIMIT.search(ln) and not _LIMIT_WARNING.search(ln))
+    """A usage-limit line of Claude Code's own that is still the session's state: no warning-only line, and no
+    finished turn after it."""
+    return _still(lines, lambda ln: _LIMIT.search(ln) and not _LIMIT_WARNING.search(ln)
+                  and ln.strip().lstrip("│ ").startswith(_LIMIT_MARK))
 
 
 # Claude Code's login stop is its own line that ends with /login ("Not logged in · Please run /login", "Invalid API
