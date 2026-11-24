@@ -306,6 +306,33 @@ def _secret_path(p):
             or _env_file(q) or _kube_config(q) or (n is not None and _secret_path(n)))
 
 
+def _opener_folder(opener, cmd=None):
+    """The folder a heredoc's opener runs in: the session's, moved by each `cd <folder>` before it, on its own line or
+    on an earlier one of CMD (of_review on PR 629: `cd <checkout>` on its own line, then `python3 <<EOF`)."""
+    here = _DENY_CWD[0]
+    text = opener
+    if cmd:
+        k = cmd.find(opener + "<<") if opener else -1
+        if k > 0:
+            try:
+                text = _cut_heredocs(cmd[:k]) + "\n" + opener
+            except Exception:  # noqa: BLE001 - what cannot be cut: the opener's own line
+                text = opener
+    try:
+        segs = _segments(text)
+    except ValueError:
+        return here
+    for seg in segs[:-1]:
+        try:
+            ws = _command_words(seg)
+        except (ValueError, IndexError):
+            continue
+        if ws and ws[0] == "cd" and len(ws) > 1 and ws[1] != "-":
+            to = _expanduser(ws[1])
+            here = to if os.path.isabs(to) else os.path.join(here or ".", to)
+    return here
+
+
 def _in_folder(here, fn, *a):
     """FN(*A) judged with the session's folder set to HERE, the folder the line moved to; then set back."""
     if not isinstance(here, str) or here == MAYBE_HOME:
@@ -1003,13 +1030,242 @@ def connector_deny(tool, excluded):
 # (of_review and of_secrets-review on organic-framework PR 387: python's open(…, 'a').write, ruby -e, node -e)
 # `.write(` is a write but for sys.stdout and sys.stderr, which print (of_review's note on organic-framework PR 410):
 # a handle may come from Path.open('w'), os.open, a mode held in a name, a node stream (of_secrets-review on PR 413)
-_CODE_WRITE = re.compile(r"""open\s*\(.*?,\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|open\s*\([^,]*,\s*['"]\s*\+?>|\bmode\s*=\s*['"][rbt]*[wax+]|write_text|"""
+_CODE_REMOVES = re.compile(r"\bos\.(?:unlink|remove|removedirs|rmdir|rename|renames|replace|symlink|link)\s*\(|"
+                           r"\bshutil\.(?:rmtree|move)\s*\(|\.(?:unlink|rmdir|symlink_to|hardlink_to)\s*\(|"
+                           r"\bFile\.(?:delete|unlink|symlink|rename)|\bunlink\s*\(|\bFileUtils\.(?:rm|ln|mv)")
+_CODE_WRITE_RE = re.compile(r"""\.open\s*\(\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|"""
+                         r"""open\s*\(.*?,\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|open\s*\([^,]*,\s*['"]\s*\+?>|\bmode\s*=\s*['"][rbt]*[wax+]|write_text|"""
                          r"""write_bytes|(?<!sys\.stdout)(?<!sys\.stderr)\.write\s*\(|\bdump\s*\(|"""
-                         r"""os\.(?:replace|rename|remove|unlink|truncate)|"""
+                         r"""os\.(?:replace|rename|remove|unlink|truncate|symlink|link)|"""   # renames, removedirs, a saved link
                          r"""shutil\.|\.unlink\s*\(|\.touch\s*\(|\.rename\s*\(|File\.(?:write|delete|rename)|"""
                          r"""File\.open\s*\(.*?,\s*['"][rbt]*[wa+]|"""
                          r"""FileUtils\.|fs\.(?:write|append|rename|unlink|rm|copy)|writeFile|appendFile|"""
+                         r"""\b(?:cp|link|symlink|copyFile)(?:Sync)?\s*\(|"""   # node's copies and links (PR 629)
                          r"""\bsysopen\b|\bunlink\b|\brename\b""")
+_OS_OPEN = re.compile(r"\bos\.open\s*\(")
+_OS_OPEN_FLAGS = re.compile(r"\bO_(?:WRONLY|RDWR|CREAT|TRUNC|APPEND)\b")
+
+
+_DEST_CALL = re.compile(r"(?:\b(?:os|shutil)\.(?:replace)|"
+                        r"\b(?:copy\w*|move\w*|rename\w*|symlink\w*|link\w*|cp|cpSync))\s*\(")   # never a str's replace()
+
+
+@functools.lru_cache(maxsize=4)   # one reading serves each reader of the same code
+def _code_masks(code):
+    """CODE read once with python's quoting: (structure, text, string ends). STRUCTURE blanks every comment and every
+    string's inside (its quotes kept), so a bracket, a comma, a flag or a call's name there is none; TEXT blanks the
+    comments only. A triple quote opens a string only the same triple closes, a single quote's string ends at its
+    line's end, and an escape takes its next character (of_review on PR 629: a triple-quoted note holding an
+    apostrophe before a copy, and a '#' inside a string). An f-string's replacement fields stay code, strings nested
+    in them included, as python 3.12 reads them (of_review on PR 629: an os.open inside one). STRING ENDS maps each
+    string's opening quote to the offset past its closing one."""
+    st, tx, ends, n = list(code), list(code), {}, len(code)
+    triples = ("'" * 3, '"' * 3)
+
+    def prefix_f(k):
+        j = k
+        while j > 0 and k - j < 3 and code[j - 1] in "rRbBfFuU":
+            j -= 1
+        return "f" in code[j:k].lower() and (j == 0 or not (code[j - 1].isalnum() or code[j - 1] == "_"))
+
+    def string(k, depth):
+        """Read the string whose quote opens at K; return the offset past it."""
+        q = code[k:k + 3] if code[k:k + 3] in triples else code[k]
+        fmt = prefix_f(k) and depth < 32   # deeper nesting is read as plain text: the deny side
+        j, field = k + len(q), 0
+        while j < n:
+            c = code[j]
+            if field:   # a replacement field: code, with its own strings and brackets
+                if c in "'\"":
+                    j = string(j, depth + 1)
+                    continue
+                if c == "{":
+                    field += 1
+                elif c == "}":
+                    field -= 1
+                j += 1
+                continue
+            if c == "\\":
+                st[j] = "_"
+                if j + 1 < n and code[j + 1] != "\n":
+                    st[j + 1] = "_"
+                j += 2
+                continue
+            if code.startswith(q, j) or (len(q) == 1 and c == "\n"):
+                break
+            if fmt and c == "{":
+                if code.startswith("{{", j):
+                    st[j] = st[j + 1] = "_"
+                    j += 2
+                    continue
+                field = 1   # its '{' stays, to close with its '}'
+                j += 1
+                continue
+            if c != "\n":
+                st[j] = "_"
+            j += 1
+        j = min(j, n)
+        closed = j < n and code.startswith(q, j)
+        ends[k] = j + len(q) if closed else j
+        return max(ends[k], k + 1)
+
+    k = 0
+    while k < n:
+        ch = code[k]
+        if ch == "#":
+            e = code.find("\n", k)
+            e = n if e < 0 else e
+            st[k:e] = tx[k:e] = " " * (e - k)
+            k = e
+            continue
+        if ch in "'\"":
+            k = string(k, 0)
+            continue
+        k += 1
+    return "".join(st), "".join(tx), ends
+
+
+_MODE_STR = re.compile(r"(?:[rwxa][bt]?\+?|[rwxa]\+[bt]|[bt][rwxa]\+?|[bt]\+[rwxa]|rU|Ur|U)")
+_OPEN_CALL = re.compile(r"(?<![\w.])open\s*\(|(?<!\bos)\.open\s*\(")
+_MODE_KW = re.compile(r"\bmode\s*=\s*(?=[rRbBuU]?['\"])")
+_PAYLOAD_CALL = re.compile(r"\.(?:write|write_text|write_bytes)\s*\(|(?<![\w.])print\s*\(")   # data, never a path
+
+
+def _code_relative_name(code):
+    """The first string literal of CODE that reads as a relative name, one in a file mode's place excepted (open's
+    second argument, a one-argument .open's first, mode=): the names code run inside a kept folder may write to,
+    whatever call takes them (of_review on PR 629: a destination through a saved name, and 'tab' or 'a' as a fresh
+    name, which a mode-shaped test had dropped)."""
+    st, tx, ends = _code_masks(code)
+    opens = list(_OPEN_CALL.finditer(st))
+    payloads = list(_PAYLOAD_CALL.finditer(st))
+    frames = _code_frames(st, {m.end() for m in opens + payloads})
+    data = set()   # a write's first argument and print's arguments: what is written, never where
+    for m in payloads:
+        commas, end = frames.get(m.end(), ((), m.end()))
+        bounds = [m.end()] + [c + 1 for c in commas]
+        spans = [(a, (commas[i] if i < len(commas) else end)) for i, a in enumerate(bounds)]
+        for a, b in (spans if m.group(0).lstrip(".").startswith("print") else spans[:1]):
+            p = _NONBLANK.search(tx, a, b)
+            if p:
+                data.add(p.start())
+    modes = set()
+    for m in opens:
+        commas, end = frames.get(m.end(), ((), m.end()))
+        bounds = [m.end()] + [c + 1 for c in commas]
+        spans = [(a, (commas[i] if i < len(commas) else end)) for i, a in enumerate(bounds)]
+        positional = [s for s in spans if not re.match(r"\s*\w+\s*=", tx[s[0]:s[1]][:64])]
+        if m.group(0).startswith("."):
+            pick = positional[0] if len(positional) == 1 else positional[1] if len(positional) > 1 else None
+        else:
+            pick = positional[1] if len(positional) > 1 else None
+        if pick:
+            p = _NONBLANK.search(tx, pick[0], pick[1])
+            if p:
+                modes.add(p.start())
+    for mm in _MODE_KW.finditer(st):
+        modes.add(mm.end())
+    for k in sorted(ends):
+        w = 3 if code.startswith(("'" * 3, '"' * 3), k) else 1
+        v = code[k + w:ends[k] - w] if ends[k] - k >= 2 * w else ""
+        if not v or re.search(r"\s", v) or v.startswith(("/", "~", "$")):
+            continue
+        q = k - 1 if k and code[k - 1] in "rRbBuUfF" else k
+        if (k in modes or q in modes) and _MODE_STR.fullmatch(v):
+            continue
+        if k in data or q in data:
+            continue
+        return v
+    return None
+
+
+def _code_frames(st, wanted):
+    """The spans of the brackets that open at WANTED offsets (each just past its '('), read on STRUCTURE in one pass:
+    {offset: (its top-level comma offsets, the offset of its closing bracket, or the code's end when none closes
+    it)}. Linear however the calls nest or however long their arguments run, and only the wanted calls are kept
+    (of_review and Codex on PR 629)."""
+    frames, stack, commas = {}, [], {}
+    for k, ch in enumerate(st):
+        if ch in "([{":
+            stack.append(k + 1)
+            if k + 1 in wanted:
+                commas[k + 1] = []
+        elif ch in ")]}":
+            if stack:
+                s0 = stack.pop()
+                if s0 in commas:
+                    frames[s0] = (commas.pop(s0), k)
+        elif ch == "," and stack and stack[-1] in commas:
+            commas[stack[-1]].append(k)
+    for s0, c in commas.items():
+        frames[s0] = (c, len(st))
+    return frames
+
+
+def _code_writes(code):
+    """Does CODE write: _CODE_WRITE, or a copy, move, rename or link call outside its strings and comments (a
+    '# copy(' comment is none: Codex's pass on PR 629)?"""
+    return bool(_CODE_WRITE.search(code)) or bool(_DEST_CALL.search(code) and _DEST_CALL.search(_code_masks(code)[0]))
+
+
+_NONBLANK = re.compile(r"\S")
+_DEST_LIT = re.compile(r"(?:(?:dst|dest|target)\s*=\s*)?(?=['\"])")
+
+
+def _dest_names(code):
+    """The second argument of each copy, move, rename or link call, when it is a plain literal (of_review on PR 629:
+    shutil.copyfile(os.path.join('/tmp', 'x'), 'stamp')). Calls are found in the code outside its strings and
+    comments; a literal is the one string that fills the argument, whatever comment or blank surrounds it."""
+    if not _DEST_CALL.search(code):
+        return set()
+    st, tx, ends = _code_masks(code)
+    calls = list(_DEST_CALL.finditer(st))   # outside strings and comments
+    frames = _code_frames(st, {m.end() for m in calls})
+    out = set()
+    for m in calls:
+        commas, end = frames.get(m.end(), ((), 0))
+        if not commas:
+            continue
+        a, b = commas[0] + 1, (commas[1] if len(commas) > 1 else end)
+        p = _NONBLANK.search(tx, a, b)
+        lm = _DEST_LIT.match(tx, p.start(), b) if p else None
+        q = lm.end() if lm else None
+        if q is None or q not in ends or _NONBLANK.search(tx, ends[q], b):
+            continue
+        w = 3 if code.startswith(("'" * 3, '"' * 3), q) else 1
+        lit = code[q + w:ends[q] - w]
+        if lit and "\n" not in lit:
+            out.add(lit)
+    return out
+
+
+def _os_open_writes(code):
+    """Does an os.open call name a write flag inside its own parentheses, across lines and nested calls, and never past
+    its closing one (of_review on PR 629)? Read on the code outside its strings and comments, with each call's span
+    from one pass: a flag's offset is looked up, never a span scanned again."""
+    if not _OS_OPEN.search(code):
+        return None
+    import bisect
+    st = _code_masks(code)[0]
+    opens = list(_OS_OPEN.finditer(st))
+    frames = _code_frames(st, {m.end() for m in opens})
+    flags = [mm.start() for mm in _OS_OPEN_FLAGS.finditer(st)]
+    for m in opens:
+        _commas, end = frames.get(m.end(), ((), m.end()))
+        i = bisect.bisect_left(flags, m.end())
+        if i < len(flags) and flags[i] < end:
+            return m
+    return None
+
+
+class _CodeWrite:
+    """_CODE_WRITE_RE, and an os.open with a write flag read by its own parentheses (_os_open_writes)."""
+
+    def search(self, code):
+        return _CODE_WRITE_RE.search(code) or _os_open_writes(code)
+
+
+_CODE_WRITE = _CodeWrite()
 
 
 def _owner_config_in_code(code, lits):
@@ -1069,6 +1325,22 @@ def _code_deny(code, lang=None):
         if _CODE_WRITE.search(code) else None   # G34 in code: a write into the forward's folder (of_review on PR 397)
     if fwd:
         return FORWARD_DENY, fwd
+    gone = bool(_CODE_REMOVES.search(code))   # a removal or a link judges a name by itself (of_review on PR 629)
+    # a removal call's own argument counts a folder above a kept one at any depth (`rmtree('~/.local')`, the home:
+    # of_secrets-review on PR 629); any other literal only when it lies deep enough (_deep_lit)
+    gone_args = {m.group(2) for m in _REMOVAL_ARG.finditer(code)} if gone else set()
+    opened = {m.group(2) for m in _OPENED_ARG.finditer(code)} | {m.group(3) for m in _DEST_ARG.finditer(code)} | \
+        {m.group(2) for m in _FILE_KW.finditer(code)} | _dest_names(code)
+    live = next((l for l in lits if not re.search(r"\s", l.strip()) and l.strip().lstrip("<>+|& ")
+                 and (l.strip().lstrip("<>+|& ").startswith(("/", "~", "$")) or _rel_path_lit(l.strip().lstrip("<>+|& "), opened))
+                 and _in_live(l.strip().lstrip("<>+|& "), _live_box(), _DENY_CWD[0], gone, gone and (l.strip().lstrip("<>+|& ") in gone_args or _deep_lit(l.strip().lstrip("<>+|& "))))), None) \
+        if _code_writes(code) else None   # G40 in code (PR 629's review)
+    here = _DENY_CWD[0]
+    if not live and here and not _REMOTE_BODY[0] and _code_writes(code) and _in_live(here, _live_box(), here):
+        live = _code_relative_name(code)   # code that writes, run inside the checkout: a relative name it holds may be
+        # where it writes, whatever call takes it; a file mode in its place excepted (of_review on PR 629)
+    if live:
+        return LIVE_DENY, live
     idx = next((l for l in lits if not re.search(r"\s", l.strip())
                 and l.strip().lstrip("<>+|& ").startswith(("/", "~", "$"))
                 and (_in_session_index(l.strip().lstrip("<>+|& "))
@@ -3533,8 +3805,8 @@ def _line_act(words):
             return True
         if rest[:1] == ["access"] and any(x in ("grant", "revoke", "link", "record") for x in rest[1:]):
             return True
-        if _org_path_act(rest) or _server_route_act(rest) or _issues_label_act(rest):
-            return True   # and of issues label, as the per-command reading takes it
+        if _org_path_act(rest) or _server_route_act(rest) or _live_act(rest) or _issues_label_act(rest):
+            return True   # and of live setup|switch and of issues label, as the per-command reading takes them
     return False
 
 
@@ -3942,7 +4214,7 @@ def _actor_act(words):
         return False  # `of asks withdraw --help` records nothing (of_review on organic-framework PR 387)
     return (words[:1] == ["asks"] and len(words) > 1 and words[1] in ACTOR_ACTS) or \
         (words[:1] == ["access"] and len(words) > 1 and words[1] in ("grant", "revoke", "link", "record")) or \
-        _org_path_act(words) or _server_route_act(words) or _issues_label_act(words)
+        _org_path_act(words) or _server_route_act(words) or _live_act(words) or _issues_label_act(words)
 
 
 def _issues_label_act(words):
@@ -3950,6 +4222,14 @@ def _issues_label_act(words):
     caller is refused as for every act here (of_review on organic-framework PR 630). A session's own label passes."""
     words = [w for w in words if w != "--"]
     return words[:1] == ["issues"] and "label" in words[1:]
+
+
+def _live_act(words):
+    """`of live setup` and `of live switch`: the hooks of every account, OF's units and the `of` on PATH moved to the
+    live checkout, the owner's by the positive test (of_review on organic-framework PR 628). By its word anywhere after
+    `live`, as `of server route` is read; `of live request` and `status` are anyone's."""
+    words = [w for w in words if w != "--"]
+    return words[:1] == ["live"] and any(w in ("setup", "switch") for w in words[1:])
 
 
 def _server_route_act(words):
@@ -4650,10 +4930,12 @@ def _glob_match(path, pattern):
     return match(0, 0)
 
 
-def _in_folders(path, boxes, cwd=None, removal=False):
+def _in_folders(path, boxes, cwd=None, removal=False, above=None):
     """Does PATH lie in one of BOXES (real paths, case-folded)? By real path, compared without case (the Mac's volume
     ignores it), a relative path by CWD. A glob counts when its folder is a box or lies in one, or when it names a box
-    (with REMOVAL, or a recursive copy's destination, a folder above it too). G35's reading, shared with G34."""
+    (with REMOVAL, or a recursive copy's destination, a folder above it too). G35's reading, shared with G34. ABOVE
+    (REMOVAL's by default) says whether a folder above a box counts; with REMOVAL alone the name itself counts."""
+    above = removal if above is None else above
     p = str(path or "").strip("'\"")
     if not p:
         return False
@@ -4665,7 +4947,7 @@ def _in_folders(path, boxes, cwd=None, removal=False):
         d = os.path.dirname(rp)
         for box in boxes:
             chain = [box]
-            while removal and os.path.dirname(chain[-1]) != chain[-1]:
+            while above and os.path.dirname(chain[-1]) != chain[-1]:
                 chain.append(os.path.dirname(chain[-1]))
             if any(_glob_match(c, rp) for c in chain):
                 return True        # the pattern names the box, or a folder above it that is removed
@@ -4673,10 +4955,15 @@ def _in_folders(path, boxes, cwd=None, removal=False):
                 return True        # a file in it
         return False
     real = os.path.realpath(p).casefold()
+    # with REMOVAL, the name itself too, its folder resolved and its last part not: removing a link removes the link,
+    # wherever it leads (of_review on PR 629: a link in the checkout to a file outside was judged by its target)
+    reals = [real] + ([os.path.join(os.path.realpath(os.path.dirname(p)), os.path.basename(p)).casefold()]
+                      if removal and os.path.basename(p) else [])
     for box in boxes:
-        if real == box or real.startswith(box + "/"):
-            return True
-        if removal and box.startswith(real.rstrip("/") + "/"):
+        for r in reals:
+            if r == box or r.startswith(box + "/"):
+                return True
+        if above and box.startswith(real.rstrip("/") + "/"):
             return True
     return False
 
@@ -4697,6 +4984,253 @@ def _forward_write(head, args, cwd, files, removal):
     hit = next((t for t in _tree_targets(head, args, cwd) if _in_folders(t, box, cwd, removal=True)), None) or \
         next((f for f in files if _in_folders(f, box, cwd, removal)), None)
     return (FORWARD_DENY, hit) if hit else None
+
+
+# G40: OF's live checkout (2026-11-24, of_platform's hand-over cb134c52 after the laptop's guard outage, when a patch
+# half-applied to the working copy's bin/ broke every hook at once): on macOS no sandbox keeps a session from the
+# checkout the hooks, the units and `of` run from, so the guard denies a write, move, link or removal into it.
+LIVE_DIR = "~/.local/share/of/live"   # of_live.LIVE (a test holds the two the same)
+DEV_CLONE = "~/organic-framework"     # the working copy, where positions commit (release/commit.sh): never a target
+# what runs the live checkout outside any session: the updater launchd starts, its agent's plist, and every OF agent's
+# plist (its program, its environment): rewritten, it runs a session's code there (of_secrets-review on PR 629)
+LIVE_RUNNERS = ("~/.local/libexec/of-checkout-update",
+                "~/Library/LaunchAgents/dev.organic-framework.checkout-update.plist")
+LIVE_AGENTS = "~/Library/LaunchAgents/dev.organic-framework.*.plist"
+# programs that change a file they are given (G40 reads every operand of theirs; of_secrets-review on PR 629: touch,
+# tar -cf); cp, mv, ln, rm, tee, sed -i and redirections are read as G34 reads them
+_LIVE_WRITE_HEADS = {"touch", "mkdir", "rmdir", "chmod", "chown", "chgrp", "chflags", "truncate", "install", "patch",
+                     "zip", "unzip", "cpio", "ditto", "rsync", "xattr", "setfacl", "chattr", "mkfifo", "mknod",
+                     "shred", "tar", "bsdtar", "gtar", "dd"}
+# git subcommands that only read: any other one there, a config write and update-ref among them, is denied
+_LIVE_GIT_READS = {"status", "log", "show", "diff", "rev-parse", "ls-files", "ls-tree", "cat-file", "describe", "blame",
+                   "grep", "shortlog", "rev-list", "show-ref", "for-each-ref", "name-rev", "whatchanged", "merge-base",
+                   "cherry", "count-objects", "help", "version", "check-ignore", "check-attr", "var", "annotate",
+                   "range-diff"}
+LIVE_DENY = ("OF's live checkout, where the hooks, the units and `of` run outside any sandbox (docs/guard.md G40): it "
+             "moves only by `of live`'s update to a merged commit; change the code in the working copy and commit it")
+
+
+def _live_box():
+    """The folders G40 keeps, as real paths case-folded (G34's reading)."""
+    return {p.casefold() for p in _live_box_real()}
+
+
+def _ln_targets(args, cwd):
+    """(path, removal) for what ln makes or replaces: a link already at the destination is replaced (with -n, -h or
+    -F, or when it leads to no folder), so it counts as removed, by its own name and by where it led; a folder gets a
+    new name inside it (of_review on PR 629 and PR 631: `ln -sf x <checkout>/docs/reference`, `ln -sfn x <the
+    interpreter's opt link>`)."""
+    flags = "".join(a[1:] for a in args if a.startswith("-") and not a.startswith("--"))
+    nofollow = bool(set(flags) & set("nhF")) or "--no-dereference" in args
+    ops = [a for a in args if not a.startswith("-")]
+    if not ops:
+        return []
+    if len(ops) == 1:   # a new name in the folder, replacing a link there by its own name
+        here = os.path.join(cwd or ".", os.path.basename(ops[0].rstrip("/")))
+        return [(here, os.path.islink(here))]
+    dest = _expanduser(ops[-1].strip("'\""))
+    d = dest if os.path.isabs(dest) else os.path.join(cwd or ".", dest)
+    if os.path.islink(d) and (nofollow or not os.path.isdir(d)):
+        return [(d, True)]
+    if os.path.isdir(d):
+        return [(os.path.join(d, os.path.basename(x.rstrip("/"))), False) for x in ops[:-1]]
+    return [(d, False)]
+
+
+def _box_write(head, args, cwd, files, removal, shvars, inbox):
+    """The first thing one simple command writes, links or removes for which INBOX(path, cwd, removal) holds, read as
+    G34 reads a write; the words with the line's variables filled in (`D=<folder>; touch $D/x`, `-d"$dest"`)."""
+    args = [_expand_vars(a, shvars or {}) for a in args]
+    hit = next((t for t in _tree_targets(head, args, cwd) if inbox(t, cwd, True)), None) or \
+        next((f for f in files if inbox(f, cwd, removal)), None)
+    if not hit and head == "ln":
+        hit = next((t for t, rem in _ln_targets(args, cwd) if inbox(t, cwd, rem)), None)
+    if not hit and head in _LIVE_WRITE_HEADS:
+        hit = next((a for a in _live_operands(head, args) if inbox(a, cwd, head in ("rmdir", "shred"))), None)
+    if not hit and head == "git":   # a file git writes by name lands where it says (`diff --output=<folder>/x`)
+        dirs, sub, rest = _git_targets(args)
+        where = cwd or "."
+        for opt, w in dirs:
+            if opt == "-C":
+                where = os.path.join(where, _expanduser(w.strip("'\"")))
+        if not ((sub or "").lower() == "config" and any(a in ("--get", "--get-all", "--get-regexp", "--list", "-l",
+                                                              "--get-urlmatch") for a in rest)):
+            hit = next((o for o in _git_outputs((sub or "").lower(), rest)
+                        if o and inbox(_expanduser(o.strip("'\"")), where, False)), None)
+            if not hit and not _git_reads((sub or "").lower(), rest):   # a write in a repository there
+                dirs_at = [os.path.join(cwd or ".", _expanduser(w.strip("'\""))) if opt != "-C" else None
+                           for opt, w in dirs] + [where]
+                hit = next((d for d in dirs_at if d and inbox(d, cwd, False)), None)
+    return hit
+
+
+def _git_reads(sub, rest):
+    """Is this git call a read (G40's list, a config read, a plain branch, worktree, remote, tag or notes list, a stash
+    list or show)? A bare `git stash` pushes (of_secrets-review)."""
+    if sub in _LIVE_GIT_READS:
+        return True
+    if sub == "config" and any(a in ("--get", "--get-all", "--get-regexp", "--list", "-l", "--get-urlmatch")
+                               for a in rest):
+        return True
+    if sub in ("branch", "worktree", "remote", "tag", "notes") and \
+            (not rest or rest[0] in ("list", "-v", "-vv", "-a", "-r", "--list", "show")):
+        return True
+    return sub == "stash" and bool(rest) and rest[0] in ("list", "show")
+
+
+def _live_agent(path, cwd=None):
+    """Does PATH name an OF launchd agent's plist, one there or a new name under LIVE_AGENTS? launchd loads every plist
+    in that folder at the next login, outside any session (of_review on PR 629)."""
+    import fnmatch
+    p = str(path or "").strip("'\"")
+    if not p:
+        return False
+    if not p.startswith(("/", "~", "$")) and cwd:
+        p = os.path.join(cwd, p)
+    p = _expanduser(p)
+    agents = os.path.realpath(os.path.dirname(_expanduser(LIVE_AGENTS))).casefold()
+    name = os.path.basename(LIVE_AGENTS).casefold()
+    for q in (os.path.join(os.path.realpath(os.path.dirname(p)), os.path.basename(p)), os.path.realpath(p)):
+        q = q.casefold()
+        base = os.path.basename(q)
+        if os.path.dirname(q) == agents and (fnmatch.fnmatchcase(base, name) or fnmatch.fnmatchcase(base, name + ".*")):
+            return True   # the name alone matched, so `*` never spans a folder (of_review on PR 629); and a plist's
+            # temporary name (`….plist.new`), which a writer renames over it (of_review on PR 628's setup)
+    return False
+
+
+def _live_link_temp(path, cwd=None):
+    """Does PATH name a temporary sibling of the `of` on PATH (`~/.local/bin/of.new`), which a writer renames over it
+    (of_review on PR 628's setup: a link planted there is followed or renamed into place)?"""
+    p = str(path or "").strip("'\"")
+    if not p:
+        return False
+    if not p.startswith(("/", "~", "$")) and cwd:
+        p = os.path.join(cwd, p)
+    p = _expanduser(p)
+    link = _expanduser("~/.local/bin/of")
+    q = os.path.join(os.path.realpath(os.path.dirname(p)), os.path.basename(p))
+    return os.path.dirname(q) == os.path.realpath(os.path.dirname(link)) and os.path.basename(q).startswith("of.")
+
+
+def _in_live(path, box, cwd=None, removal=False, above=None):
+    """G40's reading of one path: in its box, an OF agent's plist (or its temporary name), or the `of` link's."""
+    return _in_folders(path, box, cwd, removal, above) or _live_agent(path, cwd) or _live_link_temp(path, cwd)
+
+
+def _live_box_real():
+    """The folders G40 keeps, as real paths: LIVE_DIR, and the checkout ~/.local/bin/of links into when that is not
+    the working copy (before `of live switch` it is). The agent host's checkouts are its sandbox's (of_spawn)."""
+    out = {os.path.realpath(_expanduser(p)) for p in (LIVE_DIR,) + LIVE_RUNNERS}
+    import glob as _glob
+    out |= {os.path.realpath(p) for p in _glob.glob(_expanduser(LIVE_AGENTS))}   # every OF launchd agent there is
+    link = _expanduser("~/.local/bin/of")
+    try:
+        if os.path.islink(link):
+            top = os.path.dirname(os.path.dirname(os.path.realpath(link)))
+            if os.path.isfile(os.path.join(top, "bin", "of")) and os.path.exists(os.path.join(top, ".git")):
+                out.add(top)   # a wrapper elsewhere is no checkout: never the whole folder above it
+    except OSError:
+        pass
+    out.discard(os.path.realpath(_expanduser(DEV_CLONE)))
+    return sorted(out)
+
+
+_OPENED_ARG = re.compile(r"(?:(?<![.\w])(?:open|Path|copy\w*|move|rename|replace)|\b(?:pathlib\.)?Path|"
+                         r"\b(?:os|shutil)\.(?:open|copy\w*|move|rename|replace))\s*\(\s*"
+                         r"(?:[^'\"()]*,\s*)?(?:(?:file|path|name|dst|src)\s*=\s*)?(['\"])([^'\"\n]+)\1")
+# (a builtin's, pathlib's Path or os's and shutil's calls, never another method's: `p.open('w')` names a mode;
+# a keyword argument too: open(file='x'); of_secrets-review on PR 629: pathlib.Path('stamp').touch())
+# a copy's, a move's or a rename's destination, its second argument (shutil.copy('/tmp/x', 'stamp'))
+_FILE_KW = re.compile(r"\b(?:file|path|dst|dest|target)\s*=\s*(['\"])([^'\"\n]+)\1")   # open(mode='x', file='s')
+_DEST_ARG = re.compile(r"\b(?:copy\w*|move|rename|renames|replace|symlink|link)\s*\(\s*(['\"])[^'\"\n]+\1\s*,\s*"
+                       r"(?:(?:dst|dest|target)\s*=\s*)?(['\"])([^'\"\n]+)\2")
+_REMOVAL_ARG = re.compile(r"\b(?:rmtree|remove|removedirs|rmdir|unlink|rename|renames|replace|move|delete)\s*\(\s*"
+                          r"(?:(?:os\.path\.)?(?:expanduser|abspath|realpath|expandvars)\s*\(\s*|Path\s*\(\s*)*"
+                          r"(['\"])([^'\"\n]+)\1")
+
+
+def _deep_lit(lit):
+    """May a removal in code with this literal count a folder above a kept one? Any absolute path but the root: the
+    home and every folder between it and a kept one count, at any depth, since the path may be built a step away
+    (h = '<home>/.local'; rmtree(h); join(expanduser('~'), '.local'): of_secrets-review on PR 629). '/' alone counts
+    only as a removal call's own argument (_REMOVAL_ARG), since a join names it in many a harmless line."""
+    p = os.path.realpath(_expanduser(str(lit).strip("'\"")))
+    return os.path.isabs(p) and p != "/"
+
+
+def _rel_path_lit(lit, opened=()):
+    """Is LIT, a relative literal in code, read as a path in the line's folder: one with a folder or a dot in it, a
+    name that is there, or a file-opening call's own first argument (OPENED: `open('stamp', 'x')`, of_review on PR
+    629)? A mode ('w'), an encoding or a word is none (of_review's note on PR 629)."""
+    here = _DENY_CWD[0]
+    if not here or not lit or _REMOTE_BODY[0]:   # code run on another machine has no folder here
+        return False
+    return "/" in lit or "." in lit or lit in opened or os.path.lexists(os.path.join(here, lit))
+
+
+def _live_write(head, args, cwd, files, removal, env=None, shvars=None):
+    """G40 on one simple command, read as G34 reads a write: a redirection, cp, mv, ln or install into OF's live
+    checkout or what runs it, a recursive copy, an extraction or a removal over it; every operand of a program that
+    changes the files it is given (touch, tar, chmod, …); and any git call there but a read."""
+    if _REMOTE_BODY[0]:
+        return None
+    box = _live_box()
+    hit = _box_write(head, args, cwd, files, removal, shvars, lambda p, c, r: _in_live(p, box, c, r))
+    if not hit and head == "git":
+        hit = _live_git(args, cwd, env or {}, shvars)
+    return (LIVE_DENY, hit) if hit else None
+
+
+def _live_operands(head, args):
+    """The words of a write head that name what it changes: every operand, a tar's every word unless it only lists,
+    dd's of=, xattr's only when it writes."""
+    if head in ("tar", "bsdtar", "gtar"):
+        modes = "".join(a.lstrip("-") for a in args[:1]) + "".join(a[1:] for a in args[1:] if a.startswith("-")
+                                                                  and not a.startswith("--"))
+        if "t" in modes and not set("cxruA") & set(modes) and not any(a in ("--create", "--extract", "--append",
+                                                                            "--update") for a in args):
+            return []
+        return [a.split("=", 1)[-1] for a in args]
+    if head == "dd":
+        return [a[3:] for a in args if a.startswith("of=")]
+    if head == "xattr" and not any(a in ("-w", "-d", "-c") for a in args):
+        return []
+    return [a.split("=", 1)[-1] if a.startswith("--") else a for a in args if not a.startswith("-") or "=" in a]
+
+
+def _live_git(args, cwd, env, shvars):
+    """The folder a git call works on when that lies in G40's box and the call is no read (_LIVE_GIT_READS, a config
+    read, a plain branch or stash list), else None: its -C chain, --git-dir, --work-tree, GIT_DIR and GIT_WORK_TREE
+    from the line's environment or its variables, compared by real path without case (of_secrets-review on PR 629)."""
+    args = [_expand_vars(a, shvars) for a in args]
+    dirs, sub, rest = _git_targets(args)
+    where, cands = cwd or ".", []
+    for opt, w in dirs:
+        w = _expanduser(w.strip("'\""))
+        if opt == "-C":
+            where = os.path.join(where, w)
+        else:
+            cands.append(os.path.join(where, w))
+    cands.append(where)
+    for k in ("GIT_WORK_TREE", "GIT_DIR"):
+        v = env.get(k) or (shvars or {}).get(k)
+        if v:
+            cands.append(os.path.join(where, _expanduser(str(v).strip("'\""))))
+    sub = (sub or "").lower()
+    # a file git writes by name lands where it says, wherever git runs: `diff --output=<live>/x` writes there too
+    # (of_secrets-review on PR 629)
+    box = _live_box()
+    reads_config = sub == "config" and any(a in ("--get", "--get-all", "--get-regexp", "--list", "-l",
+                                                 "--get-urlmatch") for a in rest)
+    out = None if reads_config else \
+        next((o for o in _git_outputs(sub, rest) if o and _in_live(_expanduser(o.strip("'\"")), box, where)), None)
+    if out:
+        return out
+    hit = next((c for c in cands if _in_folders(c, _live_box(), cwd)), None)
+    if not hit:
+        return None
+    return None if _git_reads(sub, rest) else hit
 
 
 # G36: the guard's session index is the collector's (hand-over a18341af, of_server; of_secrets-review, msg
@@ -5032,14 +5566,20 @@ def _tree_targets(head, args, cwd):
                 return [a.split("=", 1)[1]]
         return [cwd or "."]
     if head == "unzip":
-        if set(short) & set("ltvZpz"):  # list, test, verbose, zipinfo, to stdout, comment: nothing is written
-            return []
+        # its flags, read as unzip groups them: in a cluster the letters before a d are flags and the rest is the
+        # folder (`-d/x/live`, `-qd/x/live`, `-qd /x/live`), never letters (of_review on PR 629)
+        flags, folder = "", None
         for i, a in enumerate(args):
-            if a == "-d" and i + 1 < len(args):
-                return [args[i + 1]]
-            if a.startswith("-d") and len(a) > 2:
-                return [a[2:]]
-        return [cwd or "."]
+            if a.startswith("-") and not a.startswith("--") and folder is None:
+                k = a.find("d", 1)
+                if k > 0:
+                    flags += a[1:k]
+                    folder = a[k + 1:] or (args[i + 1] if i + 1 < len(args) else None)
+                    continue
+                flags += a[1:]
+        if set(flags) & set("ltvZpz"):  # list, test, verbose, zipinfo, to stdout, comment: nothing is written
+            return []
+        return [folder] if folder else [cwd or "."]
     return []
 
 
@@ -5569,7 +6109,8 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
         return (LAUNCH_DENY, launch) if launch else (_owner_config_write(head, args, cwd, files, removal) or
                                                      _asks_outbox_write(head, args, cwd, files, removal) or
                                                      _session_index_write(head, args, cwd, files, removal) or
-                                                     _forward_write(head, args, cwd, files, removal))
+                                                     _forward_write(head, args, cwd, files, removal) or
+                                                     _live_write(head, args, cwd, files, removal, env, shvars))
     hit = _git_protected(args, cwd, env or {}, shvars) if head == "git" else None
     if hit:
         return PROTECTED_CODE_DENY, hit
@@ -5589,7 +6130,8 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
     return (LAUNCH_DENY, launch) if launch else (_owner_config_write(head, args, cwd, files, removal) or
                                                  _asks_outbox_write(head, args, cwd, files, removal) or
                                                  _session_index_write(head, args, cwd, files, removal) or
-                                                 _forward_write(head, args, cwd, files, removal))
+                                                 _forward_write(head, args, cwd, files, removal) or
+                                                 _live_write(head, args, cwd, files, removal, env, shvars))
 
 
 def _owner_config_write(head, args, cwd, files, removal):
@@ -5918,12 +6460,20 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 lang = next(filter(None, (_lang(os.path.basename(w)) for w in ws[1:])), None)
             except (ValueError, IndexError):
                 remote = None
-        if head in _SHELLS or remote == "shell":
-            hit = _bash_deny(body, depth + 1)
+        if head in _SHELLS or remote == "shell":   # a local shell's body runs in its line's folder (of_review, PR 629)
+            hit = _bash_deny(body, depth + 1) if remote else \
+                _in_folder(_opener_folder(opener, cmd), _bash_deny, body, depth + 1)
             named = _code_runs_protected(body, _DENY_CWD[0]) if not hit and _ORG_PROTECTION["code"] else None
             hit = hit or ((PROTECTED_RUN_DENY, named) if named else None)
         elif head in _INTERPRETERS or remote == "code":
-            hit = _code_deny(body, lang)
+            if remote:
+                _REMOTE_BODY[0] += 1
+                try:
+                    hit = _code_deny(body, lang)
+                finally:
+                    _REMOTE_BODY[0] -= 1
+            hit = hit if remote else \
+                _in_folder(_opener_folder(opener, cmd), _code_deny, body, lang)
         elif not quoted:  # an unquoted delimiter runs $( ) in the body, whatever reads it
             hit = next(filter(None, (_bash_deny(s, depth + 1) for s in _scan(body)[1])), None)
             if not hit and (head == "tee" or (head == "cat" and ">" not in opener)):  # printed to stdout
@@ -5971,8 +6521,8 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 named = _text_names_protected(stext, here21)
                 if named:
                     return PROTECTED_RUN_DENY, named
-            if kind == "sub":
-                hit = _bash_deny(stext, depth + 1, reaches_agent=reaches_agent and idx == last)
+            if kind == "sub":   # a ( ) group runs in the folder the line moved to (of_review on PR 629)
+                hit = _in_folder(here21, _bash_deny, stext, depth + 1, reaches_agent and idx == last)
                 if hit:
                     return hit
                 continue
@@ -6067,7 +6617,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 if head in _SHELLS:
                     hit = _in_folder(here21, _bash_deny, herestr, depth + 1)
                 elif head in _INTERPRETERS:
-                    hit = _code_deny(herestr, _lang(head))
+                    hit = _in_folder(here21, _code_deny, herestr, _lang(head))   # in this command's folder (G40)
                 else:
                     hit = None
                 if hit:
@@ -6084,12 +6634,12 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             if head in _INTERPRETERS:
                 for flag in ("-c", "-e"):
                     if flag in args[:-1]:
-                        hit = _code_deny(args[args.index(flag) + 1], _lang(head))
+                        hit = _in_folder(here21, _code_deny, args[args.index(flag) + 1], _lang(head))
                         if hit:
                             return hit
                 kind, code, _ = _py_walk(args) if head.startswith("python") else (None, None, None)
                 if kind == "code":  # `-Ic "…"`, `-c"…"`: python's own reading (of_secrets-review on PR 136)
-                    hit = _code_deny(code, "python")
+                    hit = _in_folder(here21, _code_deny, code, "python")
                     if hit:
                         return hit
             if head == "git" or _GIT_SHELL_ENV & set(_assignments(stext)):
@@ -6790,6 +7340,12 @@ def critical_deny(tool, tool_input, cwd=None, caller=None):
         return FORWARD_DENY, str(ti["pattern"])
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and _launch_file(path, cwd):
         return LAUNCH_DENY, path
+    # a link counts by its own name too: Codex's Delete File reaches the guard as an Edit (of_review on PR 629)
+    linked = bool(path) and os.path.islink(_expanduser(str(path)) if os.path.isabs(_expanduser(str(path)))
+                                           else os.path.join(cwd or ".", str(path)))
+    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and \
+            _in_live(str(path), _live_box(), cwd, linked):
+        return LIVE_DENY, path   # G40
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _in_session_index(path, cwd):  # G36
         if SESSION_INDEX_MODE == "deny":
             return SESSION_INDEX_DENY, path

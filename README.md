@@ -110,6 +110,7 @@ New sessions are recorded from the next turn on. To bring in history, run `of im
 | `of capacity status/plan/move/balance/reboot` | Claude accounts, their limits, and moving sessions between them |
 | `of secret run/plan` | a position's credential, served by the broker at the moment of use |
 | `of hooks install/uninstall`, `of hook`, `of leaks` | the recorder (Claude Code hooks) and the guard; leaked secrets counted from gitleaks reports, never shown |
+| `of live setup/switch/request/status` | the laptop's live checkout the hooks and services run from, moved only to a merged commit ([docs/live.md](docs/live.md)) |
 | `of ingest`, `of import`, `of derive`, `of archive`, `of ship`, `of shipped`, `of consent`, `of redact`, `of db stats` | the trace store |
 | `of listen`, `of pulse`, `of relay` | the background services: the listener, the 5-minute pulse, message delivery |
 | `of server run/start/stop/enroll-machine/revoke/status`, `of invite`, `of enroll` | the sync server, and machines and people joining it |
