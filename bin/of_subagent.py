@@ -1118,7 +1118,10 @@ def command(harness, kind, run_dir, work_dir, prompt_file, answer_file, schema=N
             _private_dir(d)
         env = clean_env(run_dir, {"HOME": fresh, "XDG_CONFIG_HOME": cfg, "XDG_DATA_HOME": data,
                                   "XDG_STATE_HOME": os.path.join(run_dir, "xdg-state"),
-                                  "XDG_CACHE_HOME": os.path.join(run_dir, "xdg-cache"), "MUSE_NO_AUTO_UPDATE": "1"})
+                                  "XDG_CACHE_HOME": os.path.join(run_dir, "xdg-cache"), "MUSE_NO_AUTO_UPDATE": "1",
+                                  # its monitor tool off: it runs commands, which --disable-shell refuses only when
+                                  # called (tried live: the tool is gone from the run's list with this switch)
+                                  "MUSE_EXPERIMENTAL_MONITOR": "0"})
         return argv, env, [exe, own], [own]
     raise SubagentError(f"--harness {harness!r}: one of {', '.join(HARNESSES)}")
 

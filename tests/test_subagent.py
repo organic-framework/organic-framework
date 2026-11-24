@@ -949,6 +949,7 @@ class SubagentTest(unittest.TestCase):
         self.assertNotIn(os.path.expanduser("~/Library/Keychains"), prof)
         self.assertIn(os.path.realpath(os.path.join(of_events.STATE_DIR, of_subagent.MUSE_LOGIN)), prof)
         self.assertNotIn("run-canary.txt", prof)
+        self.assertEqual(m["env"].get("MUSE_EXPERIMENTAL_MONITOR"), "0")      # its monitor tool off
         self.assertNotIn("--api-key-stdin", m["argv"])
         self.assertFalse(os.path.exists(m["env"]["HOME"]))                      # gone with the run
         import shutil
