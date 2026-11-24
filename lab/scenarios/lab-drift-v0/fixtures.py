@@ -1424,3 +1424,105 @@ SCENARIOS += [
                _LSTART + [_lwait(1, "2026-11-07T10:00Z", "runner", "2026-11-07T22:00Z", "job-7")],
                "negative", rule="ap.loop-stalled"),
 ]
+
+
+# ---- ap.unacted-turns@0 (diagnose.md 2.30, token plan T0), parts message [sender] and wake [position] ----
+# A turn opens at its start event and closes at its of.turn_end; an act is a message sent, a hand-over step, a declared
+# ask, a diff, a label, a loop record or a file written (of.mandate_check Write or Edit). A command or a read is none.
+def _ut_ts(k, minute=0):
+    return f"2026-11-0{2 + k % 5}T{10 + k // 5:02d}:{minute:02d}Z"
+
+
+def _ut_end(i, ts, pos):
+    return ev(i, ts, "of.turn_end", sid_of(pos), {"last_message": "noted"}, position=pos)
+
+
+def _ut_write(i, ts, pos):
+    return ev(i, ts, "of.mandate_check", sid_of(pos), {"tool_name": "Write", "verdict": "in_mandate"}, position=pos)
+
+
+def _ut_bash(i, ts, pos):
+    return ev(i, ts, "of.mandate_check", sid_of(pos), {"tool_name": "Bash", "command_class": "other",
+                                                       "verdict": "in_mandate"}, position=pos)
+
+
+def _ut_messages(i0, n, recv="bot_operator", sender="bot_search", act=None, wake_act=False):
+    """N relayed messages from SENDER, each a turn of RECV: a command, then ACT (None, 'reply' or 'write'), then its end;
+    with WAKE_ACT, a wake turn of its own right after, which writes a file."""
+    out = []
+    for k in range(n):
+        i = i0 + 10 * k
+        out += [relay_in(i, _ut_ts(k), recv, sender), _ut_bash(i + 1, _ut_ts(k, 1), recv)]
+        if act == "reply":
+            out.append(mout(i + 2, _ut_ts(k, 2), sid_of(recv), sender, recv))
+        elif act == "write":
+            out.append(_ut_write(i + 2, _ut_ts(k, 2), recv))
+        out.append(_ut_end(i + 3, _ut_ts(k, 3), recv))
+        if wake_act:
+            out += [prompt(i + 4, _ut_ts(k, 20), sid_of(recv), "<task-notification> tests done", origin="scheduled",
+                           position=recv),
+                    _ut_write(i + 5, _ut_ts(k, 21), recv), _ut_end(i + 6, _ut_ts(k, 22), recv)]
+    return out
+
+
+def _ut_wakes(i0, n, pos="bot_nonce", acted=0):
+    out = []
+    for k in range(n):
+        i = i0 + 10 * k
+        out += [prompt(i, _ut_ts(k, 30), sid_of(pos), "check the deploy", origin="scheduled", position=pos),
+                _ut_bash(i + 1, _ut_ts(k, 31), pos)]
+        if k < acted:
+            out.append(mout(i + 2, _ut_ts(k, 32), sid_of(pos), "bot_operator", pos))
+        out.append(_ut_end(i + 3, _ut_ts(k, 33), pos))
+    return out
+
+
+_UT = "ap.unacted-turns"
+SCENARIOS += [
+    # 12 of bot_search's messages each start a turn of bot_operator that runs a command and ends: no act
+    _case("unacted-turns/positive-message", _org_doc(), _ut_messages(9000, 12),
+          (_UT, ["bot_search"], "positive")),
+    # the same turns each send a reply: acted
+    _case("unacted-turns/negative-message-replied", _org_doc(), _ut_messages(9200, 12, act="reply"),
+          (_UT, ["bot_search"], "negative")),
+    # the message's turn ends with no act, but its work ends in the wake turn right after it, which writes a file
+    _case("unacted-turns/negative-message-acted-after-a-wake", _org_doc(), _ut_messages(9400, 12, wake_act=True),
+          (_UT, ["bot_search"], "negative")),
+    # 12 unacted of 42: under the share of 0.3
+    _case("unacted-turns/negative-message-share", _org_doc(),
+          _ut_messages(9600, 12) + _ut_messages(10000, 30, act="write"),
+          (_UT, ["bot_search"], "negative")),
+    # 14 of bot_nonce's own wakes run a command and end: no act
+    _case("unacted-turns/positive-wake", _org_doc(), _ut_wakes(10500, 14),
+          (_UT, ["bot_nonce"], "positive")),
+    # 14 wakes, 8 of them report by a message: 6 unacted, under 12
+    _case("unacted-turns/negative-wake-acted", _org_doc(), _ut_wakes(10700, 14, acted=8),
+          (_UT, ["bot_nonce"], "negative")),
+]
+
+
+# ---- ap.review-rounds@0 (diagnose.md 2.31, token plan T0 lever T4), affected [author, reviewer] ----
+# Merged pull requests (GitHub work records) with their comments' verdicts (of_github.verdicts, oldest first).
+def _rr_pr(i, day, number, author, verdicts):
+    return ev(i, f"2026-11-0{day}T12:00Z", "of.work_record", sid_of(author),
+              {"source": "gh", "repo": "o/r", "number": number, "merged_at": f"2026-11-0{day}T12:00Z", "systems": ["bot"],
+               "author": "founder-gh", "reviews": 0, "verdicts": [{"verdict": v, "position": p} for p, v in verdicts]},
+              position=author, source="import")
+
+
+_RR = "ap.review-rounds"
+_RR3 = [("bot_operator", "changes")] * 3 + [("bot_operator", "approve")]
+SCENARIOS += [
+    # bot_operator asked bot_search for changes three times on each of two merged pull requests
+    _case("review-rounds/positive", _org_doc(),
+          [_rr_pr(11000, 3, 801, "bot_search", _RR3), _rr_pr(11001, 5, 802, "bot_search", _RR3)],
+          (_RR, ["bot_search", "bot_operator"], "positive")),
+    # two rounds each: under three
+    _case("review-rounds/negative-two-rounds", _org_doc(),
+          [_rr_pr(11010, 3, 811, "bot_search", _RR3[1:]), _rr_pr(11011, 5, 812, "bot_search", _RR3[1:])],
+          (_RR, ["bot_search", "bot_operator"], "negative")),
+    # a position's own verdicts on its own pull requests are no review rounds
+    _case("review-rounds/negative-own-verdicts", _org_doc(),
+          [_rr_pr(11020, 3, 821, "bot_operator", _RR3), _rr_pr(11021, 5, 822, "bot_operator", _RR3)],
+          (_RR, ["bot_operator"], "negative")),
+]

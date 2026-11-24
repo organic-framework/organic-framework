@@ -820,6 +820,81 @@ class ChattyInjectedTest(unittest.TestCase):
         self.assertNotEqual(flood["issue_id"], of_diagnose.issue_id("chatty", ["bot_operator"]))   # its own key, never a pair's id
 
 
+class UnactedTurnsTest(unittest.TestCase):
+    """ap.unacted-turns (diagnose.md 2.30, token plan T0): a turn from its start event to its of.turn_end, its acts."""
+
+    def turn(self, i, h, start, *body, sid="s-op", end=True):
+        t = lambda m: f"2026-11-05T{h:02d}:{m:02d}:00Z"
+        rows = [x(f"{i}-s{k}", t(0)) for k, x in enumerate(start)]
+        rows += [x(f"{i}-{k}", t(1 + k)) for k, x in enumerate(body)]
+        return rows + ([ev(f"{i}-end", t(30), "of.turn_end", sid, {})] if end else [])
+
+    def test_turns_their_starts_and_acts(self):
+        m = of_model.build(DOC, [], at="2026-11-06T12:00Z")
+        relay = lambda i, ts: ev(i, ts, "of.agent_message_in", "s-op", {"text": "Message from acme:bot_search (via relay)\nhi"})
+        typed = lambda i, ts: ev(i, ts, "of.human_prompt", "s-op", {"origin": "injected", "text": "Message from acme:bot_search (via relay)\nhi"})
+        wake = lambda i, ts: dict(prompt(i, ts, "s-op", "<task-notification>"), payload={"origin": "scheduled"})
+        person = lambda i, ts: prompt(i, ts, "s-op", "how is it going?")
+        bash = lambda i, ts: ev(i, ts, "of.mandate_check", "s-op", {"tool_name": "Bash"})
+        write = lambda i, ts: ev(i, ts, "of.mandate_check", "s-op", {"tool_name": "Edit"})
+        reply = lambda i, ts: ev(i, ts, "of.agent_message_out", "s-op", {"to_position": "bot_search"})
+        status = lambda i, ts: ev(i, ts, "of.state_declared", "s-op", {"state": "idle"})
+        heur = lambda i, ts: question(i, ts, "s-op")
+        rows = (self.turn("a", 8, (relay, typed), bash, status)          # one turn: the relay names it, a status is no act
+                + self.turn("b", 9, (wake,), write)                        # a wake that edits a file
+                + self.turn("c", 10, (relay,), heur)                       # a heuristic question is no act
+                + self.turn("d", 11, (relay,), reply)
+                + self.turn("e", 12, (person,), bash)
+                + self.turn("f", 13, (relay,), bash, end=False))           # still open at b: left out
+        a, b = of_model.epoch("2026-11-05T00:00Z"), of_model.epoch("2026-11-06T00:00Z")
+        turns = R.session_turns(m, rows, a, b)["s-op"]
+        self.assertEqual([(x["kind"], x["sender"], x["acts"], x["tools"]) for x in turns],
+                         [("relay", "bot_search", 0, 1), ("wake", None, 1, 1), ("relay", "bot_search", 0, 0),
+                          ("relay", "bot_search", 1, 0), ("person", None, 0, 1)])
+        self.assertTrue(all(x["position"] == "bot_operator" for x in turns))
+        # the first message's episode takes the wake right after it, which wrote a file: acted; the second is not
+        spec = dict(R_spec("unacted-turns"), thresholds={"unacted_messages_gte": 1, "unacted_share_gte": 0.3,
+                                                         "unacted_wakes_gte": 1, "unacted_wake_share_gte": 0.5})
+        got = R.rule_unacted_turns(m, rows, a, b, of_diagnose.catalogue(), spec)
+        self.assertEqual([(i["part"], i["affected"]) for i in got], [("message", ["bot_search"])])
+        ev_ = got[0]["evidence"]
+        self.assertEqual((ev_["turns"], ev_["unacted"], ev_["receivers"], ev_["receivers_a_person_types_to"]),
+                         (3, 1, {"bot_operator": 1}, {"bot_operator": 1}))
+        self.assertIn("a person also typed into bot_operator", got[0]["summary"])
+
+    def test_a_start_after_activity_with_no_end_opens_a_new_turn(self):
+        m = of_model.build(DOC, [], at="2026-11-06T12:00Z")
+        rows = [ev("1", "2026-11-05T08:00:00Z", "of.agent_message_in", "s-op", {"text": "Message from acme:bot_search (via relay) a"}),
+                ev("2", "2026-11-05T08:01:00Z", "of.mandate_check", "s-op", {"tool_name": "Write"}),
+                ev("3", "2026-11-05T09:00:00Z", "of.agent_message_in", "s-op", {"text": "Message from acme:k8s_keeper (via relay) b"}),
+                ev("4", "2026-11-05T09:30:00Z", "of.turn_end", "s-op", {})]
+        a, b = of_model.epoch("2026-11-05T00:00Z"), of_model.epoch("2026-11-06T00:00Z")
+        self.assertEqual([(x["sender"], x["acts"]) for x in R.session_turns(m, rows, a, b)["s-op"]], [("k8s_keeper", 0)])
+
+
+class ReviewRoundsTest(unittest.TestCase):
+    """ap.review-rounds (diagnose.md 2.31): one reviewer's "changes" verdicts per merged pull request, per pair."""
+
+    def pr(self, i, number, author, verdicts, merged="2026-11-05T12:00:00Z", source="gh"):
+        return ev(i, merged, "of.work_record", None, {"source": source, "repo": "o/r", "number": number, "merged_at": merged,
+                                                      "position": author, "verdicts": verdicts}, source="import")
+
+    def test_rounds_per_pair_and_blocked_without_verdicts(self):
+        m = of_model.build(DOC, [], at="2026-11-06T12:00Z")
+        a, b = of_model.epoch("2026-11-01T00:00Z"), of_model.epoch("2026-11-08T00:00Z")
+        ch = lambda who, n: [{"verdict": "changes", "position": who}] * n + [{"verdict": "approve", "position": who}]
+        cat, spec = of_diagnose.catalogue(), R_spec("review-rounds")
+        rows = [self.pr(1, 7, "bot_search", ch("bot_operator", 3)), self.pr(2, 7, "bot_search", ch("bot_operator", 3)),   # one PR, read twice
+                self.pr(3, 8, "bot_search", ch("bot_operator", 4) + ch("k8s_keeper", 1)),
+                self.pr(4, 9, "bot_search", ch("k8s_keeper", 3)),
+                self.pr(5, 10, "bot_search", ch("bot_operator", 5), merged="2026-10-20T00:00:00Z")]   # merged before the window
+        got = R.rule_review_rounds(m, rows, a, b, cat, spec)
+        self.assertEqual([(i["affected"], i["evidence"]["long_reviews"]) for i in got], [(["bot_operator", "bot_search"], 2)])
+        self.assertEqual(got[0]["evidence"]["prs"][0], {"pr": "o/r#8", "changes": 4, "verdicts": 7})
+        git_only = [self.pr(6, 11, "bot_search", None, source="git")]
+        self.assertEqual(R.rule_review_rounds(m, git_only, a, b, cat, spec), ([], ["wr.verdicts"]))
+
+
 class LoopRulesTest(unittest.TestCase):
     """The development-loop rules (diagnose.md 2.16-2.22, 2.28) through the projection of_model.build makes (of_loops)."""
     A, B = "2026-11-01T00:00Z", "2026-11-08T00:00Z"

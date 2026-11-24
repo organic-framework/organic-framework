@@ -405,6 +405,38 @@ rules:
       strengthened: [restate the basis as inference and unconfirmed in the hand-over and in the work built on it, confirm it with an owner's ask or a quoted source before the work is treated as required, the receiver returns the hand-over until it has a basis]
       unsourced: [add the basis (an ask id, a source with the quote, evidence, or inference), return the work to its requester for a basis]
 
+  unacted-turns:                 # diagnose.md 2.30; v0 (2026-11-24): token plan T0's rules, of_architect's hand-over b204d311 (the founder's prompt 01a20e2d-61a0)
+    version: 0
+    p: {message: 0.5, wake: 0.5}
+    m_decide: {message: 5, wake: 5}
+    # hypotheses: on the agent host's store, 2026-11-21 to 24, 137 of 432 turns relayed messages started ended with no act;
+    # per sender 32% to 57% (diagnose.md 2.30); to be set again from of_capacity's T0 readings on the laptop's store
+    thresholds: {unacted_messages_gte: 10, unacted_share_gte: 0.3, unacted_wakes_gte: 12, unacted_wake_share_gte: 0.5}
+    needs: {message: [of.agent_message_in, of.turn_end], wake: [of.human_prompt, of.turn_end]}
+    reads: [of.mandate_check, of.agent_message_out, of.agent_question, of.ask_amended, of.ask_withdrawn, of.issue_labelled,
+            of.handover_proposed, of.handover_accepted, of.handover_declined, of.handover_blocked, of.handover_delivered,
+            of.handover_verified, of.handover_rejected, of.handover_closed, of.handover_returned, of.handover_withdrawn,
+            of.handover_noted, of.diff_proposed, of.diff_applied, of.loop_hypothesis, of.loop_run, of.loop_decision, of.loop_wait]   # the acts
+    decider: unit_owner_or_structure_keeper
+    severity: {message: low, wake: low}
+    delta_m: "0 (frees holders, not the owner); dT: the turns, each a read of the receiver's whole context"
+    remedies:
+      message: ["the sender sends a message the receiver need not act on with --fyi, which starts no turn", "one message per receiver per topic, a pointer to a commit or file instead of the text"]
+      wake: ["wait on the event with a command that exits when it happens (a background until-loop), not a timed wake", "a small model watches and wakes the position only when it must act (of capacity babysit)", "a wake no shorter than the pace of what it waits on"]
+
+  review-rounds:                 # diagnose.md 2.31; v0 (2026-11-24): token plan T0's rules (of_architect's hand-over b204d311), its lever T4
+    version: 0
+    p: 0.5
+    m_decide: 5
+    # hypotheses: PR 475 drew four "Verdict: changes" from 2026-11-20 to 24 (organic-framework-build reports/token-efficiency-plan-2026-11-24.md);
+    # to be set again from of_capacity's T0 reading of review rounds per pull request
+    thresholds: {changes_rounds_gte: 3, long_reviews_gte: 2}
+    needs: [of.work_record]      # with `verdicts` (GitHub work records): the rule reports blocked, wr.verdicts, without them
+    decider: structure_keeper
+    severity: low
+    delta_m: "0; dT: the review rounds, each a read of the change and a fix pushed again"
+    remedies: ["the author runs a Codex pre-review and its own tests before asking for review", "the reviewer names every blocking point in one pass, in one verdict"]
+
 measures:                      # owner-message measures (diagnose.md §7); counted, not rules: they raise no issue
   status-poll:
     version: sp-v1

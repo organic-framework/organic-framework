@@ -1928,6 +1928,182 @@ def rule_unsourced_requirement(model, rows, a, b, cat, spec):
     return out
 
 
+# ------------------------------------------------------------------ 2.30 unacted turns (token plan T0)
+
+TURN_ACT_KINDS = ("of.agent_message_out", "of.handover_", "of.ask_amended", "of.ask_withdrawn", "of.diff_",
+                  "of.issue_labelled", "of.loop_hypothesis", "of.loop_run", "of.loop_decision", "of.loop_wait")
+WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+START_RANK = ("person", "relay", "pulse", "tool", "wake", "other")   # of several starts of one turn, the first named
+
+
+def turn_start(r):
+    """(kind, sender) when event R starts a turn in its session, else None: a relayed message the hook saw typed in
+    (relay, its sender), a pulse nudge (pulse, the waiter), another tool's note (tool, its injector), the position's
+    own wake (wake: a cron, a loop, a monitor or a background notice, origin scheduled), a person's prompt (person)."""
+    pl = r.get("payload") or {}
+    if r["name"] == "of.agent_message_in" and r.get("source") == "hook":
+        m = RELAY_FROM.match((pl.get("text") or "").lstrip())
+        return "relay", (m.group(1) if m else None) or pl.get("from_position") or str(pl.get("from") or "").split(":")[-1] or None
+    if r["name"] != "of.human_prompt":
+        return None
+    m = NUDGE_FRAME.match((pl.get("text") or "").lstrip())
+    if m:
+        return "pulse", m.group(1)
+    o = pl.get("origin")
+    if o in ("human", "paste"):
+        return "person", None
+    if o == "injected":
+        return "tool", pl.get("injector")
+    if o == "scheduled":
+        return "wake", None
+    return "other", None
+
+
+def turn_act(r):
+    """Whether event R is an act of its session's turn: a message sent, a hand-over step, a declared ask, an ask
+    amended or withdrawn, a diff, an issue label, a loop record, or a file written. A status, a read or a command is not."""
+    n = r["name"]
+    if n.startswith(TURN_ACT_KINDS):
+        return True
+    pl = r.get("payload") or {}
+    if n == "of.agent_question":
+        return pl.get("detected_by") == "declared"
+    return n == "of.mandate_check" and pl.get("tool_name") in WRITE_TOOLS
+
+
+def session_turns(model, rows, a, b):
+    """Every turn that ended in [a, b), per session in time order: [{position, kind, sender, start, end, acts, tools}].
+    A turn opens at its first start event and closes at its of.turn_end; starts before its first other event are one
+    turn, named by START_RANK; one still open at b is left out."""
+    positions = model["positions"]
+    sessions = of_model.session_index(positions)
+    by_s = collections.defaultdict(list)
+    for r in rows:
+        if r.get("session_id") and of_model.in_window(r, a - 86400, b):
+            by_s[r["session_id"]].append(r)
+    out = collections.defaultdict(list)
+    for sid, rs in by_s.items():
+        rs.sort(key=lambda r: epoch(r.get("ts")) or 0)
+        cur = None
+        for r in rs:
+            st = turn_start(r)
+            if st:
+                if cur and (cur["acts"] or cur["tools"]):
+                    cur = None   # a new start with no turn_end between: the earlier turn's end was not recorded
+                if cur is None:
+                    cur = {"session": sid, "position": of_model.position_of(r, positions, sessions), "kind": st[0],
+                           "sender": st[1], "start": r["ts"], "acts": 0, "tools": 0}
+                elif START_RANK.index(st[0]) < START_RANK.index(cur["kind"]):
+                    cur["kind"], cur["sender"] = st
+                continue
+            if cur is None:
+                continue
+            if r["name"] == "of.turn_end":
+                cur["end"] = r["ts"]
+                if cur["position"] and of_model.in_window(r, a, b):
+                    out[sid].append(cur)
+                cur = None
+                continue
+            if r["name"] == "of.mandate_check":
+                cur["tools"] += 1
+            if turn_act(r):
+                cur["acts"] += 1
+    return out
+
+
+def rule_unacted_turns(model, rows, a, b, cat, spec, parts=("message", "wake")):
+    """Turns started from outside the position's own work that end with no act (token plan T0, of_architect's
+    hand-over b204d311). Part message: per sender, the turns its relayed messages started, each with the position's
+    own wake turns right after it (its episode: the work a message starts may end after a background command), that
+    ended with no act. Part wake: per position, its own wakes (a cron, a loop, a monitor, a background notice) whose
+    turn ended with no act."""
+    t = spec.get("thresholds") or {}
+    turns = session_turns(model, rows, a, b)
+    positions = model["positions"]
+    eps = collections.defaultdict(list)    # sender -> [(receiver, acted, tools)]
+    wakes = collections.defaultdict(list)  # position -> [acted]
+    person = collections.Counter()         # position -> turns a person started: its pane is read, a report there may be the act
+    for ts in turns.values():
+        for k, x in enumerate(ts):
+            if x["kind"] == "person":
+                person[x["position"]] += 1
+            if x["kind"] == "wake":
+                wakes[x["position"]].append(x["acts"] > 0)
+            if x["kind"] != "relay" or x["sender"] not in positions:
+                continue
+            acts, tools = x["acts"], x["tools"]
+            for y in ts[k + 1:]:
+                if y["kind"] != "wake":
+                    break
+                acts, tools = acts + y["acts"], tools + y["tools"]
+            eps[x["sender"]].append((x["position"], acts > 0, tools))
+    out = []
+    for sender, es in (sorted(eps.items()) if "message" in parts else ()):
+        idle = [e for e in es if not e[1]]
+        share = len(idle) / len(es)
+        if len(idle) >= t.get("unacted_messages_gte", 10) and share >= t.get("unacted_share_gte", 0.3):
+            recv = collections.Counter(e[0] for e in idle)
+            read = {p: person[p] for p in recv if person[p]}
+            out.append(issue(cat, "unacted-turns", [sender],
+                             {"turns": len(es), "unacted": len(idle), "share": round(share, 2),
+                              "tools_per_unacted": round(sum(e[2] for e in idle) / len(idle), 1),
+                              "receivers": dict(recv.most_common(5)), "receivers_a_person_types_to": read},
+                             f"{sender}: {len(idle)} of the {len(es)} turns its messages started ended with no act "
+                             f"({share:.0%}); most at {', '.join(f'{p} ({n})' for p, n in recv.most_common(3))}"
+                             + (f"; a person also typed into {', '.join(f'{p} ({n} turns)' for p, n in read.items())},"
+                                " where a report in the pane may be the act" if read else ""),
+                             part="message", key=f"message:{sender}"))
+    for pos, ws in (sorted(wakes.items()) if "wake" in parts else ()):
+        idle = sum(1 for w in ws if not w)
+        if idle >= t.get("unacted_wakes_gte", 12) and idle / len(ws) >= t.get("unacted_wake_share_gte", 0.5):
+            out.append(issue(cat, "unacted-turns", [pos], {"wakes": len(ws), "unacted": idle, "share": round(idle / len(ws), 2)},
+                             f"{pos}: {idle} of its {len(ws)} own wakes ended with no act ({idle / len(ws):.0%})",
+                             part="wake", key=f"wake:{pos}"))
+    return out
+
+
+# ------------------------------------------------------------------ 2.31 review rounds (token plan T0, T4)
+
+def rule_review_rounds(model, rows, a, b, cat, spec):
+    """Pull requests merged in [a, b) on which one reviewer gave `changes_rounds_gte` or more "Verdict: changes"
+    (of_github.verdicts, a GitHub work record's `verdicts`), per author and reviewer: each round is a review read and
+    a fix pushed again. Fires for a pair with `long_reviews_gte` such pull requests. Blocked (`wr.verdicts`) when no
+    work record merged in the window carries verdicts: an organization whose reviews leave none, or a store with no
+    GitHub import."""
+    t = spec.get("thresholds") or {}
+    need, prs = t.get("changes_rounds_gte", 3), collections.defaultdict(list)
+    seen = set()
+    with_verdicts = 0
+    for r in rows:
+        pl = r.get("payload") or {}
+        if r["name"] != "of.work_record" or pl.get("source") != "gh" or not pl.get("merged_at"):
+            continue
+        if not (a <= (epoch(pl["merged_at"]) or 0) < b) or (pl.get("repo"), pl.get("number")) in seen:
+            continue
+        seen.add((pl.get("repo"), pl.get("number")))
+        vs = pl.get("verdicts")
+        if not isinstance(vs, list):
+            continue
+        with_verdicts += 1
+        author = pl.get("position") or r.get("position")
+        rounds = collections.Counter(v.get("position") for v in vs if isinstance(v, dict) and v.get("verdict") == "changes")
+        for reviewer, n in rounds.items():
+            if author and reviewer and reviewer != author and n >= need:
+                prs[(author, reviewer)].append({"pr": f'{pl.get("repo")}#{pl.get("number")}', "changes": n,
+                                                "verdicts": len(vs)})
+    if not with_verdicts:
+        return [], ["wr.verdicts"]
+    out = []
+    for (author, reviewer), ps in sorted(prs.items()):
+        if len(ps) >= t.get("long_reviews_gte", 2):
+            ps.sort(key=lambda x: -x["changes"])
+            out.append(issue(cat, "review-rounds", [author, reviewer], {"author": author, "reviewer": reviewer, "prs": ps[:10],
+                                                                       "long_reviews": len(ps)},
+                             f"{reviewer} asked {author} for changes {need} or more times on each of {len(ps)} merged pull "
+                             f"requests (most: {ps[0]['changes']} on {ps[0]['pr']})"))
+    return out
+
+
 RULES = {"orphan-work": rule_orphan_work, "coordination-gap": rule_coordination_gap,
          "unclear-mandate": rule_unclear_mandate, "churn": rule_churn, "chatty": rule_chatty,
          "bottleneck-broker": rule_bottleneck_broker,
@@ -1942,5 +2118,6 @@ RULES = {"orphan-work": rule_orphan_work, "coordination-gap": rule_coordination_
          "unkept-system": rule_unkept_system, "off-map-work": rule_off_map_work,
          "cell-gap": rule_cell_gap, "cell-overlap": rule_cell_overlap,
          "unsourced-requirement": rule_unsourced_requirement,
-         "context-overload": rule_context_overload, "missing-verifier": rule_missing_verifier}
+         "context-overload": rule_context_overload, "missing-verifier": rule_missing_verifier,
+         "unacted-turns": rule_unacted_turns, "review-rounds": rule_review_rounds}
 # a rule in parts (needs keyed by part) takes the tuple of runnable parts as its last argument
