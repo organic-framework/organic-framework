@@ -672,22 +672,27 @@ def shared_units(docs, python=None, ofb=None, state_dir=None):
     return out
 
 
-def install_shared(docs, uninstall=False, run=None):
+def install_shared(docs, uninstall=False, run=None, agents_dir=None):
     import subprocess
+    import of_events
     run = run or subprocess.run
     domain, out = f"gui/{os.getuid()}", []
     os.makedirs(os.path.join(STATE_DIR, "tools", "shared"), mode=0o700, exist_ok=True)
     for label, text in shared_units(docs).items():
-        path = os.path.expanduser(f"~/Library/LaunchAgents/{label}.plist")
+        path = os.path.join(agents_dir or os.path.expanduser("~/Library/LaunchAgents"), f"{label}.plist")
         run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True)
         if uninstall:
-            if os.path.exists(path):
+            if os.path.lexists(path):
                 os.remove(path)
             out.append(f"removed {label}")
             continue
-        with open(path + ".tmp", "w") as fh:
-            fh.write(text)
-        os.replace(path + ".tmp", path)
+        if os.path.islink(path):   # launchd would load the file it names, which need not be the owner's
+            out.append(f"{label}: not loaded ({path} is a link; remove it and run again)")
+            continue
+        # a new file of an unguessable name, never through a link: a link at a fixed temporary name would take the
+        # write, and the rename would put the link where launchd loads the agent from
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        of_events.write_new(path, text, mode=0o644)
         r = run(["launchctl", "bootstrap", domain, path], capture_output=True)
         out.append(f"{label}: {'loaded' if r.returncode == 0 else 'not loaded (launchctl ' + str(r.returncode) + ')'}")
     return out
@@ -880,10 +885,8 @@ def write_mcp_config(cfg, sid, state_dir=None):
     d = os.path.join(state_dir or STATE_DIR, "tools")
     os.makedirs(d, mode=0o700, exist_ok=True)
     path = os.path.join(d, f"{sid}.mcp.json")
-    tmp = f"{path}.{os.getpid()}"
-    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-        json.dump(cfg["mcp"], fh, indent=1)
-    os.replace(tmp, path)
+    import of_events
+    of_events.write_new(path, json.dumps(cfg["mcp"], indent=1), mode=0o600)   # new, never through a link
     return path
 
 
@@ -1212,10 +1215,8 @@ def adopt_url(server, to, codex_config=None, force=False):
     if os.path.exists(path) and not force:
         raise ToolsError(f"{to} exists; --force replaces it")
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-    tmp = f"{path}.{os.getpid()}"
-    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-        fh.write(url)
-    os.replace(tmp, path)
+    import of_events
+    of_events.write_new(path, url, mode=0o600)   # new, never through a link
     return _server_shape({"url": url})["url"]
 
 

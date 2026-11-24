@@ -278,6 +278,57 @@ class SharedServerTest(unittest.TestCase):
         self.assertEqual(c["mcp"]["mcpServers"]["grafana-read"]["type"], "stdio")  # not running: its own, as before
         self.assertTrue(any("is not running" in n for n in c["notes"]))
 
+    def test_a_unit_file_is_written_new_and_never_through_a_link(self):
+        calls = []
+
+        def run(argv, **kw):
+            calls.append(argv)
+            return type("R", (), {"returncode": 0})()
+        with tempfile.TemporaryDirectory() as ag:
+            label = of_tools.shared_label("acme", "grafana-read")
+            path = os.path.join(ag, f"{label}.plist")
+            elsewhere = os.path.join(ag, "elsewhere")
+            os.symlink(elsewhere, path + ".tmp")   # a link at the old fixed temporary name takes nothing now
+            out = of_tools.install_shared({"acme": self.doc()}, run=run, agents_dir=ag)
+            self.assertEqual(out, [f"{label}: loaded"])
+            self.assertFalse(os.path.islink(path))
+            self.assertFalse(os.path.lexists(elsewhere))
+            with open(path) as fh:
+                self.assertIn("tools", fh.read())
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o644)
+            os.remove(path)
+            os.symlink(elsewhere, path)            # a link at the unit's own name: refused, nothing loaded
+            calls.clear()
+            out = of_tools.install_shared({"acme": self.doc()}, run=run, agents_dir=ag)
+            self.assertIn("is a link", out[0])
+            self.assertFalse(any(c[1] == "bootstrap" for c in calls))
+            self.assertFalse(os.path.lexists(elsewhere))
+            out = of_tools.install_shared({"acme": self.doc()}, uninstall=True, run=run, agents_dir=ag)
+            self.assertEqual(out, [f"removed {label}"])
+            self.assertFalse(os.path.lexists(path))
+
+    def test_the_mcp_config_and_an_adopted_url_are_written_new(self):
+        with tempfile.TemporaryDirectory() as st:
+            d = os.path.join(st, "tools")
+            os.makedirs(d)
+            path = os.path.join(d, "s-9.mcp.json")
+            elsewhere = os.path.join(st, "elsewhere")
+            os.symlink(elsewhere, f"{path}.{os.getpid()}")   # the old guessable temporary name
+            os.symlink(elsewhere, path)                         # and a link at the file's own name: replaced
+            self.assertEqual(of_tools.write_mcp_config({"mcp": {"mcpServers": {}}}, "s-9", st), path)
+            self.assertFalse(os.path.islink(path))
+            self.assertFalse(os.path.lexists(elsewhere))
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+            codex = os.path.join(st, "config.toml")
+            with open(codex, "w") as fh:
+                fh.write('[mcp_servers.x]\nurl = "https://example.invalid/mcp?k=v"\n')
+            to = os.path.join(st, "keep", "x.url")
+            os.makedirs(os.path.dirname(to))
+            os.symlink(elsewhere, f"{to}.{os.getpid()}")
+            of_tools.adopt_url("x", to, codex_config=codex)
+            self.assertFalse(os.path.lexists(elsewhere))
+            self.assertEqual(os.stat(to).st_mode & 0o777, 0o600)
+
     def test_serve_command_and_the_header_only_for_the_profile(self):
         import tempfile
         d = self.doc()
