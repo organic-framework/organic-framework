@@ -17,6 +17,7 @@ there first (ask of_studio); it is never computed here from another module's int
 import collections
 import os
 import re
+import statistics
 
 import of_model
 from of_model import epoch, issue
@@ -2104,6 +2105,75 @@ def rule_review_rounds(model, rows, a, b, cat, spec):
     return out
 
 
+# ------------------------------------------------------------------ 2.32 heavy context (token plan T0, T5)
+
+def spend_reports(rows, a, b):
+    """{(machine, hour): payload of the latest of.spend_hours report of that machine and hour}, hours in [a, b): a
+    machine reports an hour again when its sums change (of_spend.emit_hours), and the latest report holds."""
+    latest = {}
+    for r in rows:
+        if r["name"] != "of.spend_hours":
+            continue
+        pl = r.get("payload") or {}
+        h = pl.get("hour")
+        if not isinstance(h, (int, float)) or not (a <= h < b):
+            continue
+        k, t = (pl.get("machine"), h), epoch(r.get("ts")) or 0
+        if k not in latest or t >= latest[k][0]:
+            latest[k] = (t, pl)
+    return {k: pl for k, (_, pl) in latest.items()}
+
+
+def rule_heavy_context(model, rows, a, b, cat, spec):
+    """Positions whose cache reads per response stand at `ratio_gte` times or more the organization's median of the
+    same UTC day, and at `floor_tokens` or more, on `heavy_days_gte` or more days of the window (token plan T0 and T5).
+    Read from of.spend_hours v2 rows (of_spend.emit_hours: cache_read, cache_write and max_context after v1's nine
+    fields; of_capacity, message 01a20e41-f086), every machine's latest report of each hour. A day counts a position
+    with `min_responses` responses, and an organization with `min_positions` such positions. Blocked (spend_hours.v2)
+    with no v2 row in the window: a v1 row leaves its cache reads unknown, not zero."""
+    t = spec.get("thresholds") or {}
+    positions = model["positions"]
+    per = collections.defaultdict(lambda: [0, 0, 0])   # (position, day) -> cache reads, responses, largest context
+    v2 = False
+    for (machine, h), pl in spend_reports(rows, a, b).items():
+        if (pl.get("v") or 1) < 2:
+            continue
+        day = of_model.iso(h)[:10]
+        for row in pl.get("rows") or []:
+            if not isinstance(row, list) or len(row) < 12 or row[1] not in positions:
+                continue
+            resp, cr, mx = row[6], row[9], row[11]
+            if not isinstance(resp, (int, float)) or not isinstance(cr, (int, float)) or resp <= 0:
+                continue
+            v2 = True
+            x = per[(row[1], day)]
+            x[0], x[1], x[2] = x[0] + cr, x[1] + resp, max(x[2], mx or 0)
+    if not v2:
+        return [], ["spend_hours.v2"]
+    by_day = collections.defaultdict(list)
+    for (pos, day), (cr, n, mx) in per.items():
+        if n >= t.get("min_responses", 20):
+            by_day[day].append((pos, cr / n, n, mx))
+    heavy = collections.defaultdict(list)
+    for day, ps in sorted(by_day.items()):
+        if len(ps) < t.get("min_positions", 3):
+            continue
+        med = statistics.median(x[1] for x in ps)
+        for pos, each, n, mx in ps:
+            if med and each >= t.get("ratio_gte", 2.0) * med and each >= t.get("floor_tokens", 300000):
+                heavy[pos].append({"day": day, "cache_read_per_response": round(each), "median": round(med),
+                                   "ratio": round(each / med, 1), "responses": n, "max_context": mx})
+    out = []
+    for pos, ds in sorted(heavy.items()):
+        if len(ds) >= t.get("heavy_days_gte", 2):
+            top = max(ds, key=lambda d: d["ratio"])
+            out.append(issue(cat, "heavy-context", [pos], {"days": ds},
+                             f"{pos}: each response read {top['cache_read_per_response'] // 1000}k tokens of cached context "
+                             f"on {top['day']}, {top['ratio']} times its organization's median that day; "
+                             f"{len(ds)} such days"))
+    return out
+
+
 RULES = {"orphan-work": rule_orphan_work, "coordination-gap": rule_coordination_gap,
          "unclear-mandate": rule_unclear_mandate, "churn": rule_churn, "chatty": rule_chatty,
          "bottleneck-broker": rule_bottleneck_broker,
@@ -2119,5 +2189,6 @@ RULES = {"orphan-work": rule_orphan_work, "coordination-gap": rule_coordination_
          "cell-gap": rule_cell_gap, "cell-overlap": rule_cell_overlap,
          "unsourced-requirement": rule_unsourced_requirement,
          "context-overload": rule_context_overload, "missing-verifier": rule_missing_verifier,
-         "unacted-turns": rule_unacted_turns, "review-rounds": rule_review_rounds}
+         "unacted-turns": rule_unacted_turns, "review-rounds": rule_review_rounds,
+         "heavy-context": rule_heavy_context}
 # a rule in parts (needs keyed by part) takes the tuple of runnable parts as its last argument
