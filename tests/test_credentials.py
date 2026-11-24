@@ -277,6 +277,116 @@ class HookTest(CatalogueBase):
         self.assertEqual([c["decision"] for c in self.checks()], ["deny"])
 
 
+UNLISTED = """
+organization: acme
+credential_roots:
+  - "{root}"
+  - {{path: "{kits}", unlisted: true, keeper: sec_keeper}}
+credentials:
+  kit-a:
+    paths: ["{kits}/kit_a/**"]
+    keeper: sec_keeper
+positions:
+  - {{name: sec_keeper, system: sec, role: keeper, holder: {{session: S7}}}}
+  - {{name: kit_a, system: kit, role: user, credentials: [kit-a], holder: {{session: S8}}}}
+  - {{name: app_dev, system: app, role: dev, holder: {{session: S4}}}}
+"""
+
+
+class UnlistedRootTest(unittest.TestCase):
+    """G43 (a user organization's request, 2026-11-24, of_architect's yes): an unlisted root's names are its keeper's
+    alone to list, stat or search for; reading and using stay the catalogue's."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(dir=os.path.expanduser("~"))
+        t = self.tmp.name
+        self.root, self.kits = os.path.join(t, "cfg", "acme"), os.path.join(t, "kits")
+        for rel in ("kit_a/kubeconfig", "kit_a/id_kit", "kit_a/bin/kit-tool", "kit_a/readme.txt"):
+            os.makedirs(os.path.dirname(os.path.join(self.kits, rel)), exist_ok=True)
+            open(os.path.join(self.kits, rel), "w").close()
+        os.makedirs(self.root)
+        os.makedirs(os.path.join(t, "acme", "registry"))
+        with open(os.path.join(t, "acme", "registry", "positions.yaml"), "w") as fh:
+            fh.write(textwrap.dedent(UNLISTED.format(root=self.root, kits=self.kits)))
+        self.orgs = os.path.join(t, "orgs.yaml")
+        with open(self.orgs, "w") as fh:
+            fh.write(f"orgs:\n  - {{name: acme, path: {t}/acme}}\n")
+        self.cat = of_credentials.load(self.orgs)
+        self.saved = (of_events.STATE_DIR, of_hook.STATE, os.environ.get("OF_ORGS"), os.environ.get("HERDR_ENV"))
+        of_events.STATE_DIR = of_hook.STATE = os.path.join(t, "state")
+        os.environ["OF_ORGS"] = self.orgs
+        os.environ.pop("HERDR_ENV", None)
+
+    def tearDown(self):
+        of_events.STATE_DIR, of_hook.STATE = self.saved[0], self.saved[1]
+        for k, v in (("OF_ORGS", self.saved[2]), ("HERDR_ENV", self.saved[3])):
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        self.tmp.cleanup()
+
+    def fire(self, sid, tool, ti):
+        import io
+        of_hook.OUTPUT = None
+        old, sys.stdout = sys.stdout, io.StringIO()
+        try:
+            of_hook.handle("PreToolUse", {"hook_event_name": "PreToolUse", "session_id": sid, "cwd": "/x",
+                                          "tool_name": tool, "tool_input": ti})
+            printed = sys.stdout.getvalue()
+        finally:
+            sys.stdout = old
+        out = json.loads(printed) if printed.strip() else (of_hook.OUTPUT or {})
+        return (out.get("hookSpecificOutput") or {}).get("permissionDecision")
+
+    def test_the_catalogue_reads_the_mapping_form(self):
+        self.assertEqual(of_credentials.unlisted_roots(self.cat), [self.kits])
+        self.assertIn(self.kits, self.cat["acme"]["roots"])
+        self.assertEqual(of_credentials.unlisted_hit(self.kits + "/kit_a", "kit_a", "acme", self.cat)[1], self.kits)
+        self.assertIsNone(of_credentials.unlisted_hit(self.kits + "/kit_a", "sec_keeper", "acme", self.cat))
+        self.assertIsNotNone(of_credentials.unlisted_hit(os.path.dirname(self.kits), "kit_a", "acme", self.cat, True))
+        self.assertIsNone(of_credentials.unlisted_hit(os.path.dirname(self.kits), "kit_a", "acme", self.cat, False))
+
+    def test_listing_stat_and_name_searches_are_denied_but_the_keepers(self):
+        k, up = self.kits, os.path.dirname(self.kits)
+        for cmd in (f"ls {k}", f"ls -la {k}/kit_a", f"stat {k}/kit_a/id_kit", f"file {k}/kit_a/kubeconfig",
+                    f"find {k} -name '*.key'", f"find {up} -name 'id_*'", f"tree {up}", f"ls -R {up}",
+                    f"cd {k} && ls", f"python3 -c \"import os; print(os.listdir('{k}/kit_a'))\"",
+                    f"python3 -c \"import os; print(list(os.walk('{up}')))\""):
+            self.assertEqual(self.fire("S8", "Bash", {"command": cmd}), "deny", cmd)   # the kit's own user too
+            self.assertEqual(self.fire("S4", "Bash", {"command": cmd}), "deny", cmd)
+            self.assertIsNone(self.fire("S7", "Bash", {"command": cmd}), cmd)           # its keeper
+        for tool, ti in (("Glob", {"pattern": "**/*", "path": k}), ("Glob", {"pattern": f"{k}/**/id_*"}),
+                         ("LS", {"path": k + "/kit_a"}), ("Glob", {"pattern": "**/id_*", "path": up})):
+            self.assertEqual(self.fire("S8", tool, ti), "deny", (tool, ti))
+            self.assertIsNone(self.fire("S7", tool, ti), (tool, ti))
+        for cmd in (f"ls {up}", f"{k}/kit_a/bin/kit-tool status"):   # the root's own name; the kit's program
+            self.assertIsNone(self.fire("S8", "Bash", {"command": cmd}), cmd)
+
+    def test_the_kits_program_runs_for_those_who_list_its_credential_only(self):
+        """of_architect: running a kit's program by its path stays allowed to the positions that list that kit's
+        credential, and to no one else (its keeper keeps it as for every credential)."""
+        prog = f"{self.kits}/kit_a/bin/kit-tool status"
+        self.assertIsNone(self.fire("S8", "Bash", {"command": prog}))
+        self.assertEqual(self.fire("S4", "Bash", {"command": prog}), "deny")
+
+    def test_reading_stays_the_catalogues(self):
+        f = f"{self.kits}/kit_a/readme.txt"   # a plain name: a kubeconfig or a key is G1's to deny anyway
+        self.assertIsNone(self.fire("S8", "Bash", {"command": f"cat {f}"}))   # it lists kit-a
+        self.assertIsNone(self.fire("S7", "Bash", {"command": f"cat {f}"}))   # its keeper
+
+    def test_the_check_refuses_an_unlisted_root_without_a_keeper(self):
+        bad = UNLISTED.replace("unlisted: true, keeper: sec_keeper", "unlisted: true").format(root=self.root,
+                                                                                          kits=self.kits)
+        with open(os.path.join(self.tmp.name, "acme", "registry", "positions.yaml"), "w") as fh:
+            fh.write(textwrap.dedent(bad))
+        self.assertTrue(any("unlisted and names no keeper" in p for p in of_credentials.check(self.orgs)))
+        bad = UNLISTED.replace("keeper: sec_keeper}}", "keeper: nobody}}").format(root=self.root, kits=self.kits)
+        with open(os.path.join(self.tmp.name, "acme", "registry", "positions.yaml"), "w") as fh:
+            fh.write(textwrap.dedent(bad))
+        self.assertTrue(any("keeper 'nobody' is no position here" in p for p in of_credentials.check(self.orgs)))
+
+
 class CacheReadTest(unittest.TestCase):
     """The guard's cache is read as the other state files are: no link, a regular file of this user, no second name,
     no wait on open."""

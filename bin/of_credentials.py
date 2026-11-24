@@ -74,10 +74,21 @@ def _abs(p):
     return os.path.normpath(os.path.expanduser(p))
 
 
+def _root_path(r):
+    """A credential_roots entry's path: the entry itself, or a mapping's `path`; None for anything else."""
+    if isinstance(r, str):
+        return r
+    return r.get("path") if isinstance(r, dict) and isinstance(r.get("path"), str) else None
+
+
 def _org_entry(org, doc):
     organization = str(doc.get("organization") or org)
     given = doc.get("credential_roots") if isinstance(doc.get("credential_roots"), list) else None
-    roots = [_abs(r) for r in (given or [f"~/.config/{organization}"]) if isinstance(r, str)]
+    # a root is a path, or a mapping {path, unlisted, keeper}: an unlisted root's names are its keeper's alone to list,
+    # stat or search (a user organization's request, 2026-11-24, of_architect's yes; docs/registry.md, Credentials)
+    roots = [_abs(_root_path(r)) for r in (given or [f"~/.config/{organization}"]) if _root_path(r)]
+    unlisted = [{"path": _abs(r["path"]), "keeper": str(r.get("keeper") or "")} for r in given or []
+                if isinstance(r, dict) and isinstance(r.get("path"), str) and r.get("unlisted") is True]
     creds = {}
     for cid, c in (doc.get("credentials") or {}).items() if isinstance(doc.get("credentials"), dict) else ():
         c = c if isinstance(c, dict) else {}
@@ -104,6 +115,7 @@ def _org_entry(org, doc):
                                      "basis": str(x.get("basis") or "")}
                                     for x in excluded if isinstance(x, dict) and x.get("url")],
             "roots": [r for r in roots if r not in NOT_A_ROOT], "credentials": creds, "positions": positions,
+            "unlisted": [u for u in unlisted if u["path"] not in NOT_A_ROOT and u["keeper"]],
             "authorities": contacts,  # docs/guard.md G16: the organization's own regulators, hosts and addresses
             "protected_code": [_abs(c) for c in code if c and _code_path_ok(c)]}  # G21
 
@@ -295,6 +307,24 @@ def interesting(cat):
     return keep
 
 
+def unlisted_roots(cat):
+    """Every organization's unlisted roots, as real paths."""
+    return [u["path"] for e in (cat or {}).values() for u in e.get("unlisted") or []]
+
+
+def unlisted_hit(path, position, org, cat, recursive=False):
+    """(owner org, root, keeper) when listing, stat or a name search of PATH shows names under an unlisted root and the
+    caller is not its keeper; a recursive one from a folder above the root counts. None otherwise."""
+    for o, ent in (cat or {}).items():
+        for u in ent.get("unlisted") or []:
+            r = u["path"]
+            inside = path == r or path.startswith(r.rstrip("/") + "/")
+            above = recursive and r.startswith(path.rstrip("/") + "/")
+            if (inside or above) and not (org == o and position and position == u["keeper"]):
+                return o, r, u["keeper"]
+    return None
+
+
 def decide(path, position, org, cat):
     """(allowed, owner org, [credential ids naming it]) for one file; None when the catalogue says nothing about it."""
     for o, ent in cat.items():
@@ -423,9 +453,22 @@ def check(orgs_file=None):
         if roots is not None and not isinstance(roots, list):
             problems.append(f"{rel}: credential_roots must be a list of directories under the home directory")
         for r in roots if isinstance(roots, list) else []:
-            if not isinstance(r, str) or not (_abs(r) + "/").startswith(home) or _abs(r) + "/" == home:
+            if isinstance(r, dict):
+                extra = set(r) - {"path", "unlisted", "keeper"}
+                if extra:
+                    problems.append(f"{rel}: credential_roots: {sorted(extra)} are no keys of a root (path, unlisted, "
+                                    "keeper)")
+                if "unlisted" in r and not isinstance(r.get("unlisted"), bool):
+                    problems.append(f"{rel}: credential_roots: unlisted must be true or false")
+                if r.get("unlisted") is True and not r.get("keeper"):
+                    problems.append(f"{rel}: credential_roots: {r.get('path')!r} is unlisted and names no keeper: "
+                                    "name the position that may list it")
+                elif r.get("keeper") and str(r.get("keeper")) not in names:
+                    problems.append(f"{rel}: credential_roots: keeper {r.get('keeper')!r} is no position here")
+            rp = _root_path(r)
+            if not isinstance(rp, str) or not (_abs(rp) + "/").startswith(home) or _abs(rp) + "/" == home:
                 problems.append(f"{rel}: credential_roots: {r!r} is not a directory under the home directory")
-            elif _abs(r) in NOT_A_ROOT:
+            elif _abs(rp) in NOT_A_ROOT:
                 problems.append(f"{rel}: credential_roots: {r!r} is the platform's own config, not an organization's")
         creds = doc.get("credentials")
         if creds is not None and not isinstance(creds, dict):
