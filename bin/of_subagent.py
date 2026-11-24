@@ -856,6 +856,35 @@ def codex_parts(exe):
     return parts
 
 
+def hook_link(fresh):
+    """The run's fresh home gets the user's of as .local/bin/of, a link to its real path in the checkout: the managed
+    hooks run $HOME/.local/bin/of (of_codex.hook_command), and with none a guard event refuses every call. The link
+    lies in the run's folder, which Codex's profile hides from the run's own commands (codex_filesystem)."""
+    import of_codex
+    d = os.path.join(fresh, ".local", "bin")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    link = os.path.join(d, "of")
+    if not os.path.lexists(link):
+        os.symlink(of_codex.default_of_bin(), link)
+    return link
+
+
+def hook_dirs():
+    """The folders OF's managed Codex hooks run from, bound read-only into a run's bwrap: the machine's requirements file
+    forces its hooks on every Codex run, this one's included (bin/of_codex.py), so the guard must resolve and judge
+    the run's commands as any session's; with /home empty, the hook would not be found, Codex would take it as failed
+    and run the call (of_server, msg 01a1f982-178c). The checkout's bin folder, where of_codex.default_of_bin points."""
+    try:
+        import of_codex
+        dirs = [os.path.dirname(of_codex.default_of_bin())]
+        named = of_codex.installed_of_bin()   # a file written with --of-bin names its own (of_review on PR 475)
+        if named:
+            dirs.append(os.path.dirname(os.path.realpath(named)))
+    except Exception:  # noqa: BLE001
+        return []
+    return sorted({d for d in dirs if os.path.isdir(d)})
+
+
 def bwrap_argv(argv, run_dir, work_dir, write_dir, exe, login, login_at):
     """ARGV inside bwrap, on Linux: /usr and /etc read-only, /home, /tmp and /run empty tmpfs, the run's folder bound
     in with its material read-only (WRITE_DIR, a patch's snapshot, writable), the Codex program file alone read-only
@@ -874,6 +903,8 @@ def bwrap_argv(argv, run_dir, work_dir, write_dir, exe, login, login_at):
     if write_dir:
         a += ["--bind", write_dir, write_dir]
     for p in codex_parts(exe):
+        a += ["--ro-bind", p, p]
+    for p in hook_dirs():
         a += ["--ro-bind", p, p]
     a += ["--bind", login, login_at, "--chdir", work_dir, "--"]
     return a + list(argv)
@@ -950,7 +981,7 @@ def command(harness, kind, run_dir, work_dir, prompt_file, answer_file, schema=N
         else:
             _link_login(login, os.path.join(codex_home, "auth.json"))
         exe = binary or codex_bin()
-        _private_dir(os.path.join(run_dir, "home"))
+        hook_link(_private_dir(os.path.join(run_dir, "home")))
         try:
             if os.stat(answer_file).st_nlink > 1:
                 os.unlink(answer_file)   # a hard link elsewhere: codex refuses to write it, so it is made anew

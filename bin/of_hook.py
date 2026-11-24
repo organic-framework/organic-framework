@@ -734,7 +734,7 @@ ASK_DIALOG_DENY = ("Organic Framework: a position never asks its owner in a dial
 
 
 def handle(event, hook):
-    global OUTPUT, _PRE_TOOL, _SESSION
+    global OUTPUT, _PRE_TOOL, _SESSION, GUARD_DECIDED
     sid = hook.get("session_id")
     CODEX[0] = is_codex(hook)   # a Codex session's hook: no Claude state reports to herdr
     _SESSION = None if hook.get("agent_id") else sid  # a subagent's call never reports its parent's pane state
@@ -783,6 +783,7 @@ def handle(event, hook):
         prompt = hook.get("prompt") or ""
         if DENY_SECRETS_FLAG:  # gated on --deny-secrets (the whole secrets policy rides one flag)
             _mention_guard(prompt, hook, sess, index)  # block an @mention of a secret path before it is read
+        GUARD_DECIDED = True   # the prompt's guard has answered: a later failure here records less, refuses nothing
         origin = prompt_origin(prompt, hook)
         mark = _injected(sid, prompt) if origin == "human" else None
         if origin == "human" and not mark:  # a declared tool's text is settled by its mark; else ask the transcript
@@ -1119,7 +1120,11 @@ def _permission_answer(hook):
     # plan are a person's choice made later, which keeps its dialog (of_secrets-review on PR 221)
     if mode != "bypassPermissions" and not (mode == "acceptEdits" and _launched_bypass()):
         return None
-    hit = critical_deny(hook.get("tool_name"), hook.get("tool_input"), hook.get("cwd"))
+    ti = hook.get("tool_input")
+    if isinstance(ti, dict) and isinstance(ti.get("command"), list):
+        import shlex   # an argv list read as one command, as PreToolUse reads it (of_server on PR 475)
+        ti = dict(ti, command=shlex.join(str(a) for a in ti["command"]))
+    hit = critical_deny(hook.get("tool_name"), ti, hook.get("cwd"))
     if hit:
         decision = {"behavior": "deny", "message": f"Organic Framework critical deny: {hit[0]}." + NO_WAY_ROUND}
         answered = {"by": "guard", "behavior": "deny", "reason": mask(hit[0])[:200], "mode": mode}
@@ -1239,7 +1244,9 @@ def _guard(hook, sess):
 # no path, makes the patch unreadable, and an unreadable patch is denied (of_secrets-review and of_review on PR 469)
 _PATCH_FILE = re.compile(r"^\*\*\*\s*(Add File|Update File|Delete File|Move to)\s*:\s*(.*?)\s*$")
 _PATCH_MARKS = re.compile(r"^\*\*\*\s*(Begin Patch|End Patch|End of File)\s*$")
-_PATCH_BODY = re.compile(r"\*\*\*\s*Begin Patch.*?(?:\*\*\*\s*End Patch|\Z)", re.S)
+# the markers at column 0, as _PATCH_MARKS reads them: a context line ` *** End Patch` (every context line of an update
+# hunk starts with a blank) must not end the body before a later file header (of_server on PR 475)
+_PATCH_BODY = re.compile(r"(?m)^\*\*\*\s*Begin Patch\s*$.*?(?:^\*\*\*\s*End Patch\s*$|\Z)", re.S)
 PATCH_UNREADABLE = ("a patch whose file headers cannot be read (an apply_patch the guard cannot judge file by file)")
 
 
@@ -1254,6 +1261,11 @@ def patch_calls(patch, cwd=None):
     out, cur = [], None
     for raw in str(patch or "").splitlines():
         line = raw.strip()
+        if raw[:1] in (" ", "\t") and line.startswith("***"):
+            if _PATCH_MARKS.match(line) or _PATCH_FILE.match(line):
+                # a context line that reads as a marker or a header: which one apply_patch takes cannot be told
+                raise PatchUnreadable(line[:120])
+            continue
         if line.startswith("***"):
             if _PATCH_MARKS.match(line):
                 if "End Patch" in line:
@@ -1295,6 +1307,10 @@ def codex_calls(hook):
     Write and Edit calls; any other call that holds a patch (`apply_patch <<'EOF'` through the shell, which Codex runs
     as a patch) as itself plus those calls; view_image as a Read of its path. An unreadable patch is one deny."""
     tool, ti = hook.get("tool_name"), hook.get("tool_input")
+    if tool == "Bash" and isinstance(ti, dict) and isinstance(ti.get("command"), list):
+        import shlex   # an argv list (of_server on PR 475): one string as the shell would run it, never a TypeError
+        ti = dict(ti, command=shlex.join(str(a) for a in ti["command"]))
+        hook["tool_input"] = ti
     calls = []
     # only a Codex session's patch: Codex's apply_patch, or its shell running apply_patch with the begin marker alone on
     # its line; a Claude Code call that quotes the markers (a document, a comment) is no patch (of_secrets-review on PR
@@ -1815,6 +1831,11 @@ def _mention_guard(prompt, hook, sess, index):
               "reason": f"Organic Framework critical deny: this prompt names a secret file as an @mention "
                         f"({os.path.basename(hit.rstrip('/')) or hit}); Claude Code would read it into the session. "
                         "Remove the @mention and ask the owner for the value if you need it."}
+    # the block goes out before its recording, as the tool deny does (of_server on PR 475): a store that stalls never
+    # holds the answer
+    sys.stdout.write(json.dumps(OUTPUT, ensure_ascii=False))
+    sys.stdout.flush()
+    OUTPUT = None
     try:
         write("mandate_check", {"verdict": "critical", "decision": "deny", "mode": "enforce",
                                 "router_version": __import__("of_router").VERSION, "tool_name": "UserPromptSubmit",
@@ -1889,13 +1910,9 @@ def open_asks_note(sid, prompt, db=None):
 DENY_SECRETS_FLAG = False  # set from argv in main(); gates the UserPromptSubmit @mention block
 
 
-def _mandate_context(hook, index, sess):
-    """An enrolled position gets its mandate, brief, rules and team as additionalContext."""
-    global OUTPUT
-    name = ((index.get("sessions") or {}).get(hook.get("session_id")) or [None])[0]
-    if not name or name not in (index.get("enrolled") or []) or \
-            hook.get("source") not in ("startup", "resume", "clear", "compact", None):
-        return
+def _context_inputs(name):
+    """(positions, loops, resolve, runs, clocks, subagents) for of_context.build: what a position's start context
+    reads, shared by a Claude Code session's SessionStart and a Codex session's start (of_codex.start_context)."""
     import importlib.machinery
     import importlib.util
     import of_context
@@ -1937,6 +1954,30 @@ def _mandate_context(hook, index, sess):
                                       positions, me.get("_org"), fallback="all")
         except Exception:  # noqa: BLE001 - never costs the session its context
             resolve = of._decided_resolver(positions=positions)
+    return positions, loops, resolve, runs, clocks, subagents
+
+
+def position_context(name, cwd=None, cap=None):
+    """A position's start context, or None: for a Codex session's developer_instructions, which have no cap, the
+    whole text (W5 of hand-over 9ee1db9f; of_architect's research: developer_instructions has no size limit, where
+    Claude Code's hook output is cut at 10,000 characters, hand-over 83b08e7b)."""
+    import of_context
+    positions, loops, resolve, runs, clocks, subagents = _context_inputs(name)
+    return of_context.build(name, positions, loops, resolve, runs, clocks, subagents, info={}, cwd=cwd,
+                            cap=cap or 10 ** 7)
+
+
+def _mandate_context(hook, index, sess):
+    """An enrolled position gets its mandate, brief, rules and team as additionalContext."""
+    global OUTPUT
+    name = ((index.get("sessions") or {}).get(hook.get("session_id")) or [None])[0]
+    if not name or name not in (index.get("enrolled") or []) or \
+            hook.get("source") not in ("startup", "resume", "clear", "compact", None):
+        return
+    if CODEX[0]:
+        return   # a Codex session has its start context whole in its layer's developer_instructions (of_codex)
+    import of_context
+    positions, loops, resolve, runs, clocks, subagents = _context_inputs(name)
     info = {}
     ctx = of_context.build(name, positions, loops, resolve, runs,
                            clocks, subagents, info=info, cwd=hook.get("cwd"))
@@ -2167,6 +2208,73 @@ def _timing(event, hook, started):
         pass
 
 
+def codex_refusal(text):
+    """The reason when TEXT, a hook answer, refuses: a PreToolUse deny, a PermissionRequest deny or a UserPromptSubmit
+    block; else None."""
+    try:
+        d = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(d, dict):
+        return None
+    spec = d.get("hookSpecificOutput") if isinstance(d.get("hookSpecificOutput"), dict) else {}
+    if spec.get("permissionDecision") == "deny":
+        return str(spec.get("permissionDecisionReason") or "Organic Framework denied this call.")
+    dec = spec.get("decision") if isinstance(spec.get("decision"), dict) else {}
+    if dec.get("behavior") == "deny":
+        return str(dec.get("message") or "Organic Framework denied this request.")
+    if d.get("decision") == "block":
+        return str(d.get("reason") or "Organic Framework blocked this prompt.")
+    return None
+
+
+class _CodexAnswer:
+    """stdout for a Codex session's hook: an answer that refuses goes out as its reason on stderr and the process
+    exits 2, Codex's deny or block for PreToolUse, PermissionRequest and UserPromptSubmit alike (codex-rs
+    hooks/src/events at rust-v0.170.0). Codex parses stdout strictly, whole, as one JSON object, and runs the hook
+    under the session's shell, whose start files (~/.zshenv, $BASH_ENV, a login profile) are the user's and may print:
+    one printed line would make a JSON deny unparsable, and Codex then runs the call (of_review on organic-framework
+    PR 475, probed). Every other answer passes through as written. Each write is judged when it is flushed or the
+    hook ends, so a decision still leaves before the recording that follows it."""
+
+    exit_now = True   # tests run it in process: False
+
+    def __init__(self, real):
+        self.real, self.buf, self.code = real, "", 0
+
+    def write(self, s):
+        self.buf += s
+        return len(s)
+
+    def flush(self):
+        text, self.buf = self.buf, ""
+        if not text:
+            return
+        why = codex_refusal(text)
+        if why is None:
+            self.real.write(text)
+            self.real.flush()
+            return
+        sys.stderr.write(why.rstrip() + "\n")
+        sys.stderr.flush()
+        self.code = 2
+        if self.exit_now:
+            # Codex waits for the hook, and a recording that stalls past its timeout would make the deny a failure,
+            # which Codex runs (of_server on PR 475): this process exits 2 now, and a child with no pipe of Codex's
+            # open records what follows
+            try:
+                pid = os.fork()
+            except OSError:
+                os._exit(2)   # no child to record in: the deny goes out now and the record is dropped (of_server)
+            if pid:
+                os._exit(2)
+            os.setsid()
+            null = os.open(os.devnull, os.O_RDWR)
+            for fd in (0, 1, 2):
+                os.dup2(null, fd)
+            self.real = sys.stderr = open(os.devnull, "w")
+
+
 def main(argv):
     global DENY_SECRETS_FLAG
     of_events.HOOK_TIMEOUT = HOOK_DB_TIMEOUT
@@ -2174,14 +2282,27 @@ def main(argv):
     DENY_SECRETS_FLAG = "--deny-secrets" in argv  # gates the @mention prompt block (of_architect, 2026-11-06)
     started = _T0
     hook = {}
+    answer = None
+    parsed = False
+    refused = 0
     try:
         raw = sys.stdin.read(4 * 1024 * 1024)
-        hook = json.loads(raw) if raw.strip() else {}
-        event = hook.get("hook_event_name") or event
+        cut = bool(raw) and len(raw) >= 4 * 1024 * 1024 and bool(sys.stdin.read(1))
+        hook = json.loads(raw) if raw.strip() and not cut else {}
+        if cut or (event == "PreToolUse" and not hook.get("tool_name")):
+            # an input past the read, or a call that names no tool, names nothing the guard can judge: refused as an
+            # unreadable one is (of_server on PR 475: a prompt cut at 4 MiB skipped the mention guard)
+            raise ValueError("an input the hook cannot read whole")
+        parsed = True
+        event = event or hook.get("hook_event_name")   # the event the command was registered for, never the payload's
+        # when it is given (of_server on PR 475: Codex sets that field, not the model; defence only)
+        if is_codex(hook):
+            answer = sys.stdout = _CodexAnswer(sys.stdout)
         _store_raw(event, hook, raw)
         handle(event, hook)
         if OUTPUT:
             sys.stdout.write(json.dumps(OUTPUT, ensure_ascii=False))
+            sys.stdout.flush()
         if event in ("Stop", "SessionEnd", "PreCompact") and hook.get("transcript_path"):
             _ingest_detached(hook["transcript_path"])
         if event == "SessionEnd" and hook.get("transcript_path"):  # the raw tier keeps the session's file as it ended
@@ -2192,8 +2313,24 @@ def main(argv):
                                  f"{of_events.now_iso()} {event} {type(e).__name__}: {e}\n")
         except Exception:
             pass
-        if event == "PreToolUse" and not GUARD_DECIDED:  # failed before the guard answered: the call is denied
+        if event in ("PreToolUse", "UserPromptSubmit", "PermissionRequest") and not GUARD_DECIDED and not parsed \
+                and answer is None:
+            # an input that does not parse names no harness: exit 2 with the reason on stderr, the deny Claude Code and
+            # Codex both take whatever else is on stdout (of_secrets-review on organic-framework PR 475)
+            sys.stderr.write(GUARD_FAILED.format(kind=type(e).__name__) + NO_WAY_ROUND + "\n")
+            refused = 2
+        elif event == "PreToolUse" and not GUARD_DECIDED:  # failed before the guard answered: the call is denied
             _deny_failed(type(e).__name__)   # (of_secrets-review on organic-framework PR 469)
+        elif event == "UserPromptSubmit" and not GUARD_DECIDED:
+            # a prompt the mention guard never decided on is refused as an unreadable one is, in Claude Code and in
+            # Codex alike: exit 2 with the reason on stderr (of_server on PR 475)
+            sys.stderr.write(GUARD_FAILED.format(kind=type(e).__name__) + NO_WAY_ROUND + "\n")
+            refused = 2
+            if answer is not None:
+                answer.code = 2
+    if answer is not None:
+        answer.flush()
+        sys.stdout = answer.real
     if event in ("PostToolUse", "SessionStart", "Stop", "UserPromptSubmit"):
         _timing(event, hook, started)
-    return 0
+    return answer.code if answer is not None else refused
