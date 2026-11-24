@@ -137,7 +137,8 @@ def command(sid, dirs=None, memory_dir=None, plan_root=None, deny=None, state_di
                                          tool_settings, scratch=(cwd, sid), org=org,
                                          rules_dirs=[started] if started and started != cwd else None)
     if settings:
-        argv += ["--settings", of_spawn.settings_file(settings, sid, state_dir)]
+        # the line resume-command prints is run as it is printed (the claude shell function, herdr's resume): a launch
+        argv += ["--settings", of_spawn.settings_file(settings, sid, state_dir, launch=True)]
     argv += list(tool_argv)
     e = planned(sid, plan_root)
     defaults = defaults or {}

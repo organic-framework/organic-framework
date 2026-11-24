@@ -2345,7 +2345,7 @@ def launch_command(cwd, target, sid, name, note_path, model=None, effort=None, b
     # PR 216), a tool profile's env joined to it
     settings = of_spawn.session_settings(json.dumps({"autoMemoryDirectory": memory_dir}) if memory_dir else None,
                                          list(deny) if deny else None, t_settings, scratch=(cwd, sid), org=org)
-    parts += ["--settings", _q(of_spawn.settings_file(settings, sid, state_dir) if write
+    parts += ["--settings", _q(of_spawn.settings_file(settings, sid, state_dir, launch=True) if write
                                else os.path.join(state_dir or STATE_DIR, "spawn", f"{sid}.settings.json"))]
     parts += [_q(str(x)) for x in t_argv or []]
     if model:
