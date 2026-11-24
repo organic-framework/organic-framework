@@ -145,10 +145,12 @@ class ConfigDirs(unittest.TestCase):
             os.makedirs(os.path.join(d, "sessions"))
             for pid, sid, st in ((1, "sid-1", "idle"), (2, "sid-2", "busy"), (3, "sid-3", "idle")):
                 with open(os.path.join(d, "sessions", f"{pid}.json"), "w") as fh:
-                    json.dump({"pid": pid, "sessionId": sid, "status": st, "name": f"n{pid}", "cwd": "/w"}, fh)
+                    json.dump({"pid": pid, "sessionId": sid, "status": st, "name": f"n{pid}", "cwd": "/w",
+                               **({"kind": "bg"} if pid == 2 else {})}, fh)
             alive = lambda pid: pid != 3  # noqa: E731
             ss = of_capacity.live_sessions(d, alive=alive)
             self.assertEqual([s["session"] for s in ss], ["sid-1", "sid-2"])
+            self.assertEqual([s["kind"] for s in ss], [None, "bg"])
             positions = [{"name": "p1", "holder": {"session": "sid-1"}, "_org": "o1"},
                          {"name": "p9", "holder": {"session": "zzz"}, "_org": "o1"},
                          {"name": "p2", "holder": {"session": "sid-2"}, "_org": "o2"}]
@@ -1046,6 +1048,144 @@ class RegistryIsNotOurs(unittest.TestCase):
             diff, path = of_capacity.propose_registry(reg, "acme_b", "~/.claude", out_dir=os.path.join(t, "w2"))
             self.assertEqual((diff, path), ("", None))  # an account-only move changes no structure
             self.assertEqual(open(reg).read(), self.REG)
+
+
+class ContinuedSessions(unittest.TestCase):
+    old = "aaaaaaaa-0000-4000-8000-000000000001"
+    middle = "bbbbbbbb-0000-4000-8000-000000000002"
+    new = "cccccccc-0000-4000-8000-000000000003"
+
+    def setUp(self):
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        self.root = home.name
+        self.src, self.dst = [os.path.join(self.root, d) for d in (".claude-a", ".claude-b")]
+        self.pos = {"name": "keeper", "_root": self.root, "holder": {"session": self.old}}
+        self.registry = os.path.join(self.root, "registry", "positions.yaml")
+        os.makedirs(os.path.dirname(self.registry))
+        self.registry_text = (f"positions:\n  - name: other\n    holder:\n      session: {self.old}\n"
+                              f"  - name: keeper\n    extra:\n      session: {self.old}\n    holder:\n"
+                              f"      session: '{self.old}'  # old pane\n      workplace: herdr\n")
+        with open(self.registry, "w") as fh:
+            fh.write(self.registry_text)
+
+    def transcript(self, d, sid, successor):
+        project = os.path.join(d, "projects", "acme")
+        os.makedirs(project, exist_ok=True)
+        path = os.path.join(project, sid + ".jsonl")
+        with open(path, "w") as fh:
+            fh.write(json.dumps({"type": "attachment", "attachment": {"type": "session_cron_carry", "tasks": []}}) + "\n")
+            fh.write(json.dumps({"type": "continued-in", "sessionId": sid, "continuedInSessionId": successor}) + "\n")
+        return path
+
+    def test_only_the_last_json_record_can_name_a_successor(self):
+        path = self.transcript(self.src, self.old, self.new)
+        self.assertEqual(of_capacity.continued_in(path), (self.new, -1))
+        with open(path, "a") as fh:
+            fh.write("incomplete\n\n")
+        self.assertEqual(of_capacity.continued_in(path), (self.new, -3))
+        with open(path, "a") as fh:
+            fh.write('{"type":"assistant"}\n')
+        self.assertIsNone(of_capacity.continued_in(path))
+        self.assertIsNone(of_capacity.continued_in(path + ".missing"))
+        self.assertIsNone(of_capacity.continued_in(self.transcript(self.src, self.old, "../other")))
+
+    def test_follows_two_hops_and_stops_before_repeating_a_session(self):
+        a = self.transcript(self.src, self.old, self.middle)
+        b = self.transcript(self.dst, self.middle, self.new)
+        dirs = [self.src, self.dst]
+        evidence = [f"{a}: continued-in {self.middle}", f"{b}: continued-in {self.new}"]
+        self.assertEqual(of_capacity.continuation(dirs, self.old), (self.new, evidence))
+        self.assertEqual(of_capacity.continuation(dirs, self.old, hops=1), (self.middle, evidence[:1]))
+        self.assertIsNone(of_capacity.continuation(dirs, self.new))
+        self.transcript(self.dst, self.new, self.old)
+        self.assertEqual(of_capacity.continuation(dirs, self.old), (self.new, evidence))
+
+    def test_an_older_copy_with_a_handoff_does_not_count_once_a_newer_copy_goes_on(self):
+        stale = self.transcript(self.dst, self.old, self.new)
+        os.utime(stale, (1, 1))
+        project = os.path.join(self.src, "projects", "acme")
+        os.makedirs(project, exist_ok=True)
+        with open(os.path.join(project, self.old + ".jsonl"), "w") as fh:   # resumed here, writing again
+            fh.write(json.dumps({"type": "assistant", "sessionId": self.old}) + "\n")
+        self.assertIsNone(of_capacity.continuation([self.src, self.dst], self.old))
+
+    def test_proposal_changes_only_the_current_holder_session_line(self):
+        diff, _ = of_capacity.propose_registry(self.registry, "keeper", session=self.new)
+        self.assertEqual([ln for ln in diff.splitlines() if ln.startswith(("+ ", "- "))],
+                         [f"-      session: '{self.old}'  # old pane",
+                          f"+      session: {self.new}  # continued-in from {self.old[:8]} (of_capacity)"])
+        self.assertEqual(of_capacity.propose_registry(self.registry, "keeper", session=self.new,
+                                                     previous_session=self.middle), ("", None))
+        with open(self.registry) as fh:
+            self.assertEqual(fh.read(), self.registry_text)
+
+    def test_move_restart_model_and_resume_refuse_the_handoff_and_background_daemon(self):
+        path = self.transcript(self.src, self.old, self.new)
+        live = [{"session": self.old}, {"session": self.new, "kind": "bg"}]
+        with mock.patch.multiple(of_capacity, config_dirs=lambda: [self.src], live_sessions=lambda _: live):
+            for sid, message in ((self.old, f"{path}: continued-in {self.new}"), (self.new, "background daemon")):
+                pos = dict(self.pos, holder={"session": sid})
+                for options in ({"target": self.dst}, {"target": None, "restart": True},
+                                {"target": None, "model": "opus"}):
+                    with self.subTest(sid=sid, options=options), self.assertRaises(of_capacity.MoveError) as cm:
+                        of_capacity.move(pos, **options)
+                    self.assertIn(message, str(cm.exception))
+                with self.assertRaises(of_capacity.MoveError) as cm:
+                    of_capacity.resume("keeper", sid, self.dst, "w1:p1")
+                self.assertIn(message, str(cm.exception))
+
+    def balance(self, positions, live, emit, move, logs, dry_run=False):
+        rows = [_row(self.src, 100, 100), _row(self.dst, 0, 0)]
+        with mock.patch.multiple(of_capacity, STATE_DIR=self.root, status=lambda *a, **k: rows,
+                                 live_sessions=lambda d: live if d == self.src else [],
+                                 current_index=lambda *_: {}, moves_allowed=lambda *_: {},
+                                 recent_remote_moves=lambda *_: {}, heal_permission_modes=mock.Mock(),
+                                 close_left_exit_dialogs=mock.Mock(), prune_statusline_files=mock.Mock(),
+                                 sync_muse_training=mock.Mock(), tool_docs_all=lambda: [], tool_docs=lambda: [],
+                                 connectors_seen=lambda _: set(), plugins_ready=lambda _: set(),
+                                 with_labels=lambda have, _: have, move=move, api_online=lambda: True), \
+                mock.patch.object(of_capacity.of_events, "emit", emit):
+            return of_capacity.balance(positions, dry_run=dry_run, policy=POLICY, now=Balance.NOW, log=logs.append)
+
+    def test_balance_records_the_live_successor_and_leaves_its_old_pane_alone(self):
+        first = self.transcript(self.src, self.old, self.middle)
+        second = self.transcript(self.src, self.middle, self.new)
+        live = [{"session": self.old, "status": "idle"}, {"session": self.new, "status": "idle", "kind": "bg"}]
+        emit, move, logs = mock.Mock(), mock.Mock(), []
+        event_id = of_capacity.of_events.stable_id("holder_changed_continued_in", "keeper", self.old, self.new)
+        evidence = [f"{first}: continued-in {self.middle}", f"{second}: continued-in {self.new}"]
+        payload = {"position": "keeper", "previous_session": self.old, "new_session": self.new,
+                   "reason": "continued-in", "evidence": "continued-in: " + "; ".join(evidence)}
+        self.assertEqual(self.balance([self.pos], live[:1], emit, move, logs), [])
+        emit.assert_not_called()  # the old pane is held even before the daemon registers its successor
+        self.assertEqual(self.balance([self.pos], live, emit, move, logs, dry_run=True), [])
+        emit.assert_not_called()
+        for _ in range(2):
+            self.assertEqual(self.balance([self.pos], live, emit, move, logs), [])
+            events = [c for c in emit.call_args_list if c.args[0] == "holder_changed"]
+            self.assertTrue(events)
+            self.assertTrue(all(c.args[1] == payload and c.kwargs["event_id"] == event_id for c in events))
+        self.assertIn(f"balance: keeper's session {self.old[:8]} continued in {self.new[:8]} ({evidence[0]}); "
+                      "not moved until the registry names it", logs)
+        move.assert_not_called()
+        with self.subTest("registry proposal"):
+            diffs = glob.glob(os.path.join(self.root, "capacity", "moves", "*", "registry.diff"))
+            self.assertEqual(len(diffs), 1)
+            with open(diffs[0]) as fh:
+                self.assertIn(f"+      session: {self.new}", fh.read())
+
+    def test_balance_keeps_a_background_holder_out_of_rescue(self):
+        pos = dict(self.pos, holder={"session": self.new})
+        live = [{"session": self.new, "status": "idle", "kind": "bg"}]
+        emit, move, logs = mock.Mock(), mock.Mock(), []
+        self.assertEqual(self.balance([pos], live, emit, move, logs), [])
+        move.assert_not_called()
+        self.assertTrue(any("keeper" in ln and "background daemon" in ln for ln in logs))
+        self.assertFalse(any(c.args[0] == "holder_changed" for c in emit.call_args_list))
+        del live[0]["kind"]
+        plan = self.balance([pos], live, emit, move, logs, dry_run=True)
+        self.assertEqual([m["position"] for m in plan], ["keeper"])
 
 
 class OpenQuestion(unittest.TestCase):

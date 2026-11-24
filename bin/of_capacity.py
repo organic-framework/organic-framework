@@ -111,7 +111,8 @@ def live_sessions(d, alive=_alive):
             if not alive(int(j["pid"])):
                 continue
             out.append({"pid": j["pid"], "session": j.get("sessionId"), "status": j.get("status"),
-                        "name": j.get("name"), "cwd": j.get("cwd"), "file": path, "started": j.get("startedAt")})
+                        "name": j.get("name"), "cwd": j.get("cwd"), "file": path, "started": j.get("startedAt"),
+                        "kind": j.get("kind")})
         except Exception:
             continue
     return out
@@ -1321,6 +1322,50 @@ def find_transcript(d, sid):
     host resumed from the laptop's older copy, losing its turns there."""
     hits = glob.glob(os.path.join(d, "projects", "*", f"{sid}.jsonl"))
     return max(hits, key=lambda t: (_mtime(t), t)) if hits else None
+
+
+def continued_in(path):
+    """The successor and its negative line number if the last JSON record names a session."""
+    # Claude Code 2.1.331, 2026-11-24: the daemon handoff leaves the old pane alive.
+    tail = _read_regular(path, 16 * 1024, tail=True)   # the record is one short line; a longer last line is not it
+    if not tail:
+        return None
+    data, st = tail
+    if st.st_size > len(data):
+        data = data.partition(b"\n")[2]  # the first line may start outside the tail
+    for n, line in enumerate(reversed(data.splitlines()), 1):
+        try:
+            record = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if isinstance(record, dict) and record.get("type") == "continued-in":
+            sid = record.get("continuedInSessionId")
+            if isinstance(sid, str) and _re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", sid, _re.I):
+                return sid, -n
+        break
+    return None
+
+
+def continuation(dirs, sid, find=find_transcript, hops=5):
+    """Follow terminal handoff records up to the last distinct session, keeping the evidence in order."""
+    dirs = tuple(dirs)
+    seen, evidence = {sid}, []
+    for _ in range(hops):
+        paths = [path for d in dirs if (path := find(d, sid))]
+        if not paths:
+            break
+        # the newest copy only: an older one on the account a move left can end with a handoff the session came back
+        # from, resumed and writing again elsewhere
+        path = max(paths, key=lambda x: (_mtime(x), x))
+        link = continued_in(path)
+        if not link:
+            break
+        if link[0] in seen:
+            break
+        sid = link[0]
+        seen.add(sid)
+        evidence.append(f"{path}: continued-in {sid}")
+    return (sid, evidence) if evidence else None
 
 
 def _mtime(path):
@@ -2708,15 +2753,51 @@ def workplace_edit(text, name, account):
     return out, changed
 
 
-def propose_registry(registry_file, name, account, workplace=None, out_dir=None):
+def _registry_session_edit(text, name, session, previous_session):
+    import yaml
+
+    def field(node, key):
+        if isinstance(node, yaml.MappingNode):
+            for k, v in node.value:
+                if k.value == key:
+                    return k, v
+        return None, None
+
+    _, positions = field(yaml.compose(text, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader)), "positions")
+    for pos in positions.value if isinstance(positions, yaml.SequenceNode) else ():
+        _, label = field(pos, "name")
+        if label is None or label.value != name:
+            continue
+        holder_key, holder = field(pos, "holder")
+        key, old = field(holder, "session")
+        if not isinstance(old, yaml.ScalarNode) or old.value == session:
+            break
+        if previous_session is not None and old.value != previous_session:
+            break  # the keeper has already rebound this position
+        lines = text.split("\n")
+        i = old.start_mark.line
+        prefix = lines[i][:old.start_mark.column]
+        # An alias points back to its definition. Only edit a value written here in the holder block.
+        if (holder_key.start_mark.line < key.start_mark.line == i == old.end_mark.line
+                and _re.fullmatch(r"\s+session:\s*", prefix)):
+            lines[i] = f"{prefix}{session}  # continued-in from {old.value[:8]} (of_capacity)"
+            return "\n".join(lines)
+        break
+    return text
+
+
+def propose_registry(registry_file, name, account=None, workplace=None, out_dir=None, session=None,
+                     previous_session=None):
     """The registry change a move implies, as a unified diff for the organization's structure keeper
     (single writer, of_architect 2026-11-06): `of capacity` never edits a registry. `workplace` replaces
-    the holder.workplace value (a new runtime or pane). The account is runtime state, not structure (both
+    the holder.workplace value (a new runtime or pane). `session` replaces holder.session if it still matches
+    `previous_session` when supplied. The account is runtime state, not structure (both
     registries dropped it on 2026-11-06): an account-only move implies no registry change. Returns
     (diff text, path written or None); empty diff when nothing changes or the result is not valid YAML."""
     import difflib
     with open(registry_file) as fh:
         text = fh.read()
+    new = text
     if workplace:
         lines, in_pos = text.split("\n"), False
         for i, ln in enumerate(lines):
@@ -2729,21 +2810,21 @@ def propose_registry(registry_file, name, account, workplace=None, out_dir=None)
                 lines[i] = f"{w.group(1)}{json.dumps(workplace, ensure_ascii=False)}"
                 break
         new = "\n".join(lines)
+    if session or workplace:
         try:
             import yaml
+            if session:
+                new = _registry_session_edit(new, name, session, previous_session)
             yaml.safe_load(new)
         except Exception:
             new = text
-    else:
-        new = text  # the account is runtime state: nothing for the registry
     rel = "registry/positions.yaml" if registry_file.endswith("registry/positions.yaml") else os.path.basename(registry_file)
     diff = "".join(difflib.unified_diff(text.splitlines(True), new.splitlines(True), f"a/{rel}", f"b/{rel}"))
     path = None
     if diff and out_dir:
-        os.makedirs(out_dir, exist_ok=True)
+        of_events.own_dir(out_dir)
         path = os.path.join(out_dir, "registry.diff")
-        with open(path, "w") as fh:
-            fh.write(diff)
+        of_events.write_new(path, diff)
     return diff, path
 
 
@@ -3546,6 +3627,15 @@ def move(*args, **kwargs):
             undo()
 
 
+def _check_pane_session(name, sid, sessions):
+    followed = continuation(sessions, sid)
+    if followed:
+        successor, evidence = followed
+        raise MoveError(f"{name}: session {sid[:8]} continued in {successor} ({'; '.join(evidence)})")
+    if any(s.get("kind") == "bg" and s["session"] == sid for xs in sessions.values() for s in xs):
+        raise MoveError(f"{name}: session {sid[:8]} runs in the background daemon (kind bg), outside the pane")
+
+
 def _move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, registry_file=None, place=None,
           extra_note=None, in_place=False, assume_empty_input=False, model=None, why=None, allow_unsigned=False,
           ask=None, restart=False, positions=None, cwd=None, _room=None):
@@ -3566,6 +3656,7 @@ def _move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, 
     if not target and not model and not restart:
         raise MoveError(f"{name}: give a target config dir, a model, or both")
     sessions = {d: live_sessions(d) for d in config_dirs()}
+    _check_pane_session(name, sid, sessions)
     src = dir_of_position(p, sessions)
     if src is None:
         raise MoveError(f"{name}: session {sid[:8]} is not live in any config dir")
@@ -3810,6 +3901,8 @@ def _move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, 
         exit_session(int(s["pid"]), type_exit, read_old, key_old, allow_shells=allow_shells, log=log)
     except MoveError as e:
         raise MoveError(f"{name}: {e} ({pane}); the hand-over note was not used", stuck=e.stuck)
+    # The pane could have handed off during the move. Check its final transcript before copying or resuming.
+    _check_pane_session(name, sid, sessions)
     # 2. the pane to resume in
     if runtime == "herdr" or (runtime == "zellij" and not place):
         new_pane = pane
@@ -3968,11 +4061,16 @@ def resume(name, sid, target, pane, extra_note=None, log=print, of_bin=None, dry
     it, and that account's copy goes to the backup once the session runs (2026-11-23, a user organization's structure
     keeper: three closed sessions on spent accounts had no command that put them on an account with room)."""
     target = os.path.abspath(os.path.expanduser(target))
-    for d in config_dirs():
-        if any(x["session"] == sid for x in live_sessions(d)):
+    sessions = {d: live_sessions(d) for d in dict.fromkeys([*config_dirs(), target])}
+    _check_pane_session(name, sid, sessions)
+    holder = ((position or {}).get("holder") or {}).get("session")
+    if holder and holder != sid:
+        _check_pane_session(name, holder, sessions)
+    for d, xs in sessions.items():
+        if any(x["session"] == sid for x in xs):
             raise MoveError(f"{name}: session {sid[:8]} is live in {short(d)}; use `of capacity move`")
     transcript = find_transcript(target, sid)
-    copies = [(t, d) for d in config_dirs() if os.path.realpath(d) != os.path.realpath(target)
+    copies = [(t, d) for d in sessions if os.path.realpath(d) != os.path.realpath(target)
               for t in [find_transcript(d, sid)] if t]
     newest = max(copies, key=lambda x: (_mtime(x[0]), x[0])) if copies else None
     src = None
@@ -7469,6 +7567,40 @@ def close_left_exit_dialogs(now=None, log=print, dry_run=False, conn=None, agent
     return closed
 
 
+def _movable_positions(positions, dirs, sessions, dry_run, log):
+    live = {s["session"] for xs in sessions.values() for s in xs}
+    background = {s["session"] for xs in sessions.values() for s in xs if s.get("kind") == "bg"}
+    movable = []
+    for p in positions:
+        name = p["name"]
+        sid = ((p.get("holder") or {}).get("session") or "").strip()
+        followed = continuation(dirs, sid) if sid else None
+        if followed:
+            successor, evidence = followed
+            log(f"balance: {name}'s session {sid[:8]} continued in {successor[:8]} ({evidence[0]}); "
+                "not moved until the registry names it")
+            if dry_run or successor not in live:
+                continue
+            event_id = of_events.stable_id("holder_changed_continued_in", name, sid, successor)
+            of_events.emit("holder_changed", {"position": name, "previous_session": sid, "new_session": successor,
+                                             "evidence": "continued-in: " + "; ".join(evidence),
+                                             "reason": "continued-in"},
+                           event_id=event_id, position=name, session=successor, org=p.get("_org"))
+            if p.get("_root"):
+                registry = os.path.join(p["_root"], "registry", "positions.yaml")
+                work = os.path.join(STATE_DIR, "capacity", "moves", f"continued-in-{event_id}")
+                try:
+                    propose_registry(registry, name, out_dir=work, session=successor, previous_session=sid)
+                except OSError as e:
+                    log(f"balance: could not propose the holder change for {name}: {e}")
+        elif sid in background:
+            log(f"balance: {name}'s session {sid[:8]} runs in the background daemon (kind bg), outside the pane; "
+                "not moved")
+        else:
+            movable.append(p)
+    return movable
+
+
 def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None):
     """One balancing run: read capacity (probing at most every 30 min), measure each session's spend over the
     last 30 minutes, plan, and move (between turns, in the same herdr pane). Returns the plan."""
@@ -7514,6 +7646,7 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
     except Exception as e:
         log(f"balance: left exit dialogs not checked: {e}")
     sessions = {d: live_sessions(d) for d in dirs}
+    movable = _movable_positions(positions, [r["config_dir"] for r in rows], sessions, dry_run, log)
     try:
         prune_move_backups({x.get("name") for xs in sessions.values() for x in xs if x.get("name")}, now=now,
                            log=log, dry_run=dry_run)
@@ -7528,7 +7661,7 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
     except Exception as e:
         log(f"balance: Muse's training reading not synced: {e}")
     try:  # sessions stopped on a limit their own account no longer has (a reset, a reopened window)
-        wake_stopped(rows, sessions, positions, now=now, log=log, dry_run=dry_run)
+        wake_stopped(rows, sessions, movable, now=now, log=log, dry_run=dry_run)
     except Exception as e:
         log(f"balance: stopped sessions not woken: {e}")
     index = current_index(dirs, now)
@@ -7562,11 +7695,11 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
         log(f"balance: recent moves on other machines unavailable ({e})")
         remote_moves = {}
     holding = background_work(sessions, moves_allowed(now), now)
-    plan_ = decide(rows, sessions, positions, rates, calib, policy, now, stopped=stopped, skip=set(recent),
+    plan_ = decide(rows, sessions, movable, rates, calib, policy, now, stopped=stopped, skip=set(recent),
                    failed=failed, connectors=(needs, seen), contexts=contexts, wcalib=wcalib,
                    remote_moves=remote_moves, woken=prior_wakes, models=models, holding=holding)
     if holding:  # the moves its background work held back: their holders are told why, once in a while
-        would = decide(rows, sessions, positions, rates, calib, policy, now, stopped=stopped, skip=set(recent),
+        would = decide(rows, sessions, movable, rates, calib, policy, now, stopped=stopped, skip=set(recent),
                        failed=failed, connectors=(needs, seen), contexts=contexts, wcalib=wcalib,
                        remote_moves=remote_moves, woken=prior_wakes, models=models)
         would = [m for m in would if m["session"] in holding and not str(m.get("reason") or "").startswith("rescue")]
