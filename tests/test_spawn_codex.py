@@ -206,5 +206,131 @@ class CodexSpawnTest(unittest.TestCase):
         self.assertIsNone(of_resume.codex_home_of("../x", [self.seat]))
 
 
+SCREEN = """  Folder access
+
+  /Users/alex/work/organic-framework
+
+  Config, hooks, and exec policies from
+  untrusted folders stay disabled. Trusted
+  project folders can still contribute
+  settings. Skills still load, and tools
+  follow your permission settings. Opening
+  will not change saved trust.
+
+\u203a 1. Open restricted
+  2. Back to Agent Command Center
+
+  enter continue \u00b7 esc back
+"""   # Codex 0.170.0's screen as herdr read it on the agent host, 2026-11-25
+
+
+class FolderAccessTest(unittest.TestCase):
+    """of_architect, message 01a20f55-3dcb, with of_server's conditions (01a20f5a-1acd): of spawn and of resume-command
+    answer Codex's folder-access screen with its selected '1. Open restricted', only for its whole text of a version
+    read here, read again just before one key and once after it, with no retry; anything else stays a block."""
+
+    def setUp(self):
+        self.folder = "/Users/alex/work/organic-framework"
+        self.real = mock.patch.object(of_spawn.os.path, "realpath", lambda p: p)
+        self.real.start()
+        self.addCleanup(self.real.stop)
+
+    def pane(self, screens, after="\u203a Ask Codex\n"):
+        """A herdr stand-in: SCREENS read in turn (the last one kept) until a key, then AFTER."""
+        state = {"reads": list(screens), "sent": []}
+
+        def herdr(*a):
+            if a[:2] == ("pane", "read"):
+                if state["sent"]:
+                    return {"read": {"text": after}}
+                return {"read": {"text": state["reads"].pop(0) if len(state["reads"]) > 1 else state["reads"][0]}}
+            state["sent"].append(a)
+            return {}
+        return herdr, state["sent"]
+
+    def answer(self, herdr):
+        with mock.patch("of_events.emit") as emit:
+            got = of_spawn.answer_folder_access(herdr, "p9", self.folder, "0.170.0", log=lambda m: None,
+                                                sleep=lambda s: None)
+        return got, emit
+
+    def test_only_this_text_for_this_folder_and_version_is_the_screen(self):
+        self.assertTrue(of_spawn.folder_access_screen(SCREEN, self.folder, "0.170.0"))
+        self.assertFalse(of_spawn.folder_access_screen(SCREEN, "/Users/alex/other", "0.170.0"))
+        self.assertFalse(of_spawn.folder_access_screen(SCREEN, self.folder, "0.171.0"))      # a version not read
+        self.assertFalse(of_spawn.folder_access_screen(SCREEN.replace("\u203a 1.", "  1."), self.folder, "0.170.0"))
+        self.assertFalse(of_spawn.folder_access_screen("Do you trust the files in this folder?", self.folder,
+                                                       "0.170.0"))
+
+    def test_an_option_one_that_trusts_the_folder_gets_no_key(self):
+        trusting = SCREEN.replace("1. Open restricted", "1. Trust this folder")
+        herdr, sent = self.pane([trusting])
+        got, emit = self.answer(herdr)
+        self.assertIsNone(got)
+        self.assertEqual(sent, [])
+        emit.assert_not_called()
+
+    def test_one_key_on_the_whole_screen_read_twice_and_it_goes(self):
+        herdr, sent = self.pane([SCREEN, SCREEN])
+        got, emit = self.answer(herdr)
+        self.assertEqual(got, "answered")
+        self.assertEqual(sent, [("pane", "send-keys", "p9", "enter")])
+        self.assertEqual(emit.call_args_list[0][0][0], "injected_prompt")
+        self.assertIn("Open restricted", emit.call_args_list[0][0][1]["reason"])
+
+    def test_a_screen_that_changes_before_the_key_gets_none(self):
+        herdr, sent = self.pane([SCREEN, SCREEN + "\nsomething new"])
+        got, _ = self.answer(herdr)
+        self.assertEqual(got, "left")
+        self.assertEqual(sent, [])
+
+    def test_a_screen_still_there_after_the_key_is_left_with_no_retry(self):
+        herdr, sent = self.pane([SCREEN, SCREEN], after=SCREEN)
+        got, _ = self.answer(herdr)
+        self.assertEqual(got, "left")
+        pl = {"launch": "L-1", "cwd": self.folder}
+        t = [0.0]
+        with mock.patch("of_events.emit"), mock.patch.object(of_spawn, "codex_session", lambda l, s: None), \
+                mock.patch.object(of_spawn, "answer_folder_access",
+                                  side_effect=lambda *a, **k: "left") as ans:
+            self.assertIsNone(of_spawn.wait_codex_session(herdr, "p9", pl, 30, log=lambda m: None,
+                                                          version="0.170.0",
+                                                          clock=lambda: t.__setitem__(0, t[0] + 5) or t[0]))
+        self.assertEqual(ans.call_count, 1)                                  # tried once, never again
+        self.assertEqual(sent, [("pane", "send-keys", "p9", "enter")])
+
+    def test_the_folder_stays_untrusted_after_the_answer(self):
+        seat = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(seat, ignore_errors=True))
+        self.real.stop()
+        folder = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(folder, ignore_errors=True))
+        of_spawn.codex_untrust(seat, folder)
+        screen = SCREEN.replace("/Users/alex/work/organic-framework", os.path.realpath(folder))
+        herdr, sent = self.pane([screen, screen])
+        with mock.patch("of_events.emit"):
+            got = of_spawn.answer_folder_access(herdr, "p9", folder, "0.170.0", log=lambda m: None,
+                                                sleep=lambda s: None)
+        key = os.path.realpath(folder)
+        self.real.start()
+        self.assertEqual(got, "answered")
+        import tomllib
+        with open(os.path.join(seat, "config.toml"), "rb") as fh:
+            got = tomllib.load(fh)["projects"][key]["trust_level"]
+        self.assertEqual(got, "untrusted")
+
+    def test_a_resume_watcher_waits_for_the_screen_and_answers_it_once(self):
+        t = [0.0]
+        herdr, sent = self.pane(["starting", "starting", SCREEN, SCREEN])
+        with mock.patch("of_events.emit"):
+            self.assertTrue(of_spawn.watch_folder_access("p9", self.folder, timeout=60, herdr=herdr,
+                                                         version="0.170.0", log=lambda m: None,
+                                                         sleep=lambda s: t.__setitem__(0, t[0] + s),
+                                                         clock=lambda: t[0]))
+            self.assertFalse(of_spawn.watch_folder_access("p9", self.folder, timeout=60, herdr=herdr,
+                                                          version="0.999.0", log=lambda m: None))
+        self.assertEqual(sent, [("pane", "send-keys", "p9", "enter")])
+
+
 if __name__ == "__main__":
     unittest.main()
