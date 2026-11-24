@@ -197,5 +197,23 @@ class ArchiveTest(unittest.TestCase):
             self.assertEqual(self.run_(), ["another of archive is running"])
 
 
+class CodexSeatsTest(unittest.TestCase):
+    """W6 of hand-over 9ee1db9f: a Codex position's rollouts lie in its seat's CODEX_HOME, not only ~/.codex."""
+
+    def test_every_seat_inside_the_home_is_archived(self):
+        import of_archive
+        h = of_archive.HOME
+        roots = of_archive.codex_roots([{"home": os.path.join(h, ".codex-b")}, {"home": "/elsewhere/seat"},
+                                        {"home": os.path.join(h, ".codex")}])
+        self.assertEqual(roots, [os.path.join(h, ".codex", "sessions"), os.path.join(h, ".codex-b", "sessions")])
+
+    def test_a_rollout_is_codexs_in_whichever_seat_it_lies(self):
+        import of_archive
+        self.assertEqual(of_archive.harness_of("/h/.codex-b/sessions/2026/11/24/rollout-2026-11-24T10-00-00-a.jsonl"),
+                         "codex")
+        self.assertEqual(of_archive.harness_of("/h/.codex-b/sessions/2026/11/24/rollout-x.jsonl.zst"), "codex")
+        self.assertEqual(of_archive.harness_of("/h/.claude/projects/p/0a1b.jsonl"), "claude-code")
+
+
 if __name__ == "__main__":
     unittest.main()

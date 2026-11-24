@@ -283,7 +283,7 @@ Whoever can read these can read the amounts. Two remedies are planned for v1, to
 
 ## Import of history
 
-`of import` reads past harness transcripts (Claude Code first, then Codex rollouts in `~/.codex/sessions`, where `turn_trigger: remote_ios` gives `channel: phone`) and writes the same kinds, plus `of.work_record` from `pr-link` records, with `of.source: import`, `of.transcript.uuid` and deterministic event ids. For each session it imports only records older than that session's first `hook` event, so live and imported events do not overlap.
+`of import` reads past harness transcripts (Claude Code first, then Codex rollouts in each Codex seat's `sessions` folder, `~/.codex/sessions` and every `CODEX_HOME` the accounts list inside the home, where `turn_trigger: remote_ios` gives `channel: phone`) and writes the same kinds, plus `of.work_record` from `pr-link` records, with `of.source: import`, `of.transcript.uuid` and deterministic event ids. For each session it imports only records older than that session's first `hook` event, so live and imported events do not overlap.
 
 ## Installation (Claude Code)
 
@@ -321,7 +321,7 @@ Classified labels live in one map per event, keyed by version: `payload.classifi
 - `of-v1`: on `human_prompt`: `origin`, `interrupt`, `alert_paste`. In history, origin comes from the harness's metadata (`origin.kind`, `turnOrigin`, `promptSource`).
 - `q-v0` / `q-v1` on `agent_question`: one event is written when either fires; consumers filter by version.
 
-Codex rollouts (`~/.codex/sessions/**/rollout-*.jsonl[.zst]`, zstd read whole) are ingested with `harness: codex` and the session id taken from the file name. `of derive` writes their human prompts (the baseline's exclusions: `<environment_context`, `<user_instructions`, `# AGENTS`, `<permissions`; duplicates across `user_message` and `message`/user merged by minute plus the first 60 characters; `channel: phone` when `turn_trigger` is `remote_ios`), turn ends and heuristic questions, with `of.harness.name: codex`.
+Codex rollouts (`<seat>/sessions/**/rollout-*.jsonl[.zst]` in each Codex seat, zstd read whole) are ingested with `harness: codex`, told by the rollout's file name and the session id taken from the file name. `of derive` writes their human prompts (the baseline's exclusions: `<environment_context`, `<user_instructions`, `# AGENTS`, `<permissions`; duplicates across `user_message` and `message`/user merged by minute plus the first 60 characters; `channel: phone` when `turn_trigger` is `remote_ios`), turn ends and heuristic questions, with `of.harness.name: codex`.
 
 Imported events carry `of.source: import`, `of.transcript: {path, uuid}`, `of.resolution: registry@<date>` and deterministic ids (UUIDv5 over session, record and kind).
 
