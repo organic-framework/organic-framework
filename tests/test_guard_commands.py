@@ -479,5 +479,22 @@ class HarnessLoginShellFormsTest(unittest.TestCase):
             self.assertFalse(of_classify.secret_path(p), p)
 
 
+class StdinScriptTest(unittest.TestCase):
+    """Hand-over 71a405d6: what a local shell reads on its stdin from the stage before it."""
+
+    def test_which_shell_reads_its_script_on_stdin(self):
+        for args, want in (([], True), (["-s"], True), (["-"], True), (["-e"], True), (["-c", "x"], False),
+                           (["-ec", "x"], False), (["script.sh"], False), (["-s", "a", "b"], True)):
+            self.assertEqual(of_guard._reads_script_on_stdin(args), want, args)
+
+    def test_what_the_stage_before_prints(self):
+        self.assertEqual(of_guard._piped_script("echo -n a b", [], 0), "a b")
+        self.assertEqual(of_guard._piped_script("printf %s x y", [], 0), "x\ny")
+        self.assertEqual(of_guard._piped_script("printf 'a %s' x", [], 0), "a %s\nx")
+        self.assertEqual(of_guard._piped_script("cat << __OFDOC__", [(True, "body", "cat ")], 0), "body")
+        self.assertIsNone(of_guard._piped_script("cat file.txt << __OFDOC__", [(True, "body", "cat ")], 0))
+        self.assertIsNone(of_guard._piped_script("grep x", [], 0))
+
+
 if __name__ == "__main__":
     unittest.main()
