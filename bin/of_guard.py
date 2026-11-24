@@ -3805,7 +3805,8 @@ def _line_act(words):
             return True
         if rest[:1] == ["access"] and any(x in ("grant", "revoke", "link", "record") for x in rest[1:]):
             return True
-        if _org_path_act(rest) or _server_route_act(rest) or _live_act(rest) or _issues_label_act(rest):
+        if _org_path_act(rest) or _server_route_act(rest) or _live_act(rest) or _issues_label_act(rest) or \
+                _muse_login_act(rest):
             return True   # and of live setup|switch and of issues label, as the per-command reading takes them
     return False
 
@@ -4214,7 +4215,15 @@ def _actor_act(words):
         return False  # `of asks withdraw --help` records nothing (of_review on organic-framework PR 387)
     return (words[:1] == ["asks"] and len(words) > 1 and words[1] in ACTOR_ACTS) or \
         (words[:1] == ["access"] and len(words) > 1 and words[1] in ("grant", "revoke", "link", "record")) or \
-        _org_path_act(words) or _server_route_act(words) or _live_act(words) or _issues_label_act(words)
+        _org_path_act(words) or _server_route_act(words) or _live_act(words) or _issues_label_act(words) or \
+        _muse_login_act(words)
+
+
+def _muse_login_act(words):
+    """`of subagent muse-login`: the owner's, once, in a plain terminal (of_review, private, on PR 652): a cleared
+    caller is refused, and the command itself takes the owner's positive test."""
+    words = [w for w in words if w != "--"]
+    return words[:1] == ["subagent"] and "muse-login" in words[1:]
 
 
 def _issues_label_act(words):
@@ -5233,6 +5242,30 @@ def _live_git(args, cwd, env, shvars):
     return None if _git_reads(sub, rest) else hit
 
 
+# G44: Muse's login is the owner's (of_review, private, on PR 652): every `of subagent run --harness muse` sends its
+# snapshot and prompt to the account whose login lies in the state folder's subagent/muse-login, so a session that put
+# a key of its own there would receive every later run. Only the owner's `of subagent muse-login` in a plain terminal
+# writes it; G31 keeps that command's caller too.
+MUSE_LOGIN_DENY = ("Muse's login, which only the owner sets with of subagent muse-login in a plain terminal (docs/guard.md "
+                   "G44): every Muse run goes to the account it names")
+
+
+def _muse_login_box():
+    """The real paths of subagent/muse-login in each state folder, case-folded."""
+    bases = [_expanduser("~/.local/state/of")] + ([_expanduser(os.environ["OF_STATE"])] if os.environ.get("OF_STATE")
+                                                  else [])
+    return {os.path.realpath(os.path.join(b, "subagent", "muse-login")).casefold() for b in bases}
+
+
+def _muse_login_write(head, args, cwd, files, removal, shvars=None):
+    """G44 on one simple command, read as G40 reads one."""
+    if _REMOTE_BODY[0]:
+        return None
+    box = _muse_login_box()
+    hit = _box_write(head, args, cwd, files, removal, shvars, lambda p, c, r: _in_folders(p, box, c, r))
+    return (MUSE_LOGIN_DENY, hit) if hit else None
+
+
 # G36: the guard's session index is the collector's (hand-over a18341af, of_server; of_secrets-review, msg
 # 01a1f9a7-b29c): _guard_index reads ~/.local/state/of/index.json for a session's position, and with it that
 # position's credential rules, so a session that rewrites its entry takes another position's rules. Only the hook
@@ -6110,7 +6143,8 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
                                                      _asks_outbox_write(head, args, cwd, files, removal) or
                                                      _session_index_write(head, args, cwd, files, removal) or
                                                      _forward_write(head, args, cwd, files, removal) or
-                                                     _live_write(head, args, cwd, files, removal, env, shvars))
+                                                     _live_write(head, args, cwd, files, removal, env, shvars) or
+                                                     _muse_login_write(head, args, cwd, files, removal, shvars))
     hit = _git_protected(args, cwd, env or {}, shvars) if head == "git" else None
     if hit:
         return PROTECTED_CODE_DENY, hit
@@ -6131,7 +6165,8 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
                                                  _asks_outbox_write(head, args, cwd, files, removal) or
                                                  _session_index_write(head, args, cwd, files, removal) or
                                                  _forward_write(head, args, cwd, files, removal) or
-                                                 _live_write(head, args, cwd, files, removal, env, shvars))
+                                                 _live_write(head, args, cwd, files, removal, env, shvars) or
+                                                 _muse_login_write(head, args, cwd, files, removal, shvars))
 
 
 def _owner_config_write(head, args, cwd, files, removal):
@@ -7346,6 +7381,9 @@ def critical_deny(tool, tool_input, cwd=None, caller=None):
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and \
             _in_live(str(path), _live_box(), cwd, linked):
         return LIVE_DENY, path   # G40
+    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and \
+            _in_folders(str(path), _muse_login_box(), cwd, linked):   # G44
+        return MUSE_LOGIN_DENY, path
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _in_session_index(path, cwd):  # G36
         if SESSION_INDEX_MODE == "deny":
             return SESSION_INDEX_DENY, path

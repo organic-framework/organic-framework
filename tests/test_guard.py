@@ -995,6 +995,36 @@ class GuardBashTest(unittest.TestCase):
 
 
 
+class MuseLoginTest(unittest.TestCase):
+    """G44 (of_review, private, on PR 652): Muse's login is the owner's; a session never writes it or signs in."""
+
+    def setUp(self):
+        import tempfile
+        from unittest import mock
+        self.tmp = tempfile.TemporaryDirectory()
+        self.patch = mock.patch.dict(os.environ, {"HOME": self.tmp.name})
+        self.patch.start()
+        self.dir = os.path.join(self.tmp.name, ".local/state/of/subagent/muse-login")
+        os.makedirs(self.dir)
+
+    def tearDown(self):
+        self.patch.stop()
+        self.tmp.cleanup()
+
+    def deny(self, cmd):
+        return bool(of_guard.critical_deny("Bash", {"command": cmd}, "/tmp"))
+
+    def test_writes_and_a_cleared_sign_in_are_denied(self):
+        f = os.path.join(self.dir, "login-probe.txt")
+        for cmd in (f"cat > {f}", f"cp /tmp/x {f}", f"rm -rf {self.dir}",
+                    "printf %s k | env -u CLAUDE_CODE_SESSION_ID of subagent muse-login --stdin"):
+            self.assertTrue(self.deny(cmd), cmd)
+        got = of_guard.critical_deny("Write", {"file_path": f, "content": "x"}, "/tmp")
+        self.assertTrue(got and "Muse's login" in got[0])
+        for cmd in (f"ls {self.dir}", "of subagent run --harness muse --kind read"):
+            self.assertFalse(self.deny(cmd), cmd)
+
+
 class LiveCheckoutTest(unittest.TestCase):
     """G40 (2026-11-24, of_platform's hand-over cb134c52 after the laptop's guard outage): OF's live checkout, which the
     hooks, the units and `of` run from, takes no agent's write, move, link or removal; the working copy keeps its."""
