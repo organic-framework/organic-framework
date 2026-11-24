@@ -677,9 +677,10 @@ class DiagnoseTest(unittest.TestCase):
         iid = of_diagnose.issue_id("orphan-work", ["(unmapped)"])
         ver = next(r["version"] for r in self.diag(rows)["rules"] if r["rule"] == "ap.orphan-work")
         m = of_model.build(self.DOC2, rows, at=self.B)
-        lab = lambda n, by, label="false_positive", position=None: dict(
-            ev(f"l{n}", f"2026-11-0{n}T10:00Z", "of.issue_labelled", None,
-               dict({"issue_id": iid, "rule_version": ver, "label": label}, **({"by": by} if by else {}))), position=position)
+        lab = lambda n, by, label="false_positive", position=None, session=None: dict(   # as `of issues label` writes it
+            ev(f"l{n}", f"2026-11-0{n}T10:00Z", "of.issue_labelled", session,
+               dict({"issue_id": iid, "rule_version": ver, "label": label}, **({"by": by} if by else {}))),
+            position=position if position is not None else (by if by not in (None, "owner") else None))
         get = lambda labels: next(i for i in of_diagnose.diagnose(m, rows, self.A, self.B, label_rows=labels)["issues"]
                                   if i["issue_id"] == iid)
         self.assertEqual(get([lab(1, "owner")])["state"], "dismissed")
@@ -692,6 +693,17 @@ class DiagnoseTest(unittest.TestCase):
         i = get([lab(1, "owner"), lab(2, "bot_operator", "true_positive")])           # a later one that does not count
         self.assertEqual((i["state"], i["label_not_counted"]["label"]), ("dismissed", "true_positive"))
         self.assertNotIn("label_not_counted", get([lab(1, "bot_operator"), lab(2, "owner")]))
+        # the writer is what the event records, never the payload's word (of_review on PR 630)
+        i = get([lab(1, "owner", position="bot_operator")])                         # a position's event saying owner
+        self.assertEqual((i["state"], i["label_not_counted"]["by"]), ("open", "bot_operator"))
+        i = get([lab(1, "owner", session="s-op")])                                  # bot_operator's session saying owner
+        self.assertEqual((i["state"], i["label_not_counted"]["by"]), ("open", "bot_operator"))
+        i = get([lab(1, "k8s_keeper", position="", session=None)])                  # a position named in the payload only
+        self.assertEqual(i["state"], "open")
+        self.assertIn("named in the payload only", i["label_not_counted"]["by"])
+        self.assertEqual(get([lab(1, "owner", session="s-gone")])["state"], "open")  # a session no position holds
+        hist = of_diagnose.label_history([lab(1, "owner", position="bot_operator")])
+        self.assertEqual((hist[iid][0]["by"], hist[iid][0]["by_claimed"]), ("bot_operator", "owner"))
         issue = {"affected": ["ops_a", "ops_b"], "decider_position": "unit_lead"}
         self.assertIsNone(of_diagnose.may_label("keeper_k", issue, "keeper_k"))
         self.assertIsNone(of_diagnose.may_label("unit_lead", issue, "keeper_k"))      # the unit owner it routes to
@@ -4152,9 +4164,11 @@ class IssuesAcrossOrgsTest(unittest.TestCase):
         err, emitted = label({"CLAUDE_CODE_SESSION_ID": "s1"})            # ops_a as itself: the issue names it
         self.assertIn("would not count", err)
         err, emitted = label({"CLAUDE_CODE_SESSION_ID": "s2"})            # the keeper from its own session
-        self.assertEqual((err, emitted[0].args[1]["by"]), (None, "team_org"))
+        self.assertEqual((err, emitted[0].args[1]["by"], emitted[0].kwargs["session"]), (None, "team_org", "s2"))
         err, emitted = label({}, terminal=True)                           # the owner's own terminal
-        self.assertEqual((err, emitted[0].args[1]["by"]), (None, "owner"))
+        self.assertEqual((err, emitted[0].args[1]["by"], emitted[0].kwargs["session"]), (None, "owner", None))
+        err, emitted = label({"OF_POSITION": "ops_a"}, terminal=True)     # an agent's variable: never the owner
+        self.assertIn("no position is held by its session id", err)
 
     def test_label_a_batch_from_a_file(self):
         import tempfile

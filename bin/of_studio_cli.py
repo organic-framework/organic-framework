@@ -299,7 +299,7 @@ def _rendered_issues(args, names, ids, b):
         labs = _labels_of(cfgs[n]) if n in cfgs else None
         if labs is None:
             return None, "the labels could not be read" if n in cfgs else f"{n} is not in orgs.yaml"
-        hist, keeper = of_diagnose.label_history(labs), doc.get("structure_keeper")
+        hist, keeper = of_diagnose.label_history(labs, _holders(cfgs[n], b)), doc.get("structure_keeper")
         moved = {}
         issues = []
         for i in doc.get("issues") or []:
@@ -311,6 +311,22 @@ def _rendered_issues(args, names, ids, b):
                     {"rules": [_recount(r, moved.get(r.get("version"), 0)) for r in doc["rules"]],
                      "structure_keeper": keeper, "computed_at": float(doc.get("computed_at") or 0)}))
     return out, None
+
+
+def _holders(org, b):
+    """fn(session id) -> the position the organization's registry at B gives that session (of_model.session_index),
+    read only when a label records a session: the list's label_writer (the run also reads the window's rows)."""
+    memo = {}
+
+    def who(sid):
+        if "idx" not in memo:
+            try:
+                doc, rev = of_model.registry_at(org["repo"], b)
+                memo["idx"] = of_model.session_index(of_model.build(doc, [], at=b, org=org["name"], rev=rev)["positions"])
+            except Exception:  # noqa: BLE001 - no registry: no session resolves, the event's position stands
+                memo["idx"] = {}
+        return memo["idx"].get(sid)
+    return who
 
 
 def _recount(r, moved):
