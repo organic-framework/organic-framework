@@ -1081,7 +1081,9 @@ class LiveCheckoutTest(unittest.TestCase):
         got = of_guard.critical_deny("Edit", {"file_path": os.path.expanduser("~/.local/libexec/of-checkout-update"),
                                               "old_string": "a", "new_string": "b"}, "/tmp")
         self.assertTrue(got and "live checkout" in got[0])
+        self.assertTrue(self.deny(f"git config --file {live}/.git/config core.fsmonitor /tmp/x"))
         for cmd in ("git -C ~/.local/share/of/live status", "git -C ~/.local/share/of/live config --get core.bare",
+                    f"git config --file {live}/.git/config --get core.bare",   # a read (of_review on PR 629)
                     "git -C ~/.local/share/of/live branch", "git -C ~/.local/share/of/live stash list",
                     "git -C /tmp diff --output=/tmp/x.diff", f"tar -tf {live}/x.tar",
                     f"python3 -c \"print(open('{live}/bin/of_hook.py').read()[:10])\""):
