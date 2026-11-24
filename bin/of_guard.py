@@ -1101,9 +1101,12 @@ def _code_deny(code, lang=None):
     if fwd:
         return FORWARD_DENY, fwd
     gone = bool(_CODE_REMOVES.search(code))   # a removal or a link judges a name by itself (of_review on PR 629)
+    # a removal call's own argument counts a folder above a kept one at any depth (`rmtree('~/.local')`, the home:
+    # of_secrets-review on PR 629); any other literal only when it lies deep enough (_deep_lit)
+    gone_args = {m.group(2) for m in _REMOVAL_ARG.finditer(code)} if gone else set()
     live = next((l for l in lits if not re.search(r"\s", l.strip()) and l.strip().lstrip("<>+|& ")
                  and (l.strip().lstrip("<>+|& ").startswith(("/", "~", "$")) or _rel_path_lit(l.strip().lstrip("<>+|& ")))
-                 and _in_live(l.strip().lstrip("<>+|& "), _live_box(), _DENY_CWD[0], gone, gone and _deep_lit(l.strip().lstrip("<>+|& ")))), None) \
+                 and _in_live(l.strip().lstrip("<>+|& "), _live_box(), _DENY_CWD[0], gone, gone and (l.strip().lstrip("<>+|& ") in gone_args or _deep_lit(l.strip().lstrip("<>+|& "))))), None) \
         if _CODE_WRITE.search(code) else None   # G40 in code: a write into OF's live checkout (PR 629's review)
     if live:
         return LIVE_DENY, live
@@ -4884,6 +4887,11 @@ def _live_box_real():
         pass
     out.discard(os.path.realpath(_expanduser(DEV_CLONE)))
     return sorted(out)
+
+
+_REMOVAL_ARG = re.compile(r"\b(?:rmtree|remove|removedirs|rmdir|unlink|rename|renames|replace|move|delete)\s*\(\s*"
+                          r"(?:(?:os\.path\.)?(?:expanduser|abspath|realpath|expandvars)\s*\(\s*|Path\s*\(\s*)*"
+                          r"(['\"])([^'\"\n]+)\1")
 
 
 def _deep_lit(lit):

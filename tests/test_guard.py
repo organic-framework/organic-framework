@@ -1056,6 +1056,8 @@ class LiveCheckoutTest(unittest.TestCase):
             self.assertFalse(self.deny(cmd), cmd)
         above = os.path.dirname(live)   # a deep literal above the checkout still counts
         self.assertTrue(self.deny(f"python3 -c \"import shutil; shutil.rmtree('{above}')\""))
+        for top in ("~/.local", os.path.expanduser("~")):   # a removal's own argument at any depth (PR 629)
+            self.assertTrue(self.deny(f"python3 -c \"import shutil, os; shutil.rmtree(os.path.expanduser('{top}'))\""), top)
 
     def test_the_forms_of_the_second_pass(self):
         """of_review, private, on PR 629: an attached unzip -d, a link inside removed by itself, a new OF plist, a
