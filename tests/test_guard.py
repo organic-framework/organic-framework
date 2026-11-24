@@ -1042,6 +1042,10 @@ class LiveCheckoutTest(unittest.TestCase):
                     "git -C ~/.local/share/of/live config --add remote.origin.fetch x",
                     "git -C ~/.local/share/of/live update-ref HEAD 0123abcd",
                     "git -C ~/.local/share/of/live fetch origin",
+                    "git -C ~/.local/share/of/live stash",
+                    "git -C ~/.local/share/of/live diff --output=bin/x",
+                    f"git -C /tmp log --output={live}/bin/x -1",
+                    f"git -C /tmp diff --output {live}/bin/x",
                     f"tar -cf {live}/bin/x.tar /tmp/a",
                     f"touch {live}/bin/x.py",
                     f"chmod +x {live}/bin/x"):
@@ -1050,7 +1054,8 @@ class LiveCheckoutTest(unittest.TestCase):
                                               "old_string": "a", "new_string": "b"}, "/tmp")
         self.assertTrue(got and "live checkout" in got[0])
         for cmd in ("git -C ~/.local/share/of/live status", "git -C ~/.local/share/of/live config --get core.bare",
-                    "git -C ~/.local/share/of/live branch", f"tar -tf {live}/x.tar",
+                    "git -C ~/.local/share/of/live branch", "git -C ~/.local/share/of/live stash list",
+                    "git -C /tmp diff --output=/tmp/x.diff", f"tar -tf {live}/x.tar",
                     f"python3 -c \"print(open('{live}/bin/of_hook.py').read()[:10])\""):
             self.assertFalse(self.deny(cmd), cmd)
 
