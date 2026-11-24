@@ -1020,9 +1020,37 @@ class LiveCheckoutTest(unittest.TestCase):
         return bool(got and "live checkout" in got[0])
 
     def test_the_constant_is_of_lives(self):
-        import of_live   # compared unexpanded: of_live.LIVE is expanded at its import, under whatever home was then
-        self.assertEqual(of_guard.LIVE_DIR, "~/.local/share/of/live")   # (of_secrets-review on PR 629, point 9)
-        self.assertTrue(of_live.LIVE.endswith(of_guard.LIVE_DIR[1:]), of_live.LIVE)
+        import of_live   # compared unexpanded: no test's home changes them (of_secrets-review on PR 629, point 9)
+        self.assertEqual(of_guard.LIVE_DIR, "~/.local/share/of/live")
+        self.assertEqual(of_guard.LIVE_DIR, getattr(of_live, "LIVE_DIR", "~" + of_live.LIVE[len(os.path.expanduser("~")):]
+                                                    if of_live.LIVE.startswith(os.path.expanduser("~")) else of_live.LIVE))
+
+    def test_the_forms_of_the_second_pass(self):
+        """of_review, private, on PR 629: an attached unzip -d, a link inside removed by itself, a new OF plist, a
+        wrapper's folder never the box, and a relative path in code after a cd there."""
+        live = self.live
+        outside = os.path.join(self.tmp.name, "outside.txt")
+        open(outside, "w").close()
+        os.makedirs(os.path.join(live, "docs"))
+        os.symlink(outside, os.path.join(live, "docs/reference"))
+        agents = os.path.expanduser("~/Library/LaunchAgents")
+        os.makedirs(agents, exist_ok=True)
+        for cmd in (f"unzip -o /tmp/x.zip -d{live}", f"rm {live}/docs/reference",
+                    "echo x > ~/Library/LaunchAgents/dev.organic-framework.relay.plist",
+                    "echo x > ~/Library/LaunchAgents/dev.organic-framework.new.plist",
+                    f"cd {live} && python3 -c \"open('bin/x.py','w').write('x')\""):
+            self.assertTrue(self.deny(cmd), cmd)
+        got = of_guard.critical_deny("Write", {"file_path": os.path.join(agents, "dev.organic-framework.new.plist"),
+                                               "content": "x"}, "/tmp")
+        self.assertTrue(got and "live checkout" in got[0])
+        self.assertFalse(self.deny(f"rm {outside}"))                     # the link's target outside stays the session's
+        self.assertFalse(self.deny("echo x > ~/Library/LaunchAgents/com.other.app.plist"))
+        wrapper = os.path.join(self.tmp.name, ".local/libexec/of-wrapper/of")   # a wrapper, no checkout: ~/.local stays
+        os.makedirs(os.path.dirname(wrapper))
+        open(wrapper, "w").close()
+        link = os.path.expanduser("~/.local/bin/of")
+        os.symlink(wrapper, link)
+        self.assertFalse(self.deny("echo x > ~/.local/state/of/notes.txt"))
 
     def test_interpreter_code_the_runners_git_and_small_writes(self):
         """of_secrets-review on PR 629, points 3 to 6."""
@@ -1088,6 +1116,8 @@ class LiveCheckoutTest(unittest.TestCase):
         os.unlink(link)
         other = os.path.join(self.tmp.name, "of-other")
         os.makedirs(os.path.join(other, "bin"))
+        os.makedirs(os.path.join(other, ".git"))
+        open(os.path.join(other, "bin/of"), "w").close()           # a checkout: bin/of and .git, as of_checkouts tells one
         os.symlink(os.path.join(other, "bin/of"), link)            # another checkout the units run from
         self.assertTrue(self.deny(f"echo x > {other}/bin/x"))
 

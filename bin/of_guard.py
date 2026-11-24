@@ -1069,9 +1069,9 @@ def _code_deny(code, lang=None):
         if _CODE_WRITE.search(code) else None   # G34 in code: a write into the forward's folder (of_review on PR 397)
     if fwd:
         return FORWARD_DENY, fwd
-    live = next((l for l in lits if not re.search(r"\s", l.strip())
-                 and l.strip().lstrip("<>+|& ").startswith(("/", "~", "$"))
-                 and _in_folders(l.strip().lstrip("<>+|& "), _live_box())), None) \
+    live = next((l for l in lits if not re.search(r"\s", l.strip()) and l.strip().lstrip("<>+|& ")
+                 and (l.strip().lstrip("<>+|& ").startswith(("/", "~", "$")) or _DENY_CWD[0])
+                 and _in_live(l.strip().lstrip("<>+|& "), _live_box(), _DENY_CWD[0])), None) \
         if _CODE_WRITE.search(code) else None   # G40 in code: a write into OF's live checkout (PR 629's review)
     if live:
         return LIVE_DENY, live
@@ -4687,9 +4687,14 @@ def _in_folders(path, boxes, cwd=None, removal=False):
                 return True        # a file in it
         return False
     real = os.path.realpath(p).casefold()
+    # with REMOVAL, the name itself too, its folder resolved and its last part not: removing a link removes the link,
+    # wherever it leads (of_review on PR 629: a link in the checkout to a file outside was judged by its target)
+    reals = [real] + ([os.path.join(os.path.realpath(os.path.dirname(p)), os.path.basename(p)).casefold()]
+                      if removal and os.path.basename(p) else [])
     for box in boxes:
-        if real == box or real.startswith(box + "/"):
-            return True
+        for r in reals:
+            if r == box or r.startswith(box + "/"):
+                return True
         if removal and box.startswith(real.rstrip("/") + "/"):
             return True
     return False
@@ -4742,6 +4747,27 @@ def _live_box():
     return {p.casefold() for p in _live_box_real()}
 
 
+def _live_agent(path, cwd=None):
+    """Does PATH name an OF launchd agent's plist, one there or a new name under LIVE_AGENTS? launchd loads every plist
+    in that folder at the next login, outside any session (of_review on PR 629)."""
+    import fnmatch
+    p = str(path or "").strip("'\"")
+    if not p:
+        return False
+    if not p.startswith(("/", "~", "$")) and cwd:
+        p = os.path.join(cwd, p)
+    p = _expanduser(p)
+    named = os.path.join(os.path.realpath(os.path.dirname(p)), os.path.basename(p)).casefold()
+    pat = os.path.join(os.path.realpath(os.path.dirname(_expanduser(LIVE_AGENTS))),
+                       os.path.basename(LIVE_AGENTS)).casefold()
+    return fnmatch.fnmatchcase(named, pat) or fnmatch.fnmatchcase(os.path.realpath(p).casefold(), pat)
+
+
+def _in_live(path, box, cwd=None, removal=False):
+    """G40's reading of one path: in its box, or an OF agent's plist."""
+    return _in_folders(path, box, cwd, removal) or _live_agent(path, cwd)
+
+
 def _live_box_real():
     """The folders G40 keeps, as real paths: LIVE_DIR, and the checkout ~/.local/bin/of links into when that is not
     the working copy (before `of live switch` it is). The agent host's checkouts are its sandbox's (of_spawn)."""
@@ -4751,7 +4777,9 @@ def _live_box_real():
     link = _expanduser("~/.local/bin/of")
     try:
         if os.path.islink(link):
-            out.add(os.path.dirname(os.path.dirname(os.path.realpath(link))))
+            top = os.path.dirname(os.path.dirname(os.path.realpath(link)))
+            if os.path.isfile(os.path.join(top, "bin", "of")) and os.path.exists(os.path.join(top, ".git")):
+                out.add(top)   # a wrapper elsewhere is no checkout: never the whole folder above it
     except OSError:
         pass
     out.discard(os.path.realpath(_expanduser(DEV_CLONE)))
@@ -4766,10 +4794,10 @@ def _live_write(head, args, cwd, files, removal, env=None, shvars=None):
         return None
     box = _live_box()
     hit = next((t for t in _tree_targets(head, args, cwd) if _in_folders(t, box, cwd, removal=True)), None) or \
-        next((f for f in files if _in_folders(f, box, cwd, removal)), None)
+        next((f for f in files if _in_live(f, box, cwd, removal)), None)
     if not hit and head in _LIVE_WRITE_HEADS:
         hit = next((a for a in _live_operands(head, [_expand_vars(a, shvars) for a in args])
-                    if _in_folders(a, box, cwd, removal=head in ("rmdir", "shred"))), None)
+                    if _in_live(a, box, cwd, removal=head in ("rmdir", "shred"))), None)
     if not hit and head == "git":
         hit = _live_git(args, cwd, env or {}, shvars)
     return (LIVE_DENY, hit) if hit else None
@@ -5166,6 +5194,8 @@ def _tree_targets(head, args, cwd):
                 return [a.split("=", 1)[1]]
         return [cwd or "."]
     if head == "unzip":
+        # its flags only: an attached -d value is a folder, never letters (`-d/x/live`'s l is no listing; of_review)
+        short = "".join(a[1:] for a in args if a.startswith("-") and not a.startswith("--") and not a.startswith("-d"))
         if set(short) & set("ltvZpz"):  # list, test, verbose, zipinfo, to stdout, comment: nothing is written
             return []
         for i, a in enumerate(args):
@@ -6203,7 +6233,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 if head in _SHELLS:
                     hit = _in_folder(here21, _bash_deny, herestr, depth + 1)
                 elif head in _INTERPRETERS:
-                    hit = _code_deny(herestr, _lang(head))
+                    hit = _in_folder(here21, _code_deny, herestr, _lang(head))   # in this command's folder (G40)
                 else:
                     hit = None
                 if hit:
@@ -6220,12 +6250,12 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             if head in _INTERPRETERS:
                 for flag in ("-c", "-e"):
                     if flag in args[:-1]:
-                        hit = _code_deny(args[args.index(flag) + 1], _lang(head))
+                        hit = _in_folder(here21, _code_deny, args[args.index(flag) + 1], _lang(head))
                         if hit:
                             return hit
                 kind, code, _ = _py_walk(args) if head.startswith("python") else (None, None, None)
                 if kind == "code":  # `-Ic "…"`, `-c"…"`: python's own reading (of_secrets-review on PR 136)
-                    hit = _code_deny(code, "python")
+                    hit = _in_folder(here21, _code_deny, code, "python")
                     if hit:
                         return hit
             if head == "git" or _GIT_SHELL_ENV & set(_assignments(stext)):
@@ -6926,7 +6956,7 @@ def critical_deny(tool, tool_input, cwd=None, caller=None):
         return FORWARD_DENY, str(ti["pattern"])
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and _launch_file(path, cwd):
         return LAUNCH_DENY, path
-    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _in_folders(str(path), _live_box(), cwd):
+    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _in_live(str(path), _live_box(), cwd):
         return LIVE_DENY, path   # G40
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _in_session_index(path, cwd):  # G36
         if SESSION_INDEX_MODE == "deny":
