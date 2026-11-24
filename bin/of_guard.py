@@ -1033,7 +1033,7 @@ def connector_deny(tool, excluded):
 _CODE_REMOVES = re.compile(r"\bos\.(?:unlink|remove|removedirs|rmdir|rename|renames|replace|symlink|link)\s*\(|"
                            r"\bshutil\.(?:rmtree|move)\s*\(|\.(?:unlink|rmdir|symlink_to|hardlink_to)\s*\(|"
                            r"\bFile\.(?:delete|unlink|symlink|rename)|\bunlink\s*\(|\bFileUtils\.(?:rm|ln|mv)")
-_CODE_WRITE = re.compile(r"""\.open\s*\(\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|\bos\.open\s*\([^;\n]*?\bO_(?:WRONLY|RDWR|CREAT|TRUNC|APPEND)\b|"""
+_CODE_WRITE_RE = re.compile(r"""\.open\s*\(\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|"""
                          r"""open\s*\(.*?,\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|open\s*\([^,]*,\s*['"]\s*\+?>|\bmode\s*=\s*['"][rbt]*[wax+]|write_text|"""
                          r"""write_bytes|(?<!sys\.stdout)(?<!sys\.stderr)\.write\s*\(|\bdump\s*\(|"""
                          r"""os\.(?:replace|rename|remove|unlink|truncate)|"""
@@ -1041,6 +1041,39 @@ _CODE_WRITE = re.compile(r"""\.open\s*\(\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|\bos
                          r"""File\.open\s*\(.*?,\s*['"][rbt]*[wa+]|"""
                          r"""FileUtils\.|fs\.(?:write|append|rename|unlink|rm|copy)|writeFile|appendFile|"""
                          r"""\bsysopen\b|\bunlink\b|\brename\b""")
+_OS_OPEN = re.compile(r"\bos\.open\s*\(")
+_OS_OPEN_FLAGS = re.compile(r"\bO_(?:WRONLY|RDWR|CREAT|TRUNC|APPEND)\b")
+
+
+def _os_open_writes(code):
+    """Does an os.open call name a write flag inside its own parentheses, across lines and nested calls, and never past
+    its closing one (of_review on PR 629: flags in parentheses, a call over two lines, a flag after the call)?"""
+    for m in _OS_OPEN.finditer(code):
+        depth, k, quote = 1, m.end(), None
+        while k < len(code) and depth:
+            ch = code[k]
+            if quote:
+                quote = None if ch == quote and code[k - 1] != "\\" else quote
+            elif ch in "'\"":
+                quote = ch
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            k += 1
+        if _OS_OPEN_FLAGS.search(code[m.end():k]):
+            return m
+    return None
+
+
+class _CodeWrite:
+    """_CODE_WRITE_RE, and an os.open with a write flag read by its own parentheses (_os_open_writes)."""
+
+    def search(self, code):
+        return _CODE_WRITE_RE.search(code) or _os_open_writes(code)
+
+
+_CODE_WRITE = _CodeWrite()
 
 
 def _owner_config_in_code(code, lits):
@@ -1104,7 +1137,8 @@ def _code_deny(code, lang=None):
     # a removal call's own argument counts a folder above a kept one at any depth (`rmtree('~/.local')`, the home:
     # of_secrets-review on PR 629); any other literal only when it lies deep enough (_deep_lit)
     gone_args = {m.group(2) for m in _REMOVAL_ARG.finditer(code)} if gone else set()
-    opened = {m.group(2) for m in _OPENED_ARG.finditer(code)} | {m.group(3) for m in _DEST_ARG.finditer(code)}
+    opened = {m.group(2) for m in _OPENED_ARG.finditer(code)} | {m.group(3) for m in _DEST_ARG.finditer(code)} | \
+        {m.group(2) for m in _FILE_KW.finditer(code)}
     live = next((l for l in lits if not re.search(r"\s", l.strip()) and l.strip().lstrip("<>+|& ")
                  and (l.strip().lstrip("<>+|& ").startswith(("/", "~", "$")) or _rel_path_lit(l.strip().lstrip("<>+|& "), opened))
                  and _in_live(l.strip().lstrip("<>+|& "), _live_box(), _DENY_CWD[0], gone, gone and (l.strip().lstrip("<>+|& ") in gone_args or _deep_lit(l.strip().lstrip("<>+|& "))))), None) \
@@ -4891,11 +4925,12 @@ def _live_box_real():
 
 
 _OPENED_ARG = re.compile(r"(?:(?<![.\w])(?:open|Path|copy\w*|move|rename|replace)|\b(?:pathlib\.)?Path|"
-                         r"\b(?:os|shutil)\.(?:copy\w*|move|rename|replace))\s*\(\s*"
+                         r"\b(?:os|shutil)\.(?:open|copy\w*|move|rename|replace))\s*\(\s*"
                          r"(?:[^'\"()]*,\s*)?(?:(?:file|path|name|dst|src)\s*=\s*)?(['\"])([^'\"\n]+)\1")
 # (a builtin's, pathlib's Path or os's and shutil's calls, never another method's: `p.open('w')` names a mode;
 # a keyword argument too: open(file='x'); of_secrets-review on PR 629: pathlib.Path('stamp').touch())
 # a copy's, a move's or a rename's destination, its second argument (shutil.copy('/tmp/x', 'stamp'))
+_FILE_KW = re.compile(r"\b(?:file|path|dst|dest|target)\s*=\s*(['\"])([^'\"\n]+)\1")   # open(mode='x', file='s')
 _DEST_ARG = re.compile(r"\b(?:copy\w*|move|rename|renames|replace|symlink|link)\s*\(\s*(['\"])[^'\"\n]+\1\s*,\s*"
                        r"(?:(?:dst|dest|target)\s*=\s*)?(['\"])([^'\"\n]+)\2")
 _REMOVAL_ARG = re.compile(r"\b(?:rmtree|remove|removedirs|rmdir|unlink|rename|renames|replace|move|delete)\s*\(\s*"
@@ -6219,7 +6254,13 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             named = _code_runs_protected(body, _DENY_CWD[0]) if not hit and _ORG_PROTECTION["code"] else None
             hit = hit or ((PROTECTED_RUN_DENY, named) if named else None)
         elif head in _INTERPRETERS or remote == "code":
-            hit = _code_deny(body, lang) if remote else \
+            if remote:
+                _REMOTE_BODY[0] += 1
+                try:
+                    hit = _code_deny(body, lang)
+                finally:
+                    _REMOTE_BODY[0] -= 1
+            hit = hit if remote else \
                 _in_folder(_opener_folder(opener, cmd), _code_deny, body, lang)
         elif not quoted:  # an unquoted delimiter runs $( ) in the body, whatever reads it
             hit = next(filter(None, (_bash_deny(s, depth + 1) for s in _scan(body)[1])), None)
