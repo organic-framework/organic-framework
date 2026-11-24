@@ -1172,6 +1172,20 @@ class WatchdogTest(unittest.TestCase):
         self.assertIn("not loaded", out[0])
         with open(victim) as fh:
             self.assertEqual(fh.read(), "mine\n")
+        # an uninstall boots a linked unit out and removes the link, a dangling one too (of_review on PR 659)
+        ran = []
+        run2 = lambda argv, **k: ran.append(argv) or type("R", (), {"returncode": 0})()  # noqa: E731
+        for target in (victim, os.path.join(self.tmp.name, "gone")):
+            if os.path.lexists(path):
+                os.remove(path)
+            os.symlink(target, path)
+            out = of_listen.install_launchd(uninstall=True, run=run2, agents_dir=self.tmp.name,
+                                            plists={of_listen.LAUNCHD_LABEL: units[of_listen.LAUNCHD_LABEL]})
+            self.assertEqual(out, [f"removed {of_listen.LAUNCHD_LABEL}"])
+            self.assertFalse(os.path.lexists(path))
+            self.assertIn("bootout", ran[-1])
+        with open(victim) as fh:
+            self.assertEqual(fh.read(), "mine\n")
 
 
 class SystemdTest(unittest.TestCase):

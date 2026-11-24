@@ -1674,9 +1674,9 @@ def install_launchd(uninstall=False, run=None, plists=None, agents_dir=None):
     out = []
     for label, text in (plists or launchd_plists()).items():
         path = os.path.join(agents_dir, f"{label}.plist")
-        if os.path.islink(path):   # launchd would load the file it names, which need not be the owner's
-            out.append(f"{label}: not loaded ({path} is a link; remove it and run again)")
-            continue
+        if os.path.islink(path) and not uninstall:   # launchd would load the file it names, maybe not the owner's;
+            out.append(f"{label}: not loaded ({path} is a link; remove it and run again)")  # an uninstall still
+            continue                                 # boots it out and removes the link (of_review on PR 659)
         try:
             with open(path) as fh:
                 same = fh.read() == text
@@ -1688,7 +1688,7 @@ def install_launchd(uninstall=False, run=None, plists=None, agents_dir=None):
             continue
         run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True)
         if uninstall:
-            if os.path.exists(path):
+            if os.path.lexists(path):   # a link itself too, a dangling one included
                 os.remove(path)
             out.append(f"removed {label}")
             continue
