@@ -118,7 +118,9 @@ def check_credentials(codex, door, fs, run=subprocess.run, timeout=60, seat=None
         for path, mark in made:
             r = run(sandbox_argv(codex, door["launch"], door["cwd"], ["cat", path], seat), capture_output=True,
                     text=True, timeout=timeout)
-            if r.returncode == 0 or mark in (r.stdout or ""):
+            # a denial, not any failure: cat named the canary and the error is the sandbox's (of_server on PR 640)
+            denied = r.returncode != 0 and path in (r.stderr or "") and any(e in (r.stderr or "") for e in DENIED_READ)
+            if not denied or mark in (r.stdout or ""):
                 read.append(os.path.dirname(path))
     finally:
         for path, _ in made:
@@ -166,28 +168,51 @@ def check_door(conn, door, of_bin, run=subprocess.run, timeout=60):
         ([] if served else ["no of status of the position's own came through it yet (its brief asks one each turn)"])
     return (not bad), ("; ".join(bad) if bad else f"an outsider refused; {served} of its own states served")
 
-def check_guard(door, of_bin, run=subprocess.run, timeout=60):
-    """(ok, detail): the hook, given the call Codex would send for a key's read, denies it."""
+def managed_hook(path=None):
+    """The command the installed requirements file runs for Codex's PreToolUse, as Codex runs it, or None."""
+    import tomllib
     import of_codex
+    try:
+        with open(path or of_codex.REQUIREMENTS_PATH, "rb") as fh:
+            return tomllib.load(fh)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    except (OSError, ValueError, KeyError, IndexError, TypeError):
+        return None
+
+
+DENIED_READ = ("Operation not permitted", "Permission denied", "No such file or directory")   # seatbelt; bwrap's mask
+
+
+def check_guard(door, of_bin, run=subprocess.run, timeout=60, hook=None):
+    """(ok, detail): the hook the managed requirements file runs, given the call Codex would send for a key's read,
+    denies it as the guard does: exit 2 with the guard's own reason (of_server on PR 640: any exit 2 passed, and the
+    probe ran another program than the managed hook)."""
+    import of_codex
+    import of_guard
     import tempfile
+    hook = hook if hook is not None else managed_hook()
+    if not hook:
+        return False, "no managed hook command in the requirements file"
+    command = "cat ~/.ssh/id_" + "ed25519"
+    want = of_guard.critical_deny("Bash", {"command": command})
+    want = (want if isinstance(want, str) else (want or [""])[0])[:60]
     state = tempfile.mkdtemp(prefix="of-selftest-state-")   # its records land there, never on the live session
     payload = {"session_id": f"of-selftest-{secrets.token_hex(6)}", "turn_id": "of-selftest",
                "hook_event_name": "PreToolUse",
                "cwd": door["cwd"], "tool_name": "Bash", "tool_use_id": "of-selftest",
-               "tool_input": {"command": "cat ~/.ssh/id_" + "ed25519"},
+               "tool_input": {"command": command},
                "transcript_path": os.path.join(of_codex.door_dir(door["launch"]),
                                                "sessions/2026/01/01/rollout-of-selftest.jsonl")}
     try:
-        r = run([sys.executable, of_bin, "hook", "PreToolUse"], input=json.dumps(payload), capture_output=True,
-                text=True, timeout=timeout, env=dict(os.environ, OF_STATE=state, OF_NO_DETACH="1"))
+        env = {k: v for k, v in os.environ.items() if k not in ("OF_DB", "OF_CONFIG_DIR")}   # its records stay in STATE
+        r = run(["/bin/sh", "-c", hook], input=json.dumps(payload), capture_output=True, text=True, timeout=timeout,
+                env=dict(env, OF_STATE=state, OF_DB=os.path.join(state, "of.db"), OF_NO_DETACH="1"))
         # OF_NO_DETACH: the hook starts no background ingest or ship, which would write into that folder after it is
         # removed and leave it in the temp root (of_review on PR 640)
     finally:
         import shutil
         shutil.rmtree(state, ignore_errors=True)
-    out = (r.stdout or "") + (r.stderr or "")
-    ok = "deny" in out or r.returncode == 2
-    return ok, ("denied" if ok else f"not denied (exit {r.returncode})")
+    ok = r.returncode == 2 and bool(want) and want in (r.stderr or "")
+    return ok, ("denied with the guard's reason" if ok else f"not denied as the guard does (exit {r.returncode})")
 
 
 TOOL_ITEMS = ("function_call", "custom_tool_call", "local_shell_call")

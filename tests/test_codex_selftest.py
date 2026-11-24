@@ -29,7 +29,7 @@ def sandbox(readable=False, writable=False, runs=True):
             if readable:
                 with open(cmd[1]) as fh:
                     return subprocess.CompletedProcess(argv, 0, stdout=fh.read(), stderr="")
-            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="Operation not permitted")
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr=f"cat: {cmd[1]}: Operation not permitted")
         if cmd[0] == "sh":
             if writable:
                 open(cmd[4], "w").close()
@@ -41,14 +41,23 @@ def sandbox(readable=False, writable=False, runs=True):
 
 class GuardProbeTest(unittest.TestCase):
     def test_the_guard_probe_writes_nothing_of_the_live_session(self):
-        """of_review on PR 640: the probe recorded a critical deny against the live position's session."""
+        """of_review on PR 640: the probe recorded a critical deny against the live position's session; of_server:
+        it ran another program than the managed hook, any exit 2 passed, and its child kept OF_DB."""
+        import of_guard
+        reason = of_guard.critical_deny("Bash", {"command": "cat ~/.ssh/id_" + "ed25519"})
+        reason = reason if isinstance(reason, str) else reason[0]
         seen = {}
 
         def run(argv, input=None, env=None, **kw):
-            seen.update(session=json.loads(input)["session_id"], state=env.get("OF_STATE"),
-                        detach=env.get("OF_NO_DETACH"))
-            return subprocess.CompletedProcess(argv, 0, stdout='{"decision": "deny"}', stderr="")
-        self.assertTrue(st.check_guard(DOOR, "/of", run=run)[0])
+            seen.update(argv=argv, session=json.loads(input)["session_id"], state=env.get("OF_STATE"),
+                        detach=env.get("OF_NO_DETACH"), db=env.get("OF_DB"))
+            return subprocess.CompletedProcess(argv, 2, stdout="", stderr=reason)
+        self.assertTrue(st.check_guard(DOOR, "/of", run=run, hook="exec of hook PreToolUse")[0])
+        self.assertEqual(seen["argv"], ["/bin/sh", "-c", "exec of hook PreToolUse"])   # the managed hook as Codex runs it
+        self.assertTrue(seen["db"].startswith(seen["state"]))                        # never the live store
+        other = lambda argv, **kw: subprocess.CompletedProcess(argv, 2, stdout="", stderr="some other failure")  # noqa
+        self.assertFalse(st.check_guard(DOOR, "/of", run=other, hook="x")[0])            # an exit 2 alone is no deny
+        self.assertFalse(st.check_guard(DOOR, "/of", run=run, hook="")[0])
         self.assertNotEqual(seen["session"], DOOR["session"])
         self.assertTrue(seen["state"] and not os.path.exists(seen["state"]))          # a private state, removed
         self.assertEqual(seen["detach"], "1")                                         # and no child left writing it
@@ -67,6 +76,13 @@ class SelftestTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn(self.denied, detail)
         self.assertEqual(os.listdir(self.denied), [])                    # removed both times
+        broken = lambda argv, **kw: subprocess.CompletedProcess(argv, 127, stdout="", stderr="sh: cat: not found")  # noqa
+        ctl = sandbox()
+
+        def half(argv, **kw):   # the control reads, the canary's read fails for another cause: no denial
+            cmd = argv[argv.index("--") + 1:]
+            return ctl(argv, **kw) if os.path.dirname(cmd[1]) == DOOR["cwd"] else broken(argv, **kw)
+        self.assertFalse(st.check_credentials("codex", DOOR, self.fs, run=half)[0])
         ok, detail = st.check_credentials("codex", DOOR, self.fs, run=sandbox(runs=False))
         self.assertFalse(ok)                                             # a sandbox that never ran proves nothing
         self.assertIn("control", detail)
