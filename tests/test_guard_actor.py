@@ -64,6 +64,11 @@ class ActorTest(unittest.TestCase):
         own = "env -i PATH=/usr/bin:/bin OF_POSITION=of_x CLAUDE_CODE_SESSION_ID=s1 of status working"
         self.assertIsNone(of_guard.critical_deny("Bash", {"command": own}, "/Users/alex/of", caller=("s1", "of_x")))
         self.assertTrue(deny(own))   # with no caller known, or another one's values: of_secrets-review on PR 630
+        for cmd in ("CLAUDE_CODE_SESSION_ID='s2' of status working", "CLAUDE_CODE_SESSION_ID=s2 python3 bin/of status",
+                    "bash -c 'CLAUDE_CODE_SESSION_ID=s2 of status working'"):   # of_review on PR 648
+            self.assertTrue(deny(cmd), cmd)
+        for cmd in ("of status working # OF_POSITION=example", "echo CLAUDE_CODE_SESSION_ID=s2 && of who"):
+            self.assertIsNone(deny(cmd), cmd)
 
 
 class ActorLineTest(unittest.TestCase):
@@ -245,6 +250,12 @@ class ServerRouteAct(unittest.TestCase):
             self.assertTrue(deny(cmd), cmd)
         self.assertIsNone(deny("of send of_x 'my session id is in CLAUDE_CODE_SESSION_ID'"))   # prose
         self.assertIsNone(deny("of send of_x 'set CLAUDE_CODE_SESSION_ID=abc to test'"))        # quoted prose
+        for cmd in ("read CLAUDE_CODE_SESSION_ID <<< other; of send of_x hi",   # of_secrets-review on PR 648
+                    "printf -v OF_POSITION %s of_other; of status working",
+                    "V=OF_POSITION; export $V=of_other; of inbox --mine",
+                    "python3 -c \"import os, subprocess; os.environ['OF_POSITION']='of_x'; "
+                    "subprocess.run(['of', 'send', 'of_y', 'hi'])\""):
+            self.assertTrue(deny(cmd), cmd)
 
 
 if __name__ == "__main__":

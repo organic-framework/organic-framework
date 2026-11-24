@@ -3715,14 +3715,39 @@ def _actor_set_deny(cmd):
     21-day replay: one such line, a python heredoc's text, in 492 lines that name either variable."""
     if "of" not in cmd or not any(v in cmd for v in ACTOR_VARS):
         return None
+    for m in re.finditer(r"\b(?:ba|z|da|k)?sh\s+(?:-\w+\s+)*-\w*c\s+(['\"])(.*?)\1", cmd, re.S):
+        hit = _actor_set_deny(m.group(2))   # a shell's -c body is a line of its own (of_review on PR 648)
+        if hit:
+            return hit
     flat = _strip_quoted(_without_code_text(cmd))   # a message's own words are prose, its prefix is not
+    flat = re.sub(r"(?m)(?:^|(?<=\s))#.*$", "", flat)   # a comment is no command (of_review's note on PR 648)
     runs_of = _command_word(flat, {"of"}) or bool(re.search(   # and through env (`env OF_POSITION=x of inbox`)
-        r"(?:^|[;&|({`\n]|\$\()\s*(?:\S*/)?env\s+(?:-\S+\s+)*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?of\s", flat))
+        r"(?:^|[;&|({`\n]|\$\()\s*(?:\S*/)?env\s+(?:-\S+\s+)*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?of\s", flat)) or \
+        bool(re.search(r"\b(?:python3?(?:\.\d+)?|pypy3?)\s+(?:-\S+\s+)*\S*\bof(?:\.py)?(?:\s|$)", flat))   # `python3 bin/of`
     own = {"CLAUDE_CODE_SESSION_ID": _CALLER[0], "OF_POSITION": _CALLER[1]}
-    other = [v for v in ACTOR_VARS for x in re.findall(rf"\b{v}=([^\s;&|)]+)", flat)
-             if not own[v] or x.strip("'\"") != own[v]]   # its own values, as the hook knows them, stay (env -i …)
-    if runs_of and other:
+    # either variable set on the line in any way the shell sets one (of_secrets-review on PR 648: NAME=, read,
+    # printf -v, export, declare, typeset, local, readonly, an indirect `export $V=` whose V names it), but an
+    # assignment to the session's own value as the hook knows it (env -i … NAME=<own> of …); reading it ($NAME, a
+    # --session argument) is no setting
+    left = flat
+    for v in ACTOR_VARS:
+        if own[v]:
+            left = re.sub(rf"\b{v}=(['\"]?){re.escape(own[v])}\1(?=[\s;&|)]|$)", " ", left)
+    sets = any(re.search(rf"(?:^|[;&|({{`\n]|\$\(|\benv\s+(?:-\S+\s+)*)\s*(?:[A-Za-z_]\w*=\S*\s+)*{v}=|"
+                         rf"\bread\b[^;&|\n]*\b{v}\b|\bprintf\s+(?:-\S+\s+)*-v\s*{v}\b|"
+                         rf"\b(?:export|declare|typeset|local|readonly)\b[^;&|\n]*(?<![$\w{{]){v}\b", left)
+               for v in ACTOR_VARS) or (
+        bool(re.search(r"\b\w+=(?:CLAUDE_CODE_SESSION_ID|OF_POSITION)\b", left)) and
+        bool(re.search(r"\b(?:export|declare|typeset|local|readonly|read|printf\s+-v)\b[^;&|\n]*\$\{?\w", left)))
+    if runs_of and sets:
         return ACTOR_SET_DENY, "of with its caller set"
+    # interpreter code that sets a caller variable and starts of: the reading the acts get (_actor_line_deny)
+    if _command_word(flat, _INTERPRETER_WORDS, interpreters=True) and _LAUNCH_CODE.search(cmd) and \
+            re.search(r"""environ\s*\[\s*['"](?:CLAUDE_CODE_SESSION_ID|OF_POSITION)['"]\s*\]\s*=|"""
+                      r"""putenv\s*\(\s*['"](?:CLAUDE_CODE_SESSION_ID|OF_POSITION)|"""
+                      r"""['"]?(?:CLAUDE_CODE_SESSION_ID|OF_POSITION)['"]?\s*[:=]\s*['"][^'"]+['"]\s*[,}\)]""", cmd) and \
+            re.search(r"""['"]of['"]|['"](?:\S*/)?of\s|\bbin/of\b""", cmd):
+        return ACTOR_SET_DENY, "of started by code that sets its caller"
     return None
 
 
