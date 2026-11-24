@@ -1069,7 +1069,8 @@ def codex_prepare(pl, context=None, tool_layer=None, log=print):
     tables = tool_layer(pl["position"], pl["launch"], pl["config_dir"], notes=notes) or {}
     for n in notes:
         log(f"  tools: {n}")
-    doc = of_codex.layer(pl["position"], pl["cwd"], model=pl.get("model"), instructions=context(pl["position"], pl["cwd"]),
+    doc = of_codex.layer(pl["position"], pl["cwd"], model=pl.get("model"), effort=pl.get("effort"),
+                         instructions=context(pl["position"], pl["cwd"]),
                          tool_tables=tables, deny_rules=pl.get("deny") or None, codex_home=pl["config_dir"],
                          launch=pl["launch"])
     of_codex.write_layer(pl["config_dir"], pl["launch"], doc)

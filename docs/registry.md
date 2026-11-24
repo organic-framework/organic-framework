@@ -396,6 +396,8 @@ subagent_harnesses:
   codex:                              # a harness: codex or muse
     kinds: [review, read, research, patch]   # review, read and patch send a snapshot of a repository (patch writes in it and returns a diff, RFC 0008 §3.3); research sends only the prompt
     repos: [github.com/organic-framework/organic-framework]   # the repositories whose snapshots may be sent, by their origin
+    model: gpt-6.2-sol                # optional: the organization's model for this harness (else the framework's default)
+    effort: xhigh                     # optional: its reasoning effort, one of minimal, low, medium, high, xhigh
   prompt_check: "release/check.py"    # run on a folder holding only the prompt and the schema; exit 0 passes
   snapshot_check: "of:gitleaks"       # run the same way on the material folder (the snapshot) before it leaves
   max_snapshot_mb: 50                 # optional, for every harness: a larger snapshot is refused
@@ -404,6 +406,7 @@ subagent_harnesses:
   basis: "<the keeper's commit or diff, or the owner's card where the organization requires one>"
 ```
 
+- **`model` and `effort`**, optional under a harness, are the organization's own choice for it (2026-11-24, `of_architect`, after the founder's choice for OF's work, prompt `01a20e1d-1b9c`; RFC 0008 §5): `of subagent run` uses them, `--model` still overriding the model, and so does a Codex position's layer at `of spawn` and `of resume-command`, never the organization's Claude model. Without them the framework's default holds. `of registry check` takes a Codex model only when a Codex seat here knows it (its `models_cache.json`), and warns when no seat's cache can be read.
 - **The structure keeper writes it**, for the organization's own repositories. What leaves for another provider is the organization's choice (docs/plugins.md §1).
 - **`repos`, not systems, by origin** (2026-11-18, on a user organization's security keeper's terms, through `of_capacity` and `of_platform`, message `01a1ef2d-d6ad`). A run sends a repository's snapshot, and one repository often holds many systems. An item with a slash is the path of the repository's remote, `<host>/<owner>/<name>`, matched against the checkout's `origin` fetch URL; any folder can carry a repository's name, so this is the form to use. An item without a slash matches the repository's name, kept for entries written before: the name of the folder that holds its git folder, so a git worktree carries its repository's name, not its own folder's (organic-framework PR 555). A checkout the entry does not name, or whose origin it cannot read for an item with a slash, is refused.
 - **`max_snapshot_mb`**, optional, beside `prompt_check` (for every harness, not under one), refuses a snapshot larger than that, after `excludes`. Without it there is no size limit: the organization sets one if it wants one.

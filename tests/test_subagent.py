@@ -1148,3 +1148,29 @@ class RepoOfWorktreeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OrgChoiceTest(unittest.TestCase):
+    """of_architect (message 01a20e1f-9faf): each organization chooses its model and effort per harness."""
+
+    def test_the_registry_choice_and_the_framework_default(self):
+        reg = {"subagent_harnesses": {"codex": {"kinds": ["read"], "model": "gpt-6.2-sol", "effort": "high"}}}
+        self.assertEqual(of_subagent.chosen(reg, "codex"), ("gpt-6.2-sol", "high"))
+        self.assertEqual(of_subagent.chosen({}, "codex"),
+                         (of_subagent.DEFAULT_MODEL["codex"], of_subagent.DEFAULT_EFFORT["codex"]))
+
+    def test_the_codex_command_takes_the_effort(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            argv = of_subagent.command("codex", "read", d, d, os.path.join(d, "p"), os.path.join(d, "a"),
+                                       model="gpt-6.2-sol", binary="/bin/true", effort="high")[0]
+        self.assertIn('model_reasoning_effort="high"', argv)
+        self.assertEqual(argv[argv.index("-m") + 1], "gpt-6.2-sol")
+
+    def test_the_registry_check(self):
+        docs = {"a": {"subagent_harnesses": {"codex": {"model": "gpt-6.2-sol", "effort": "xhigh"}}},
+                "b": {"subagent_harnesses": {"codex": {"model": "gpt-nope", "effort": "max"}}}}
+        got = of_subagent.choice_problems(docs, known={"gpt-6.2-sol", "gpt-6.2-astra"})
+        self.assertEqual(len(got), 2)
+        self.assertTrue(all(g.startswith("b:") for g in got))
+        self.assertTrue(of_subagent.choice_problems(docs, known=None)[0].startswith("warning: "))
