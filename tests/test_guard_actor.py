@@ -67,6 +67,11 @@ class ActorTest(unittest.TestCase):
         for cmd in ("CLAUDE_CODE_SESSION_ID='s2' of status working", "CLAUDE_CODE_SESSION_ID=s2 python3 bin/of status",
                     "bash -c 'CLAUDE_CODE_SESSION_ID=s2 of status working'"):   # of_review on PR 648
             self.assertTrue(deny(cmd), cmd)
+        for cmd in ("OF_POSITION=$(echo other) of send of_x hi", "unset OF_POSITION; OF_POSITION+=other; of send of_x hi",
+                    "node -e \"process.env.OF_POSITION='x'; require('child_process').execSync('of send of_y hi')\"",
+                    "ruby -e \"ENV['OF_POSITION']='x'; system('of send of_y hi')\"",
+                    "perl -e \"\\$ENV{OF_POSITION}='x'; system('of send of_y hi')\""):   # of_secrets-review on PR 648
+            self.assertTrue(deny(cmd), cmd)
         for cmd in ("of status working # OF_POSITION=example", "echo CLAUDE_CODE_SESSION_ID=s2 && of who"):
             self.assertIsNone(deny(cmd), cmd)
 
