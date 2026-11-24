@@ -685,7 +685,7 @@ def login_files(harness):
         return [os.path.join(os.environ.get("CODEX_HOME") or os.path.join(home, ".codex"), "auth.json")]
     own = muse_login_dir()
     kc = os.path.join(own, "home", "Library", "Keychains")
-    out = [os.path.join(own, "xdg-config", "muse", "auth.json")]
+    out = [os.path.join(own, "xdg-config", "muse", "auth.json"), muse_key_file()]
     for d, _, fs in os.walk(kc) if os.path.isdir(kc) else ():
         out += [os.path.join(d, f) for f in fs]
     return out
@@ -693,8 +693,8 @@ def login_files(harness):
 
 def _markers(path):
     """Byte strings that show a file's secret content in a run's output; read here, compared here, never printed:
-    each string value of 16 characters or more of a JSON login, and of any other file its first bytes as hex and as
-    base64 and a few 24-byte windows as hex."""
+    each string value of 16 characters or more of a JSON login, and of any other file each line of 16 characters or
+    more, its first bytes as hex and as base64 and a few 24-byte windows as hex."""
     import base64
     try:
         with open(path, "rb") as fh:
@@ -718,6 +718,8 @@ def _markers(path):
                 out.append(x.encode())
         walk(doc)
         return out
+    # a text login (Muse's API key, one line): each line of 16 characters or more, as it is
+    out += [ln.strip() for ln in data.splitlines() if len(ln.strip()) >= 16]
     if len(data) >= 48:
         out.append(base64.b64encode(data[:48]))
         for i in (0, 64, 256, 1024, 4096):
@@ -864,6 +866,13 @@ def muse_login_dir():
     return os.path.join(of_events.STATE_DIR, MUSE_LOGIN)
 
 
+def muse_key_file():
+    """Muse's API key, mode 600, written by `of subagent muse-login --api-key-stdin` and read only by OF outside any
+    run's sandbox, which feeds it to Muse's --api-key-stdin: no file a run can read holds it (RFC 0008 §3.1, "No
+    owner's keychain": "the login comes another way the harness takes (Muse's --api-key-stdin)")."""
+    return os.path.join(muse_login_dir(), "api.key")
+
+
 # ---- the run ----
 
 def clean_env(run_dir, extra=None):
@@ -878,18 +887,21 @@ def _sb(s):
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def sandbox_profile(run_dir, reads=(), writes=()):
+def sandbox_profile(run_dir, reads=(), writes=(), run_parts=None):
     """The outer sandbox (SBPL): file contents under DENIED_ROOTS are denied except RUN_DIR and READS (paths, a folder
-    as its subtree); writes there are denied except RUN_DIR and WRITES. Metadata stays readable."""
+    as its subtree); writes there are denied except RUN_DIR and WRITES. Metadata stays readable. RUN_PARTS: only those
+    paths of RUN_DIR, never the whole folder, which holds the run's own files (its canary, its record: the laptop's
+    selftest, 2026-11-24, read the run's canary through Muse's file tools)."""
     rd = os.path.realpath(run_dir)
     def rule(p):
         p = os.path.realpath(os.path.expanduser(p))
         return f"(subpath {_sb(p)})" if os.path.isdir(p) else f"(literal {_sb(p)})"
+    mine = " ".join(rule(p) for p in run_parts) if run_parts is not None else f"(subpath {_sb(rd)})"
     lines = ["(version 1)", "(allow default)",
              "(deny file-read-data " + " ".join(f"(subpath {_sb(r)})" for r in DENIED_ROOTS) + ")",
-             f"(allow file-read-data (subpath {_sb(rd)}) " + " ".join(rule(p) for p in reads) + ")",
+             f"(allow file-read-data {mine} " + " ".join(rule(p) for p in reads) + ")",
              "(deny file-write* " + " ".join(f"(subpath {_sb(r)})" for r in DENIED_ROOTS) + ")",
-             f"(allow file-write* (subpath {_sb(rd)}) " + " ".join(rule(p) for p in writes) + ")",
+             f"(allow file-write* {mine} " + " ".join(rule(p) for p in writes) + ")",
              # the terminal and the null device stay writable
              '(allow file-write* (literal "/dev/null") (literal "/dev/tty") (regex #"^/dev/ttys[0-9]+$"))']
     return "\n".join(lines) + "\n"
@@ -1086,12 +1098,11 @@ def command(harness, kind, run_dir, work_dir, prompt_file, answer_file, schema=N
     if harness == "muse":
         cfg, data = os.path.join(run_dir, "xdg-config"), os.path.join(run_dir, "xdg-data")
         own = muse_login_dir()
-        if not os.path.isdir(os.path.join(own, "home", "Library", "Keychains")):
-            raise SubagentError("Muse has no login of its own yet: its login lives in a keychain, and a run never gets "
-                                "the owner's login keychain (RFC 0008 §3.1, \"No owner's keychain\"); the owner runs "
-                                "of subagent muse-login once, in a plain terminal")
-        login = os.path.join(own, "xdg-config", "muse", "auth.json")
-        _link_login(login, os.path.join(cfg, "muse", "auth.json"))
+        keyed = os.path.isfile(muse_key_file())
+        if not keyed:
+            raise SubagentError("Muse has no API key of its own yet: a run takes its login only on stdin, so no file in "
+                                "its sandbox holds it (RFC 0008 §3.1, Muse's --api-key-stdin); the owner runs `of "
+                                "subagent muse-login --api-key-stdin` once, in a plain terminal")
         exe = binary or muse_binary()
         argv = [exe, "exec", "--json", "--prompt-file", prompt_file, "--contributor-mode", "off",
                 "--disable-write", "--disable-shell", "--approval-mode", "never", "--no-session-log",
@@ -1100,17 +1111,14 @@ def command(harness, kind, run_dir, work_dir, prompt_file, answer_file, schema=N
             argv.append("--disable-web-tools")
         if schema:
             argv += ["--output-schema", schema]
-        argv += ["--model", model or DEFAULT_MODEL["muse"]]
-        # a fresh home whose keychains are Muse's own (without a keychain it finds no login)
-        fresh = _private_dir(os.path.join(run_dir, "home"))
-        keychains = os.path.join(own, "home", "Library", "Keychains")
-        _private_dir(os.path.join(fresh, "Library"))
-        if os.path.isdir(keychains) and not os.path.lexists(os.path.join(fresh, "Library", "Keychains")):
-            os.symlink(keychains, os.path.join(fresh, "Library", "Keychains"))
+        argv += ["--model", model or DEFAULT_MODEL["muse"], "--api-key-stdin"]   # the key on stdin (run feeds it)
+        fresh = _private_dir(os.path.join(run_dir, "home"))   # a fresh home: no keychain, no login, the owner's none
+        for d in (cfg, data, os.path.join(run_dir, "xdg-state"), os.path.join(run_dir, "xdg-cache")):
+            _private_dir(d)
         env = clean_env(run_dir, {"HOME": fresh, "XDG_CONFIG_HOME": cfg, "XDG_DATA_HOME": data,
                                   "XDG_STATE_HOME": os.path.join(run_dir, "xdg-state"),
                                   "XDG_CACHE_HOME": os.path.join(run_dir, "xdg-cache"), "MUSE_NO_AUTO_UPDATE": "1"})
-        return argv, env, [exe, own], [own]
+        return argv, env, [exe], []
     raise SubagentError(f"--harness {harness!r}: one of {', '.join(HARNESSES)}")
 
 
@@ -1340,8 +1348,14 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
                               reads[0], login_files("codex")[0], os.path.join(run_dir, "codex-home", "auth.json"))
         elif outer:
             prof = os.path.join(run_dir, "sandbox.sb")
+            parts = None
+            if harness == "muse":   # the run's folder for Muse: its material, its prompt and schema, its own homes only
+                parts = [work_dir, run_prompt] + ([run_schema] if run_schema else []) + \
+                    [os.path.join(run_dir, d) for d in ("home", "xdg-config", "xdg-data", "xdg-state", "xdg-cache", "tmp")]
+                for d in parts[-6:]:
+                    _private_dir(d)
             with open(prof, "w") as fh:
-                fh.write(sandbox_profile(run_dir, reads, writes))
+                fh.write(sandbox_profile(run_dir, reads, writes, parts))
             argv = ["/usr/bin/sandbox-exec", "-f", prof] + argv
         base_ev = {"run": rid, "phase": "started", "position": position, "session": session, "work": work,
                    "harness": harness, "model": model or DEFAULT_MODEL.get(harness), "kind": kind, "commit": head, "base": base,
@@ -1351,7 +1365,9 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
                        session=session, org=org)
         stream, err = os.path.join(record, "stream.jsonl"), os.path.join(record, "stderr.log")
         started = time.time()
-        with open(run_prompt, "rb") as fin, open(stream, "wb") as fout, open(err, "wb") as ferr:
+        # Muse's API key on its stdin, read by OF here, outside the sandbox; Codex's prompt on its
+        stdin_path = muse_key_file() if harness == "muse" and "--api-key-stdin" in argv else run_prompt
+        with open(stdin_path, "rb") as fin, open(stream, "wb") as fout, open(err, "wb") as ferr:
             os.chmod(stream, 0o600)
             os.chmod(err, 0o600)
             if kind == "patch" and popen is subprocess.run:
@@ -1683,6 +1699,26 @@ def selftest_passed(conn, harness, kind="read"):
     if kind == "patch" and "patch" not in (p.get("kinds") or []):
         return f"{harness}'s latest selftest carried no patch checks: run of subagent selftest --harness {harness}"
     return None
+
+
+def muse_key_login(stdin=None, log=print):
+    """`of subagent muse-login --api-key-stdin`, the owner's, once, in a plain terminal: Muse's API key read from stdin
+    (never an argument, never echoed) into muse_key_file(), mode 600, replaced whole. A run reads it outside its
+    sandbox and gives it to Muse's --api-key-stdin, so no file a run can read holds the login."""
+    import getpass
+    stdin = stdin or sys.stdin
+    key = (getpass.getpass("Muse API key: ") if stdin.isatty() else stdin.readline()).strip()
+    if not key or any(c.isspace() for c in key):
+        raise SubagentError("no key read (one line, no blanks)")
+    path = muse_key_file()
+    _private_dir(os.path.dirname(path))
+    tmp = f"{path}.{os.getpid()}"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(key + "\n")
+    os.replace(tmp, path)
+    log(f"Muse's API key is kept in {path} (mode 600); a run gives it to Muse on stdin.")
+    return 0
 
 
 def muse_login(log=print, run=subprocess.run):

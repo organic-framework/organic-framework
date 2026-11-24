@@ -84,7 +84,9 @@ class SubagentTest(unittest.TestCase):
         os.makedirs(self.org)
         with open(os.path.join(self.org, "check.py"), "w") as fh:
             fh.write(CHECK)
-        os.makedirs(os.path.join(of_events.STATE_DIR, of_subagent.MUSE_LOGIN, "home", "Library", "Keychains"))
+        os.makedirs(os.path.join(of_events.STATE_DIR, of_subagent.MUSE_LOGIN))
+        with open(of_subagent.muse_key_file(), "w") as fh:   # Muse's API key, given to it on stdin (RFC 0008 §3.1)
+            fh.write("mk_" + "test" * 4 + "\n")
         self.repo = os.path.join(t, "fw")
         os.makedirs(self.repo)
         git = lambda *a: subprocess.run(["git", "-C", self.repo, *G, *a], check=True, capture_output=True)  # noqa: E731
@@ -129,16 +131,11 @@ class SubagentTest(unittest.TestCase):
         self.assertIn("no live selftest", str(e.exception))
 
     def test_a_harness_whose_run_could_read_its_login_is_refused(self):
-        """of_secrets-review on PR 328: a selftest whose model declines to read its login passes; the read rules decide."""
-        login = of_subagent.login_files("muse")[0]
-        os.makedirs(os.path.dirname(login), exist_ok=True)
-        with open(login, "w") as fh:
-            fh.write("{}")
+        """of_secrets-review on PR 328: a selftest whose model declines to read its login passes; the read rules decide.
+        Muse's key reaches it on stdin and lies in no folder its run reads, so its run goes."""
         fake = Fake("muse")
-        with self.assertRaises(of_subagent.SubagentError) as e:
-            self.go("muse", fake=fake, real_login_gate=True)
-        self.assertIn("could read its own login (auth.json)", str(e.exception))
-        self.assertEqual(fake.calls, [])
+        self.assertEqual(self.go("muse", fake=fake, real_login_gate=True)[0]["exit"], 0)
+        self.assertEqual(fake.calls[0]["prompt"].strip(), "mk_" + "test" * 4)     # the key, on its stdin
         with mock.patch.object(of_subagent, "login_files", lambda h: [os.path.expanduser("~/.codex/auth.json")]):
             self.assertEqual(self.go("codex", visibility=lambda r: True, real_login_gate=True)[0]["exit"], 0)
 
@@ -931,19 +928,21 @@ class SubagentTest(unittest.TestCase):
         self.assertIn("no prompt_check", str(e.exception))
         self.assertEqual(self.go("muse", registry=no_check)[0]["exit"], 0)
 
-    def test_muse_never_gets_the_owners_keychain(self):
+    def test_muse_never_gets_the_owners_keychain_nor_a_login_file(self):
+        """Muse's login reaches its run on stdin only: no keychain and no login file in what its sandbox reads, and
+        of its own run folder only its material, prompt and homes (the laptop's selftest, 2026-11-24, read the run's
+        canary and its login through Muse's file tools)."""
         _, m = self.go("muse")
         prof = m["profile"]
         self.assertNotIn(os.path.expanduser("~/Library/Keychains"), prof)
-        self.assertIn(os.path.realpath(os.path.join(of_events.STATE_DIR, of_subagent.MUSE_LOGIN)), prof)
-        link = os.path.join(m["env"]["HOME"], "Library", "Keychains")
+        self.assertNotIn(os.path.realpath(os.path.join(of_events.STATE_DIR, of_subagent.MUSE_LOGIN)), prof)
+        self.assertIn("--api-key-stdin", m["argv"])
+        self.assertNotIn("run-canary.txt", prof)
         self.assertFalse(os.path.exists(m["env"]["HOME"]))                      # gone with the run
-        import shutil
-        shutil.rmtree(os.path.join(of_events.STATE_DIR, of_subagent.MUSE_LOGIN))
+        os.unlink(of_subagent.muse_key_file())
         with self.assertRaises(of_subagent.SubagentError) as e:
             self.go("muse")
-        self.assertIn("of subagent muse-login", str(e.exception))
-        self.assertTrue(link)
+        self.assertIn("of subagent muse-login --api-key-stdin", str(e.exception))
 
     def test_a_diff_run_never_carries_a_key_the_head_removed(self):
         """of_secrets-review on PR 328: the diff holds the base's text of every file the head removes or changes."""
@@ -969,11 +968,9 @@ class SubagentTest(unittest.TestCase):
 
     def test_the_harness_login_never_reaches_the_answer(self):
         own = os.path.join(of_events.STATE_DIR, of_subagent.MUSE_LOGIN)
-        login = of_subagent.login_files("muse")[0]
-        os.makedirs(os.path.dirname(login), exist_ok=True)
-        token = "tok_" + "9f8e7d6c5b4a" * 3
-        with open(login, "w") as fh:
-            json.dump({"access": token, "kind": "meta"}, fh)
+        token = "mk_" + "9f8e7d6c5b4a" * 3
+        with open(of_subagent.muse_key_file(), "w") as fh:
+            fh.write(token + "\n")
 
         class Leaky(Fake):
             def __call__(s2, argv, **kw):
@@ -983,12 +980,12 @@ class SubagentTest(unittest.TestCase):
                 return res
         got, _ = self.go("muse", fake=Leaky("muse"))
         self.assertNotIn(token, got["answer"])
-        self.assertEqual((got["exit"], got["withheld"]), (3, ["auth.json"]))
+        self.assertEqual((got["exit"], got["withheld"]), (3, ["api.key"]))
         for f in ("answer.txt", "stream.jsonl"):
             with open(os.path.join(got["record"], f)) as fh:
                 self.assertNotIn(token, fh.read())
         ended = [p for k, p in self.events if k == "subagent_run"][-1]
-        self.assertEqual(ended["withheld"], ["auth.json"])
+        self.assertEqual(ended["withheld"], ["api.key"])
         self.assertTrue(own)
 
     def test_the_outer_sandbox_denies_reads_outside_the_run(self):
