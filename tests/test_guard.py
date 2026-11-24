@@ -1071,7 +1071,11 @@ class LiveCheckoutTest(unittest.TestCase):
                     f"cd {live}/bin && python3 -c \"import shutil; shutil.copy('/tmp/x', 'stamp')\"",
                     f"cd {live}/bin && python3 -c \"import os; os.open('stamp', os.O_WRONLY | os.O_CREAT)\"",
                     f"python3 <<'EOF'\nimport os\nos.open(\n    '{live}/bin/stamp',\n    os.O_WRONLY | os.O_CREAT)\nEOF",
-                    f"cd {live}/bin && python3 -c \"open(mode='x', file='stamp').close()\""):   # of_review on PR 629
+                    f"cd {live}/bin && python3 -c \"open(mode='x', file='stamp').close()\"",   # of_review on PR 629
+                    f"python3 <<'EOF'\nimport os\nos.open('{live}/bin/x.py',  # )\n        os.O_WRONLY | os.O_CREAT)\nEOF",
+                    f"cd {live}/bin && python3 -c \"import os; os.symlink('/tmp/source', 'stamp')\"",
+                    f"cd {live}/bin && python3 -c \"import os; os.link('/tmp/source', 'stamp')\"",
+                    f"cd {live}/bin && python3 -c \"import os, shutil; shutil.copyfile(os.path.join('/tmp', 'source'), 'stamp')\""):
             self.assertTrue(self.deny(cmd), cmd)
         self.assertFalse(self.deny(f"cd {live}/bin && python3 -c \"import pathlib; pathlib.Path('/tmp/q').open('w')\""))
         self.assertFalse(self.deny(f"python3 -c \"import os; os.open('{live}/bin/of', os.O_RDONLY); print(os.O_CREAT)\""))
