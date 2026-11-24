@@ -4072,9 +4072,11 @@ class IssuesAcrossOrgsTest(unittest.TestCase):
         def lookup(org, ids=(), log=None, run=True, fresh=False):
             calls.append((org, list(ids), run))
             return [i for i in listed if org == "all" or i["org"] == org], "render"
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+        env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "OF_POSITION")}
+        import of_asks_answer
         with mock.patch.object(of_studio_cli, "issues_for_label", lookup), mock.patch.object(of_events, "emit") as emit, \
-                mock.patch.dict(os.environ, env, clear=True), mock.patch("builtins.print"):
+                mock.patch.dict(os.environ, env, clear=True), mock.patch("builtins.print"), \
+                mock.patch.object(of_asks_answer, "not_the_owner", lambda: None):   # the owner's own terminal
             of.cmd_issues(self.label_args("43b590"))
             self.assertEqual(calls[-1], ("all", ["43b590"], True))
             self.assertEqual(emit.call_args.kwargs["org"], "team")                 # the owner's label lands in the issue's org
@@ -4102,8 +4104,7 @@ class IssuesAcrossOrgsTest(unittest.TestCase):
         lookup = lambda org, ids=(), log=None, run=True, fresh=False: (listed, "render")
         for by, ok in (("ops_a", False), ("ops_b", False), ("team_org", True)):
             with mock.patch.object(of_studio_cli, "issues_for_label", lookup), mock.patch.object(of_events, "emit") as emit, \
-                    mock.patch.object(of, "_me", lambda positions, explicit=None, by=by: {"name": by}), \
-                    mock.patch.object(of, "_load_quiet", lambda: []), \
+                    mock.patch.object(of, "_load_quiet", lambda by=by: [{"name": by, "holder": {"session": "s1"}}]), \
                     mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "s1"}), mock.patch("builtins.print"):
                 if ok:
                     of.cmd_issues(self.label_args("43b590"))
@@ -4113,6 +4114,47 @@ class IssuesAcrossOrgsTest(unittest.TestCase):
                         of.cmd_issues(self.label_args("43b590"))
                     self.assertIn("would not count", str(e.exception))
                     emit.assert_not_called()
+
+    def test_only_the_owner_s_terminal_labels_as_the_owner(self):
+        """of_review on PR 630: `by: owner` was written whenever the session id was unset, and --from took any
+        position, so a position an issue names could dismiss it for good as the owner or as its keeper."""
+        from unittest import mock
+        import of_asks_answer
+        import of_events
+        import of_studio_cli
+        of = self._of()
+        listed = [dict(self.issue("43b590d385f6", "team"), affected=["ops_a"], decider_position="team_org",
+                       structure_keeper="team_org")]
+        looked = []
+        lookup = lambda org, ids=(), log=None, run=True, fresh=False: looked.append(org) or (listed, "render")
+        positions = [{"name": "ops_a", "holder": {"session": "s1"}}, {"name": "team_org", "holder": {"session": "s2"}}]
+        clean = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "OF_POSITION")}
+
+        def label(env, sender=None, terminal=False):
+            args = self.label_args("43b590", label="false_positive")
+            args.sender = sender
+            with mock.patch.object(of_studio_cli, "issues_for_label", lookup), mock.patch.object(of_events, "emit") as emit, \
+                    mock.patch.object(of, "_load_quiet", lambda: positions), mock.patch.dict(os.environ, dict(clean, **env), clear=True), \
+                    mock.patch.object(of_asks_answer, "not_the_owner", lambda: None if terminal else "no terminal"), \
+                    mock.patch("builtins.print"):
+                try:
+                    of.cmd_issues(args)
+                except of.OfError as exc:
+                    return str(exc), emit.call_args_list
+                return None, emit.call_args_list
+        err, emitted = label({})                                          # a cleared caller, no terminal
+        self.assertIn("only from a terminal", err)
+        self.assertEqual((emitted, looked), ([], []))                     # refused before any lookup
+        err, emitted = label({"CLAUDECODE": "1"})                         # an agent's session without its id
+        self.assertIn("no position is held by its session id", err)
+        err, emitted = label({"CLAUDE_CODE_SESSION_ID": "s1"}, sender="team_org")   # ops_a claiming its keeper
+        self.assertIn("holds ops_a, not team_org", err)
+        err, emitted = label({"CLAUDE_CODE_SESSION_ID": "s1"})            # ops_a as itself: the issue names it
+        self.assertIn("would not count", err)
+        err, emitted = label({"CLAUDE_CODE_SESSION_ID": "s2"})            # the keeper from its own session
+        self.assertEqual((err, emitted[0].args[1]["by"]), (None, "team_org"))
+        err, emitted = label({}, terminal=True)                           # the owner's own terminal
+        self.assertEqual((err, emitted[0].args[1]["by"]), (None, "owner"))
 
     def test_label_a_batch_from_a_file(self):
         import tempfile
@@ -4126,12 +4168,14 @@ class IssuesAcrossOrgsTest(unittest.TestCase):
         def lookup(org, ids=(), log=None, run=True, fresh=False):
             calls.append((org, list(ids), run))
             return listed, "render"
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+        env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "OF_POSITION")}
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as fh:
             fh.write("# the week's labels\n43b590 true_positive\n\n6081a1 wrong_remedy the keeper owns it\n"
                      "ffff0000aaaa false_positive ap.coordination-gap@1 left the list\n0000 true_positive\n")
+        import of_asks_answer
         with mock.patch.object(of_studio_cli, "issues_for_label", lookup), mock.patch.object(of_events, "emit") as emit, \
-                mock.patch.dict(os.environ, env, clear=True), mock.patch("builtins.print"):
+                mock.patch.dict(os.environ, env, clear=True), mock.patch("builtins.print"), \
+                mock.patch.object(of_asks_answer, "not_the_owner", lambda: None):
             rc = of.cmd_issues(self.label_args(org="team", file=fh.name, label=None))
         os.unlink(fh.name)
         self.assertEqual(calls, [("team", ["43b590", "6081a1", "0000"], True)])   # one lookup for the whole file

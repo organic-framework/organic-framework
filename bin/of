@@ -6266,18 +6266,13 @@ def cmd_issues(args):
     import of_diagnose
     import of_studio_cli
     entries = _label_entries(args)
+    by = _labeller(args)   # before any lookup: a caller who may not label pays for no diagnose run
     # every organization's issues: an id from one organization's keeper digest labels without --org (2026-11-11); an
     # issue no longer open, named by its full id with --rule-version and --org, needs none (a user organization's
     # structure keeper, 2026-11-15: each label ran the whole diagnose, and calls cut at a two-minute limit left nothing)
     need = [x[0] for x in entries if not (x[3] and args.org)]
     issues, _ = of_studio_cli.issues_for_label(args.org or "all", need, run=bool(need), fresh=getattr(args, "fresh", False),
                                                log=lambda m: print(m, file=sys.stderr, flush=True))
-    # who labels: the owner (a shell that is no agent's session) or a position the owner delegates (--from)
-    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
-    if args.sender or sid:
-        by = _me(_load_quiet(), args.sender)["name"]
-    else:
-        by = "owner"
     failed = 0
     for iid, label, note, rv in entries:
         try:
@@ -6302,6 +6297,29 @@ def cmd_issues(args):
     if failed:
         print(f"{failed} of {len(entries)} not labelled", file=sys.stderr)
     return 1 if failed else 0
+
+
+def _labeller(args):
+    """Who writes this label, the `by` the run checks (of_diagnose.may_label; docs/studio.md, Labels over all time).
+    In an agent's session (an agent's variable set) only the position its session id holds, and --from may name only
+    that one. Otherwise the owner (`owner`), or with --from a person's position the owner delegates, and only from a
+    terminal with no agent's variable: of_asks_answer.not_the_owner, the positive test of the owner's other acts.
+    Before 2026-11-24 any process without the session id wrote `by: owner`, and --from took any position unchecked,
+    so a position an issue names could dismiss it for good as the owner or as its keeper (of_review on PR 630)."""
+    import of_asks_answer
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if sid or os.environ.get("CLAUDECODE") or os.environ.get("OF_POSITION"):
+        p = next((x for x in _load_quiet() if sid and session_of(x) == sid), None)
+        if p is None:
+            raise OfError("not labelled: this runs in an agent's session, and no position is held by its session id; "
+                          "a position labels from its own session, the owner from the owner's own terminal")
+        if args.sender and args.sender not in [p["name"]] + [str(a) for a in p.get("aliases") or []]:
+            raise OfError(f"not labelled: this session holds {p['name']}, not {args.sender}; a position labels only as itself")
+        return p["name"]
+    if of_asks_answer.not_the_owner():
+        raise OfError("not labelled: the owner's label, or one with --from for a person's position, is written only "
+                      "from a terminal with no agent's session; a position labels from its own session")
+    return _me(_load_quiet(), args.sender)["name"] if args.sender else "owner"
 
 
 LABEL_LINE = re.compile(r"ap\.[\w.-]+@\d+$")
@@ -9162,7 +9180,8 @@ def main(argv=None):
     iss.add_argument("--org", help="one organization (default: every organization in orgs.yaml)")
     iss.add_argument("--json", action="store_true")
     iss.add_argument("--fresh", action="store_true", help="run the diagnose here instead of reading the last page render's issues")
-    iss.add_argument("--from", dest="sender", help="a position the owner delegated labelling to")
+    iss.add_argument("--from", dest="sender", help="label: the person's position the owner delegated labelling to "
+                                                   "(from a terminal); in an agent's session only its own position")
     iss.add_argument("--file", help="label several issues: one '<issue id> <label> [ap.<rule>@<n>] [note]' a line")
     iss.set_defaults(fn=cmd_issues)
     ho = sub.add_parser("handover", help="hand-overs between positions: of handover propose <to> \"title\" --done-when …; "
