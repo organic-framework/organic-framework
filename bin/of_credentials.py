@@ -28,8 +28,8 @@ sys.path.insert(0, HERE)
 ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 CACHE = "guard-credentials.json"
 CACHE_MAX = 16 * 1024 * 1024
-CACHE_VERSION = 5  # 2: keychain items, protected_code (G20, G21); 3: tools_excluded plugins (G22); 4: connectors too;
-# 5: the owner's protected_code lists in orgs.yaml too
+CACHE_VERSION = 6  # 2: keychain items, protected_code (G20, G21); 3: tools_excluded plugins (G22); 4: connectors too;
+# 5: the owner's protected_code lists in orgs.yaml too; 6: unlisted roots (G43), so an older cache never hides one
 KEYCHAIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@:-]{0,127}\*?$")  # a service name, or a prefix with a trailing *
 # warn: allowed, noted once per session and recorded; deny: denied. Two switches (a user organization's plan, msg
 # 01a1c89d, 2026-11-11): a file a credential names, read by a position that neither lists nor keeps it (MODE_NAMED;
