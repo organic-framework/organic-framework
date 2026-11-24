@@ -3249,8 +3249,6 @@ def cmd_subagent(args):
     import of_subagent
     if args.action == "muse-login":
         try:
-            if getattr(args, "api_key_stdin", False):
-                return of_subagent.muse_key_login()
             return of_subagent.muse_login()
         except of_subagent.SubagentError as e:
             raise OfError(str(e))
@@ -9043,8 +9041,6 @@ def build_parser():
     sa = sub.add_parser("subagent", help="a read-only run on another provider's harness, Codex or Muse (RFC 0008 §3; "
                         "bin/of_subagent.py): run, or selftest (the live checks of its limits)")
     sa.add_argument("action", choices=["run", "selftest", "muse-login"])
-    sa.add_argument("--api-key-stdin", action="store_true",
-                    help="muse-login: read Muse's API key from stdin into a mode-600 file a run feeds to Muse's stdin")
     sa.add_argument("--harness", choices=["codex", "muse", "auto", "all"], help="run: codex|muse|auto (default auto); "
                     "selftest: codex|muse|all")
     sa.add_argument("--kind", choices=["review", "read", "research", "patch"], default="review",
