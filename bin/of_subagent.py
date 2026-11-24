@@ -688,7 +688,9 @@ def login_files(harness):
     out = [os.path.join(own, "xdg-config", "muse", "auth.json")]
     for d, _, fs in os.walk(kc) if os.path.isdir(kc) else ():
         out += [os.path.join(d, f) for f in fs]
-    return out
+    # the keychain's password: a run's read rules must never reach it, and its content is withheld from the answer,
+    # the stream and stderr like the login's (of_review on PR 661: stderr's markers came from the login alone)
+    return out + [os.path.join(own, "keychain.pw")]
 
 
 def _markers(path):
@@ -902,9 +904,15 @@ def secretless(path):
     """True when the JSON login file at PATH is Muse's auth.json with its token kept in the keychain: only the fields
     of AUTH_FIELDS, under providers.<name>, each value of its own shape, and a schema_version; anything else may hold a
     secret, so it fails."""
-    try:
-        with open(path) as fh:
-            doc = json.load(fh)
+    import stat
+    try:   # a plain file only, never through a link, and never a FIFO that would hold the open (of_review on PR 661)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return False
+            doc = json.loads(os.read(fd, 1 << 16))
+        finally:
+            os.close(fd)
     except (OSError, ValueError):
         return False
     if not isinstance(doc, dict) or set(doc) - {"schema_version", "providers"}:
@@ -952,7 +960,7 @@ def _sb(s):
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def sandbox_profile(run_dir, reads=(), writes=(), run_parts=None, net_port=None):
+def sandbox_profile(run_dir, reads=(), writes=(), run_parts=None, net_port=None, read_only=()):
     """The outer sandbox (SBPL): file contents under DENIED_ROOTS are denied except RUN_DIR and READS (paths, a folder
     as its subtree); writes there are denied except RUN_DIR and WRITES. Metadata stays readable. RUN_PARTS: only those
     paths of RUN_DIR, never the whole folder, which holds the run's own files (its canary, its record: the laptop's
@@ -962,11 +970,15 @@ def sandbox_profile(run_dir, reads=(), writes=(), run_parts=None, net_port=None)
         p = os.path.realpath(os.path.expanduser(p))
         return f"(subpath {_sb(p)})" if os.path.isdir(p) else f"(literal {_sb(p)})"
     mine = " ".join(rule(p) for p in run_parts) if run_parts is not None else f"(subpath {_sb(rd)})"
+    # READ_ONLY: parts read, never written (the material, the prompt, the schema: of_review on PR 661)
+    ro = {os.path.realpath(os.path.expanduser(p)) for p in read_only}
+    mine_w = (" ".join(rule(p) for p in run_parts if os.path.realpath(os.path.expanduser(p)) not in ro)
+              if run_parts is not None else mine)
     lines = ["(version 1)", "(allow default)",
              "(deny file-read-data " + " ".join(f"(subpath {_sb(r)})" for r in DENIED_ROOTS) + ")",
              f"(allow file-read-data {mine} " + " ".join(rule(p) for p in reads) + ")",
              "(deny file-write* " + " ".join(f"(subpath {_sb(r)})" for r in DENIED_ROOTS) + ")",
-             f"(allow file-write* {mine} " + " ".join(rule(p) for p in writes) + ")",
+             f"(allow file-write* {mine_w} " + " ".join(rule(p) for p in writes) + ")",
              # the terminal and the null device stay writable
              '(allow file-write* (literal "/dev/null") (literal "/dev/tty") (regex #"^/dev/ttys[0-9]+$"))']
     if net_port is not None:   # NET_PORT: the network only to OF's proxy on that loopback port (of_egress)
@@ -1423,16 +1435,19 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
         exposed = login_readable(harness, run_dir, work_dir, reads, outer) if gates else []
         guarded = harness == "muse" and bool(outer) and sys.platform == "darwin"
         proxy = None
-        if guarded and exposed:
+        if guarded:
             # of_server's yes on both halves (message 01a20e82-8a40): the network only to Muse's endpoints through
             # OF's proxy, and the keychain under a password the run never reads, so what its model may read of the
             # login is ciphertext and an account's name; and only while Muse's latest selftest, which checks both,
-            # passed every check (selftest_passed, below)
+            # passed every check (selftest_passed, below). Every guarded run needs it, the selftest's too: without
+            # it the keychain may be locked, and Muse's read of a locked one raises a password dialog
             ok, why = muse_protected()
             if not ok:
-                raise SubagentError(f"muse's run could read its own login ({', '.join(exposed)}): {why}")
-            kc_names = {os.path.basename(f) for f in login_files("muse") if f != muse_auth()}
-            exposed = [n for n in exposed if n not in kc_names and n != "auth.json"]
+                raise SubagentError(f"muse's run could read its own login ({', '.join(exposed) or 'its keychain'}): "
+                                    f"{why}")
+            kc_dir = os.path.dirname(muse_keychain())
+            kc_names = {os.path.basename(f) for f in login_files("muse") if os.path.dirname(f) == kc_dir}
+            exposed = [n for n in exposed if n not in kc_names and n != "auth.json"]   # the password stays
         # no run whose model could read its harness's own login (of_server, message 01a20e67-96ff, withdrawing his yes
         # of 01a20e57-08f0: the outer sandbox lets every host through, and the withholding matches raw values only):
         # until the sandbox allows the network only to the harness's endpoints and the model cannot read the login,
@@ -1461,7 +1476,8 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
                                                     "ALL_PROXY", "all_proxy")})
                 env["NO_PROXY"] = env["no_proxy"] = ""
             with open(prof, "w") as fh:
-                fh.write(sandbox_profile(run_dir, reads, writes, parts, net_port=net_port))
+                fh.write(sandbox_profile(run_dir, reads, writes, parts, net_port=net_port,
+                                         read_only=parts[:3] if parts else ()))
             argv = ["/usr/bin/sandbox-exec", "-f", prof] + argv
         base_ev = {"run": rid, "phase": "started", "position": position, "session": session, "work": work,
                    "harness": harness, "model": model or DEFAULT_MODEL.get(harness), "kind": kind, "commit": head, "base": base,
@@ -1473,8 +1489,13 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
         started = time.time()
         held_kc = None
         try:
-            if proxy is not None and muse_protected()[0]:
-                # unlocked for this run alone, locked as it ends, whatever ends it (of_server, message 01a20e82-8a40)
+            if proxy is not None:
+                # asked again just before the start, and refused as the first check is (of_review on PR 661: a change
+                # between the two let Muse start with no hold); then unlocked for this run alone, locked as it ends,
+                # whatever ends it (of_server, message 01a20e82-8a40)
+                ok, why = muse_protected()
+                if not ok:
+                    raise SubagentError(f"muse's run could read its own login: {why}")
                 import of_keychain
                 held_kc = of_keychain.Held(muse_keychain(), muse_pw_file(),
                                            os.path.join(muse_login_dir(), "keychain.hold")).__enter__()

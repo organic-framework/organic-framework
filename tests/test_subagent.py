@@ -810,13 +810,54 @@ class SubagentTest(unittest.TestCase):
             self.publish()
         # the other limits are tested as if the login came another way; the login's own gate has its test
         real = kw.pop("real_login_gate", False)
-        with mock.patch.object(of_subagent, "login_readable",
-                               of_subagent.login_readable if real else (lambda *a: [])):
+        import contextlib
+        import of_keychain
+
+        class NoHold:   # no real keychain is touched in a test (2026-11-24: a locked one raised a dialog)
+            def __init__(self, *a):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *e):
+                return False
+        guards = contextlib.ExitStack()
+        if not real:   # Muse's keychain as protected, its hold a no-op; the real gate has its own tests
+            guards.enter_context(mock.patch.object(of_subagent, "muse_protected",
+                                                   kw.pop("protected", lambda: (True, "-"))))
+        guards.enter_context(mock.patch.object(of_keychain, "Held", NoHold))
+        with guards, mock.patch.object(of_subagent, "login_readable",
+                                       of_subagent.login_readable if real else (lambda *a: [])):
             got = of_subagent.run(harness, kind, self.prompt, "of_doer", session="S1", registry=kw.pop("registry", REG),
                                   org_root=self.org, conn=kw.pop("conn", self.conn), popen=fake,
                                   visibility=kw.pop("visibility", lambda r: False),
                                   log=lambda m: None, **kw)
         return got, fake.calls[-1] if fake.calls else None
+
+    def test_muse_starts_only_while_its_keychain_stays_protected_to_the_start(self):
+        """of_review on PR 661: the second check before the launch failed open, so a change between the two let Muse
+        start with no keychain hold and its login readable."""
+        answers = iter([(True, "-"), (False, "auth.json names another field")])
+        fake = Fake("muse")
+        with self.assertRaises(of_subagent.SubagentError) as e:
+            self.go("muse", fake=fake, protected=lambda: next(answers))
+        self.assertIn("auth.json names another field", str(e.exception))
+        self.assertEqual(fake.calls, [])                                  # Muse never started
+
+    def test_muses_sandbox_writes_none_of_the_material(self):
+        """of_review on PR 661: the run-part rules allowed writes to material/."""
+        t = tempfile.mkdtemp()
+        mat, home = os.path.join(t, "material"), os.path.join(t, "home")
+        os.makedirs(mat)
+        os.makedirs(home)
+        prof = of_subagent.sandbox_profile(t, run_parts=[mat, home], read_only=[mat])
+        write = [ln for ln in prof.splitlines() if ln.startswith("(allow file-write*") and "dev/null" not in ln][0]
+        read = [ln for ln in prof.splitlines() if ln.startswith("(allow file-read-data")][0]
+        self.assertIn(os.path.realpath(mat), read)
+        self.assertNotIn(os.path.realpath(mat), write)
+        self.assertIn(os.path.realpath(home), write)
+        shutil.rmtree(t)
 
     def test_confined_to_a_snapshot_of_tracked_files(self):
         got, call = self.go(diff="HEAD~1..HEAD")
