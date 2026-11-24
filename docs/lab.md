@@ -349,7 +349,7 @@ Every profile drops:
 
 **Models for lab runs.** The founder decided on 2026-11-05 and 06:
 - there is no separate lab API key;
-- lab personas use the founder's example account, headless and isolated: no user settings or hooks (`--setting-sources project`), no MCP servers, no saved session, a budget cap per run, and the run directory as the working directory;
+- lab personas run on an account the caller names in `OFLAB_CLAUDE_DIR` (one with room, from `of capacity status`; there is no default account and no separate lab API key), headless and isolated: no user settings or hooks (`--setting-sources project`), no MCP servers, no saved session, a budget cap per run, and the run directory as the working directory;
 - the account's credential never enters a lab VM. A persona acts on a VM only through a wrapper that runs commands there.
 
 The gateway below stays the design for when the Lab gets its own key.

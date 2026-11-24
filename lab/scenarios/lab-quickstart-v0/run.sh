@@ -13,9 +13,12 @@ mkdir -p "$RUN/bin"
 # isolation (docs/lab.md, section 9)
 unset SSH_AUTH_SOCK HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_SOCKET_PATH
 unset CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_PID CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_EXECPATH CLAUDE_CODE_SESSION_ATTENDED
-# The founder's example account (founder, 2026-11-06), used without touching its setup: no user
-# settings or hooks (--setting-sources project), no MCP servers, no saved session.
-export OF_AUTOMATION=1 GIT_CONFIG_GLOBAL=/dev/null CLAUDE_CONFIG_DIR="${OFLAB_CLAUDE_DIR:-$HOME/.claude-e}"
+# The persona's account: the caller names it in OFLAB_CLAUDE_DIR, picking one with room from `of capacity status`.
+# It is used without touching its setup: no user settings or hooks (--setting-sources project), no MCP servers, no
+# saved session. There is no default account (the founder's example account ~/.claude-e was removed, of_capacity
+# 2026-11-24); the run refuses without OFLAB_CLAUDE_DIR rather than pick one.
+: "${OFLAB_CLAUDE_DIR:?set OFLAB_CLAUDE_DIR to a logged-in account dir with room (see of capacity status); no default}"
+export OF_AUTOMATION=1 GIT_CONFIG_GLOBAL=/dev/null CLAUDE_CONFIG_DIR="$OFLAB_CLAUDE_DIR"
 
 # 1. a fresh machine for every seed
 limactl delete --force "$VM" >/dev/null 2>&1 || true
