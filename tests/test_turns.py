@@ -205,5 +205,21 @@ class TurnsTest(unittest.TestCase):
         got = list(of_turns.turns(bufs[0]))
         self.assertEqual([(x["starter"], x["responses"]) for x in got], [("relay", 2)])
 
+    def test_sessions_come_from_the_records_whatever_the_spend_view_holds(self):
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.executescript("""
+            CREATE TABLE transcript_record (session_id TEXT, timestamp TEXT, source_path TEXT);
+            CREATE INDEX transcript_session_ts ON transcript_record (session_id, timestamp);
+            CREATE TABLE view_spend_month (message_id TEXT PRIMARY KEY, session_id TEXT, epoch REAL);""")
+        conn.executemany("INSERT INTO transcript_record VALUES (?, ?, ?)",
+                         [("old", "2026-09-20T10:00:00Z", "/h/.claude/projects/w/old.jsonl"),     # before the view keeps
+                          ("s1", "2026-11-20T10:00:00Z", "/h/.claude/projects/w/s1.jsonl"),
+                          ("elsewhere", "2026-11-21T10:00:00Z", "/tmp/copy/elsewhere.jsonl")])   # not an account's
+        conn.execute("INSERT INTO view_spend_month VALUES ('m1', 's1', ?)", (of_turns._t("2026-11-20T10:00:00Z"),))
+        self.assertEqual(sorted(of_turns._sessions(conn, "", "~")), ["elsewhere", "old", "s1"])
+        self.assertEqual(sorted(of_turns._sessions(conn, "2026-11-01", "~")), ["elsewhere", "s1"])
+        self.assertEqual(of_turns._sessions(conn, "2026-09-01", "2026-10-01"), ["old"])
+
 if __name__ == "__main__":
     unittest.main()
