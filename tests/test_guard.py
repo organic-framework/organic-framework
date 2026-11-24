@@ -1056,6 +1056,10 @@ class LiveCheckoutTest(unittest.TestCase):
             self.assertFalse(self.deny(cmd), cmd)
         above = os.path.dirname(live)   # a deep literal above the checkout still counts
         self.assertTrue(self.deny(f"python3 -c \"import shutil; shutil.rmtree('{above}')\""))
+        for cmd in (f"python3 -c \"import os; os.open(str('{live}/bin/x.py'), os.O_WRONLY | os.O_CREAT)\"",
+                    f"cd {live}/bin && python3 -c \"open('stamp', 'x').write('1')\"",   # of_review on PR 629
+                    f"cd {live}/bin && python3 -c \"open('of_guard', 'w').write('1')\""):
+            self.assertTrue(self.deny(cmd), cmd)
         for top in ("~/.local", os.path.expanduser("~")):   # a removal's own argument at any depth (PR 629)
             self.assertTrue(self.deny(f"python3 -c \"import shutil, os; shutil.rmtree(os.path.expanduser('{top}'))\""), top)
 
