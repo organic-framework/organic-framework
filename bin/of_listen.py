@@ -166,8 +166,29 @@ class AsksProcessor(Processor):
     def snap_dir(self):
         return os.path.join(of_events.STATE_DIR, "asks-snapshots", self.version)
 
+    def _snaps_own(self):
+        """Whether the snapshot folders are this user's own real folders, or absent: neither asks-snapshots nor its
+        version folder may be a link or another's, since the listener deletes and writes there outside any sandbox
+        (of_review, PR 635: a link there pointed the start's deletion at any folder the user owns)."""
+        import stat
+        for p in (os.path.dirname(self.snap_dir()), self.snap_dir()):
+            try:
+                st = os.lstat(p)
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+                if not getattr(self, "_told_snaps", False):
+                    print(f"of listen: asks: {p} is no folder of this user's own (a link, a file or another's); "
+                          "no snapshot is read, written or deleted there", flush=True)
+                    self._told_snaps = True
+                return False
+        return True
+
     def _drop_snaps(self, keep=lambda m: False):
         """Delete the snapshot files whose mark KEEP refuses, and forget them."""
+        if not self._snaps_own():
+            self.snaps = []
+            return
         for m, path in self.snaps:
             if not keep(m):
                 try:
@@ -181,10 +202,20 @@ class AsksProcessor(Processor):
         from the checkpoint takes them up; the others are deleted."""
         d, keep, out = self.snap_dir(), _minus_s(upto, self.SNAP_KEEP_S), []
         base = os.path.dirname(d)
+        if not self._snaps_own():
+            self.snaps = []
+            return
+        import stat
         for v in os.listdir(base) if os.path.isdir(base) else []:   # another version's: cut from its own history
-            if v != self.version and not os.path.islink(os.path.join(base, v)):
+            p = os.path.join(base, v)
+            try:
+                st = os.lstat(p)
+            except OSError:
+                continue
+            # only a version's own folder: its name a version's, a real folder of this user, never a link
+            if v != self.version and re.fullmatch(r"\d+", v) and stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid():
                 import shutil
-                shutil.rmtree(os.path.join(base, v), ignore_errors=True)
+                shutil.rmtree(p, ignore_errors=True)
         for name in sorted(os.listdir(d)) if os.path.isdir(d) else []:
             path = os.path.join(d, name)
             mark = name[:-5].replace("_", ":") if name.endswith(".json") else ""
@@ -460,14 +491,15 @@ class AsksProcessor(Processor):
             k = bisect.bisect_left([r["ts"] or "" for r in self.held], self.mark)
             of_asks.project(self.held[:k], self.state)  # old enough: into the carried projection for good
             self.held = self.held[k:]
-        if self.mark and (not self.snaps or _minus_s(self.mark, self.SNAP_S) >= self.snaps[-1][0]):
+        if self.mark and (not self.snaps or _minus_s(self.mark, self.SNAP_S) >= self.snaps[-1][0]) and \
+                self._snaps_own():   # never into a link or another's folder: the view below is written all the same
             indexes = {k: v for k, v in of_asks.fold_meta(self.state, 0, "").items()
                        if k in ("open_by_session", "declared_turn", "waits_founder")}
             d = self.snap_dir()
             os.makedirs(d, mode=0o700, exist_ok=True)
             path = os.path.join(d, self.mark.replace(":", "_") + ".json")
             tmp = path + ".tmp"
-            with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+            with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600), "w") as fh:
                 json.dump({"asks": self.state["asks"], "indexes": indexes}, fh, ensure_ascii=False, default=str)
             os.replace(tmp, path)
             self.snaps.append((self.mark, path))
