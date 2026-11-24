@@ -360,6 +360,19 @@ class UnlistedRootTest(unittest.TestCase):
                          ("LS", {"path": k + "/kit_a"}), ("Glob", {"pattern": "**/id_*", "path": up})):
             self.assertEqual(self.fire("S8", tool, ti), "deny", (tool, ti))
             self.assertIsNone(self.fire("S7", tool, ti), (tool, ti))
+        for cmd in (f"echo {k}/*", f"printf '%s\\n' {k}/kit_a/*", f"for f in {k}/*; do echo $f; done",   # PR 649
+                    f"compgen -f {k}/", f"rg --files {k}", f"tar -cvf /tmp/x.tar {k}", f"rsync -n -r {k} /tmp/x",
+                    f"zip -r /tmp/x.zip {k}", f"git -C {k}/kit_a ls-files", f"echo {up}/**/id_*"):
+            self.assertEqual(self.fire("S8", "Bash", {"command": cmd}), "deny", cmd)
+            self.assertIsNone(self.fire("S7", "Bash", {"command": cmd}), cmd)
+        link = os.path.join(self.tmp.name, "to-kits")   # of_review on PR 649: a link, find's options, the code's folder
+        os.symlink(k, link)
+        for cmd in (f"ls {link}/kit_a", f"find -L {k} -name '*'", f"cd {k}/kit_a && python3 -c \"import os; print(os.listdir())\"",
+                    f"python3 -Ic \"import os; print(os.listdir('{k}/kit_a'))\"",
+                    f"cd {k}/kit_a && python3 -c \"import glob; print(glob.glob('*'))\""):
+            self.assertEqual(self.fire("S8", "Bash", {"command": cmd}), "deny", cmd)
+            self.assertEqual(self.fire("S4", "Bash", {"command": cmd}), "deny", cmd)
+            self.assertIsNone(self.fire("S7", "Bash", {"command": cmd}), cmd)
         for cmd in (f"ls {up}", f"{k}/kit_a/bin/kit-tool status"):   # the root's own name; the kit's program
             self.assertIsNone(self.fire("S8", "Bash", {"command": cmd}), cmd)
 
