@@ -840,7 +840,7 @@ class HandleTest(unittest.TestCase):
             with open(log) as fh:   # of_review, 2026-11-24: the failure leaves a record (it left none that day)
                 lines = fh.read().splitlines()
             self.assertEqual(len(lines), 1, argv)
-            self.assertIn("PreToolUse launcher ImportError: a module the hook needs is broken", lines[0], argv)
+            self.assertIn("PreToolUse ERROR launcher ImportError: a module the hook needs is broken", lines[0], argv)
         # an error whose text cannot be formed still denies (of_review on PR 627: str() raised SystemExit)
         with open(os.path.join(d, "of_hook.py"), "w") as fh:
             fh.write("class Odd(ImportError):\n    def __str__(self):\n        raise SystemExit(1)\n"
@@ -858,7 +858,7 @@ class HandleTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(d, "elsewhere")))
         for argv in (["of", "hook", "Stop"], ["of-hook", "Stop"]):
             r = subprocess.run([sys.executable, os.path.join(d, argv[0]), *argv[1:]], input="{}",
-                               capture_output=True, text=True, timeout=30)
+                               capture_output=True, text=True, timeout=30, env=env)
             self.assertNotEqual(r.returncode, 2, argv)   # another event keeps its old way
 
     def test_a_guard_reason_is_recorded_masked(self):
