@@ -48,6 +48,7 @@ if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "hook":
                 import stat as _st
                 import time as _t
                 d = os.environ.get("OF_STATE") or os.path.expanduser("~/.local/state/of")
+                os.makedirs(d, mode=0o700, exist_ok=True)   # a machine whose state folder is not made yet
                 fd = os.open(os.path.join(d, "hook-errors.log"), os.O_WRONLY | os.O_APPEND | os.O_CREAT
                              | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0), 0o600)
                 try:
@@ -55,13 +56,14 @@ if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "hook":
                     if not _st.S_ISREG(s.st_mode) or s.st_nlink > 1 or s.st_uid != os.getuid():
                         return
                     code_error = (NameError, ImportError, SyntaxError, AttributeError)
-                    said = f": {str(e)[:160]}" if isinstance(e, code_error) else ""
-                    os.write(fd, f"{_t.strftime('%Y-%m-%dT%H:%M:%SZ', _t.gmtime())} {event} launcher "
+                    said = str(e)[:160].replace(chr(10), " ").replace(chr(13), " ") if isinstance(e, code_error) else ""
+                    said = f": {said}" if said else ""
+                    os.write(fd, f"{_t.strftime('%Y-%m-%dT%H:%M:%SZ', _t.gmtime())} {event} ERROR launcher "
                                  f"{type(e).__name__}{said}\n".encode("utf-8", "replace"))
                 finally:
                     os.close(fd)
-            except BaseException:  # noqa: BLE001 - the record never stands in the way of the deny, its own text's failure included (of_review on PR 627)
-                pass
+            except BaseException:  # noqa: BLE001 - the record never stands in the way of the deny, the failure
+                pass                # of its own text included (of_review on PR 627)
         if sys.argv[2:3] == ["PreToolUse"]:
             sys.stderr.write(f"Organic Framework guard failed ({type(_e).__name__}), so the call is denied until the "
                              "guard is fixed. Do not retry it another way; tell of_server, which keeps the guard\n")
