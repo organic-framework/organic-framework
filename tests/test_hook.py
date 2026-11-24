@@ -831,13 +831,25 @@ class HandleTest(unittest.TestCase):
         env = dict(os.environ, OF_STATE=state)
         log = os.path.join(state, "hook-errors.log")
         for argv in (["of", "hook", "PreToolUse"], ["of-hook", "PreToolUse"]):
+            if os.path.exists(log):
+                os.unlink(log)   # each launcher's own record (of_review on PR 627: one line passed for both)
             r = subprocess.run([sys.executable, os.path.join(d, argv[0]), *argv[1:]], input="{}",
                                capture_output=True, text=True, timeout=30, env=env)
             self.assertEqual(r.returncode, 2, argv)
             self.assertIn("guard failed (ImportError)", r.stderr, argv)
             with open(log) as fh:   # of_review, 2026-11-24: the failure leaves a record (it left none that day)
-                last = fh.read().splitlines()[-1]
-            self.assertIn("PreToolUse launcher ImportError: a module the hook needs is broken", last, argv)
+                lines = fh.read().splitlines()
+            self.assertEqual(len(lines), 1, argv)
+            self.assertIn("PreToolUse launcher ImportError: a module the hook needs is broken", lines[0], argv)
+        # an error whose text cannot be formed still denies (of_review on PR 627: str() raised SystemExit)
+        with open(os.path.join(d, "of_hook.py"), "w") as fh:
+            fh.write("class Odd(ImportError):\n    def __str__(self):\n        raise SystemExit(1)\n"
+                     "raise Odd()\n")
+        for argv in (["of", "hook", "PreToolUse"], ["of-hook", "PreToolUse"]):
+            r = subprocess.run([sys.executable, os.path.join(d, argv[0]), *argv[1:]], input="{}",
+                               capture_output=True, text=True, timeout=30, env=env)
+            self.assertEqual(r.returncode, 2, argv)
+            self.assertIn("guard failed (Odd)", r.stderr, argv)
         os.unlink(log)
         os.symlink(os.path.join(d, "elsewhere"), log)   # a link in its place: followed nowhere, the deny still stands
         r = subprocess.run([sys.executable, os.path.join(d, "of-hook"), "PreToolUse"], input="{}",

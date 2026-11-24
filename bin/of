@@ -60,13 +60,15 @@ if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "hook":
                                  f"{type(e).__name__}{said}\n".encode("utf-8", "replace"))
                 finally:
                     os.close(fd)
-            except Exception:  # noqa: BLE001 - the record never stands in the way of the deny
+            except BaseException:  # noqa: BLE001 - the record never stands in the way of the deny, its own text's failure included (of_review on PR 627)
                 pass
-        _note_failure(_e, (sys.argv[2:3] or ["?"])[0])
         if sys.argv[2:3] == ["PreToolUse"]:
             sys.stderr.write(f"Organic Framework guard failed ({type(_e).__name__}), so the call is denied until the "
                              "guard is fixed. Do not retry it another way; tell of_server, which keeps the guard\n")
-            sys.exit(2)
+            sys.stderr.flush()
+            _note_failure(_e, "PreToolUse")   # after the deny is out: the record never stands in its way
+            os._exit(2)
+        _note_failure(_e, (sys.argv[2:3] or ["?"])[0])
         raise
     sys.exit(_code)
 
