@@ -711,6 +711,31 @@ class DiagnoseTest(unittest.TestCase):
         self.assertIn("only the owner", of_diagnose.may_label("keeper_k", dict(issue, affected=["keeper_k"]), "keeper_k"))
         self.assertIsNone(of_diagnose.may_label("owner", dict(issue, affected=["keeper_k"]), "keeper_k"))
 
+    def test_shared_doers_a_keeper_change_and_an_issue_naming_its_decider(self):
+        """of_review's notes on PR 630: each of a shared work's doers labels its issue; a label is judged by the keeper
+        of its own time; an issue routed to a position it names is the owner's to label, and says so."""
+        doers = {"affected": ["w1"], "decider": "doer", "decider_position": "alice, bob"}
+        self.assertIsNone(of_diagnose.may_label("alice", doers, "keeper_k"))
+        self.assertIsNone(of_diagnose.may_label("bob", doers, "keeper_k"))
+        self.assertIsNotNone(of_diagnose.may_label("carol", doers, "keeper_k"))
+        history = [(100.0, {"org": "old_k"}), (200.0, {"org": "new_k"})]
+        self.assertEqual([of_model.keeper_at("/x", "org", t, history) for t in (50, 150, 250)], [None, "old_k", "new_k"])
+        model = {"systems": {"org": {"kind": "creating", "keeper": "new_k"}}}
+        kf = of_diagnose.keeper_then(model, {"keeper_at": lambda sysid, t: of_model.keeper_at("/x", sysid, t, history)},
+                                     "new_k")
+        at = lambda t: {"ts": of_model.iso(t)}
+        self.assertEqual((kf(at(150)), kf(at(250)), kf(at(50))), ("old_k", "new_k", "new_k"))   # unknown: the keeper now
+        self.assertEqual(of_diagnose.keeper_then(model, None, "new_k")(at(150)), "new_k")         # no history given
+        i = {"issue_id": "x", "rule_version": "ap.r@0", "state": "open", "affected": ["p1"], "decider": "structure_keeper",
+             "decider_position": "new_k"}
+        lab = lambda by, t: {"by": by, "label": "false_positive", "rule_version": "ap.r@0", "ts": of_model.iso(t)}
+        self.assertEqual(of_diagnose.label_issue(dict(i), [lab("old_k", 150)], kf, 300)["state"], "dismissed")
+        self.assertEqual(of_diagnose.label_issue(dict(i), [lab("old_k", 250)], kf, 300)["state"], "open")
+        named = of_diagnose.label_issue(dict(i, affected=["new_k"]), [lab("new_k", 250)], kf, 300)
+        self.assertEqual(named["state"], "open")
+        self.assertIn("names new_k, the position it routes to", named["owner_labels_only"])
+        self.assertNotIn("owner_labels_only", of_diagnose.label_issue(dict(i), [], kf, 300))
+
     def test_a_label_older_than_the_rows_still_holds(self):
         """A label is the one stored part: read over all time, never only the window's rows (2026-11-24: the render
         read 9 days, and an issue of_architect dismissed on 2026-11-14 was open again in the inbox)."""

@@ -268,6 +268,41 @@ def keeper_since(repo, system, keeper):
     return since
 
 
+def keeper_history(repo):
+    """The registry's [(commit time, {system: keeper})] at HEAD (_registry_history), or None when unknown."""
+    repo = os.path.expanduser(repo)
+    try:
+        head = git_read(repo, "rev-parse", "HEAD", text=True, timeout=5, check=True).stdout.strip()
+        return _registry_history(repo, head)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def keeper_at(repo, system, t, history=None):
+    """The keeper of `system` in the registry's history at epoch t: the last revision committed at or before t; None
+    when unknown (no git history, a revision git cannot read, or t before the first revision). A label is judged by
+    the keeper of its own time, so a keeper change does not re-judge the labels written before it (of_review on
+    organic-framework PR 630). HISTORY: keeper_history's, read once by the caller."""
+    history = keeper_history(repo) if history is None else history
+    out = None
+    for ct, keepers in history or ():
+        if ct > t:
+            break
+        out = keepers.get(system)
+    return out
+
+
+def keeper_reader(repo):
+    """fn(system, t) -> keeper_at, with the registry's history read once, on the first call: a diagnose's keeper_at."""
+    memo = {}
+
+    def at(system, t):
+        if "h" not in memo:
+            memo["h"] = keeper_history(repo) or []
+        return keeper_at(repo, system, t, memo["h"])
+    return at
+
+
 # ------------------------------------------------------------------ globs (same rule as `of registry check`)
 
 def _class_regex(body):
