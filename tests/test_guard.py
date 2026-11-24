@@ -1075,10 +1075,14 @@ class LiveCheckoutTest(unittest.TestCase):
                     f"python3 <<'EOF'\nimport os\nos.open('{live}/bin/x.py',  # )\n        os.O_WRONLY | os.O_CREAT)\nEOF",
                     f"cd {live}/bin && python3 -c \"import os; os.symlink('/tmp/source', 'stamp')\"",
                     f"cd {live}/bin && python3 -c \"import os; os.link('/tmp/source', 'stamp')\"",
-                    f"cd {live}/bin && python3 -c \"import os, shutil; shutil.copyfile(os.path.join('/tmp', 'source'), 'stamp')\""):
+                    f"cd {live}/bin && python3 -c \"import os, shutil; shutil.copyfile(os.path.join('/tmp', 'source'), 'stamp')\"",
+                    f"cd {live}/bin && python3 <<'EOF'\nimport os, shutil\nshutil.copyfile(os.path.join('/tmp', 'source'), \"team's\")\nEOF",
+                    f"cd {live}/bin && python3 <<'EOF'\nimport os, shutil\nshutil.copyfile(os.path.join('/tmp', 'source\\\\'), 'stamp')\nEOF"):
             self.assertTrue(self.deny(cmd), cmd)
         self.assertFalse(self.deny(f"cd {live}/bin && python3 -c \"import pathlib; pathlib.Path('/tmp/q').open('w')\""))
         self.assertFalse(self.deny(f"python3 -c \"import os; os.open('{live}/bin/of', os.O_RDONLY); print(os.O_CREAT)\""))
+        self.assertFalse(self.deny(f"python3 <<'EOF'\nimport os\nos.open('{live}/bin/of',  # not O_CREAT\n        os.O_RDONLY)\nEOF"))
+        self.assertFalse(self.deny(f"cd {live}/bin && python3 -c \"s = 'a'; print(s.replace('a', 'stamp'))\""))
         self.assertFalse(self.deny(f"cd {live} && ssh h python3 <<'EOF'\nopen('bin/x.py', 'w').write('')\nEOF"))
         for cmd in ("ln -s /tmp/mine ~/Library/LaunchAgents/dev.organic-framework.checkout-update.plist.new",
                     "ln -s /tmp/mine ~/.local/bin/of.new"):   # a writer's temporary name (of_review on PR 628)
