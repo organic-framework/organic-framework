@@ -995,6 +995,69 @@ class GuardBashTest(unittest.TestCase):
 
 
 
+class LiveCheckoutTest(unittest.TestCase):
+    """G40 (2026-11-24, of_platform's hand-over cb134c52 after the laptop's guard outage): OF's live checkout, which the
+    hooks, the units and `of` run from, takes no agent's write, move, link or removal; the working copy keeps its."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        home = self.tmp.name
+        self.live = os.path.join(home, ".local/share/of/live")
+        self.dev = os.path.join(home, "organic-framework")
+        for d in (os.path.join(self.live, "bin"), os.path.join(self.dev, "bin"), os.path.join(home, ".local/bin")):
+            os.makedirs(d)
+        from unittest import mock
+        self.patch = mock.patch.dict(os.environ, {"HOME": home})
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+        self.tmp.cleanup()
+
+    def deny(self, cmd, cwd="/tmp"):
+        got = of_guard.critical_deny("Bash", {"command": cmd}, cwd)
+        return bool(got and "live checkout" in got[0])
+
+    def test_the_constant_is_of_lives(self):
+        import of_live
+        self.assertEqual(of_guard.LIVE_DIR, "~/.local/share/of/live")
+        self.assertEqual(os.path.expanduser(of_guard.LIVE_DIR), of_live.LIVE if os.path.isabs(of_live.LIVE)
+                         else os.path.expanduser(of_live.LIVE))
+
+    def test_writes_moves_links_and_removals_are_denied(self):
+        for cmd in ("echo x > ~/.local/share/of/live/bin/of_hook.py",
+                    "cp /tmp/a ~/.local/share/of/live/bin/of_hook.py",
+                    "mv /tmp/a ~/.local/share/of/live/bin/x",
+                    "ln -sf /tmp/a ~/.local/share/of/live/bin/of",
+                    "rm -rf ~/.local/share/of/live",
+                    "rm -rf ~/.local/share/of",
+                    "cp -R /tmp/tree ~/.local/share/of",
+                    "git -C ~/.local/share/of/live checkout -- bin/of_hook.py",
+                    "sed -i '' s/a/b/ ~/.local/share/of/live/bin/of_guard.py"):
+            self.assertTrue(self.deny(cmd), cmd)
+        got = of_guard.critical_deny("Write", {"file_path": os.path.join(self.live, "bin/of_hook.py"), "content": "x"},
+                                     "/tmp")
+        self.assertTrue(got and "live checkout" in got[0])
+
+    def test_reads_and_the_working_copy_pass(self):
+        for cmd in ("cat ~/.local/share/of/live/bin/of_hook.py", "git -C ~/.local/share/of/live log -1",
+                    "echo x > ~/organic-framework/bin/x", "git -C ~/organic-framework checkout -- bin/x"):
+            self.assertFalse(self.deny(cmd), cmd)
+        self.assertIsNone(of_guard.critical_deny("Write", {"file_path": os.path.join(self.dev, "bin/x"),
+                                                           "content": "x"}, "/tmp"))
+
+    def test_the_checkout_the_of_link_leads_to_counts_unless_it_is_the_working_copy(self):
+        link = os.path.expanduser("~/.local/bin/of")
+        os.symlink(os.path.join(self.dev, "bin/of"), link)         # before `of live switch`: the working copy
+        self.assertFalse(self.deny("echo x > ~/organic-framework/bin/x"))
+        os.unlink(link)
+        other = os.path.join(self.tmp.name, "of-other")
+        os.makedirs(os.path.join(other, "bin"))
+        os.symlink(os.path.join(other, "bin/of"), link)            # another checkout the units run from
+        self.assertTrue(self.deny(f"echo x > {other}/bin/x"))
+
+
 class NoWaitTest(unittest.TestCase):
     """of_server, 2026-11-23: the files the guard reads for a command are read only when regular, without waiting."""
 
