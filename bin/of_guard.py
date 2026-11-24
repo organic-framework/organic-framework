@@ -1796,10 +1796,16 @@ def _split(text, ops=None):
     """[pipelines]; each pipeline is a list of stages; a stage is ('cmd', raw) or ('sub', inner raw). Splits on
     ; && || & newline and top-level ( ); a single '|' (not '||') keeps the pipeline. Quotes are honored. Given a list
     OPS, appends the separator before each pipeline to it: None for the first, else ';', '\n', '&', '&&' or '||' (a
-    newline right after && or || continues that list, as bash reads it; G27)."""
+    newline right after && or || continues that list, as bash reads it; G27).
+    A `#` at a word's start outside quotes starts a comment to the end of its line, as bash reads it and as
+    _strip_comments (G0.7) reads it for the tokens, so an apostrophe in a comment opens no quote here (G-parse: a
+    comment holding an apostrophe, then a single-quoted text holding a pipe, read as one unclosed quote; hand-over
+    6f336a7c). A heredoc's body is read as before: no comment is cut there."""
     pipes, pipe, buf, i, n = [], [], [], 0, len(text)
     single = double = False
     pending = [None]
+    start = True              # at a word's start, outside quotes: where a `#` begins a comment
+    here_line, here_body = [], []   # the heredoc words of this line, and those whose bodies are being read
 
     def flush_cmd():
         s = "".join(buf).strip()
@@ -1820,6 +1826,12 @@ def _split(text, ops=None):
 
     while i < n:
         c = text[i]
+        if here_body and (i == 0 or text[i - 1] == "\n") and not single and not double:
+            end = text.find("\n", i)
+            line = text[i:] if end < 0 else text[i:end]
+            word, dash = here_body[0]
+            if (line.lstrip("\t") if dash else line) == word:
+                here_body.pop(0)   # the body's last line: what follows is commands again
         if single:
             buf.append(c)
             single = c != "'"
@@ -1832,17 +1844,30 @@ def _split(text, ops=None):
                 buf.append(c)
                 double = c != '"'
                 i += 1
+        elif c == "#" and start and not here_body:
+            j = text.find("\n", i)
+            i = n if j < 0 else j   # a comment: to the end of its line (the newline still ends the command)
         elif c == "\\":
             buf.append(text[i:i + 2])
             i += 2
+            start = False
+        elif c == "<" and text[i:i + 2] == "<<" and text[i:i + 3] != "<<<":
+            m = re.match(r"<<(-?)[ \t]*(\\?)(['\"]?)([^\s;&|<>()'\"]+)\3", text[i:])
+            if m:   # a heredoc: its body starts at the next line
+                here_line.append((m.group(4), bool(m.group(1))))
+            buf.append(c)
+            i += 1
+            start = False
         elif c == "'":
             single = True
             buf.append(c)
             i += 1
+            start = False   # the quote is in the word: a `#` right after it is the word's, as in `'x'#y`
         elif c == '"':
             double = True
             buf.append(c)
             i += 1
+            start = False
         elif c == "(" or (c == "{" and not "".join(buf).strip() and text[i + 1:i + 2] in (" ", "\t", "\n")):
             # a ( ) subshell or a { } group at command position: one pipeline stage, so `( … ) | ssh` and
             # `{ …; } | ssh` pipe the group's output on (it does not reach the agent)
@@ -1859,6 +1884,10 @@ def _split(text, ops=None):
                     d2 = cc != '"'
                 elif cc == "\\":
                     j += 2
+                    continue
+                elif cc == "#" and text[j - 1] in " \t\r\n;&|()":   # `{` is a word's, as in `${#x}`
+                    k = text.find("\n", j)   # a comment inside the group: no quote opens in it
+                    j = n if k < 0 else k
                     continue
                 elif cc == "'":
                     s2 = True
@@ -1880,6 +1909,7 @@ def _split(text, ops=None):
             flush_cmd()
             pipe.append(("sub", text[i + 1:j - 1]))
             i = j
+            start = False
         elif c == "|":
             if "".join(buf).endswith(">") and _redirect_before_amp("".join(buf)):  # `>|`: noclobber's override
                 buf.append(c)
@@ -1887,13 +1917,16 @@ def _split(text, ops=None):
             elif text[i:i + 2] == "||":
                 flush_pipe("||")
                 i += 2
+                start = True
             else:
                 flush_cmd()
                 i += 2 if text[i:i + 2] == "|&" else 1
+                start = True
         elif c == "&":
             if text[i:i + 2] == "&&":
                 flush_pipe("&&")
                 i += 2
+                start = True
             elif _redirect_before_amp("".join(buf)):  # >& or <& redirect, not a separator (`0<&0`; an escaped
                 # `\<` is a word, and `echo a\< & cmd` runs cmd: of_review and of_secrets-review on PR 332)
                 buf.append(c)
@@ -1901,12 +1934,18 @@ def _split(text, ops=None):
             else:
                 flush_pipe("&")
                 i += 1
+                start = True
         elif c in ";\n":
             flush_pipe(c)
             i += 1
+            start = True
+            if c == "\n" and here_line:
+                here_body.extend(here_line)
+                here_line.clear()
         else:
             buf.append(c)
             i += 1
+            start = c in " \t\r"
     flush_pipe()
     return pipes
 

@@ -324,6 +324,36 @@ class CommentTest(unittest.TestCase):
         self.assertEqual(of_guard._tokens("echo a#b c # d"), ["echo", "a#b", "c"])
 
 
+class SplitCommentTest(unittest.TestCase):
+    """G-parse (hand-over 6f336a7c; a user organization's structure keeper, message 01a20975-02e4): _split read an
+    apostrophe in a comment as a quote's opening, so a later single-quoted text holding a pipe was one unclosed quote
+    and _bash_deny raised "No closing quotation" on a command bash reads whole."""
+
+    def test_a_comment_opens_no_quote(self):
+        repro = "# don't change this\necho 'a|b'"
+        self.assertEqual(of_guard._split(repro), [[("cmd", "echo 'a|b'")]])
+        self.assertIsNone(of_guard._bash_deny(repro))
+        self.assertIsNone(of_guard.critical_deny("Bash", {"command": repro}))
+        # a comment inside a group, and one after a pipe
+        self.assertEqual(of_guard._split("( # it's\n echo 'a|b' ) | cat")[0][1], ("cmd", "cat"))
+        self.assertEqual(of_guard._split("ls # it's fine | x"), [[("cmd", "ls")]])
+        self.assertEqual(of_guard._split("( echo ${#x} 'a|b' ) | cat")[0][0], ("sub", " echo ${#x} 'a|b' "))
+        # still a deny when the denied read comes after such a comment
+        key = "~/.ssh/" + "id_" + "rsa"
+        self.assertTrue(of_guard.critical_deny("Bash", {"command": "# don't\ncat " + key}))
+
+    def test_what_is_no_comment_stays(self):
+        for text in ("cat a#b", "echo $#", "echo ${#x}", "echo '#x' \"#y\"", "a\\|#b", "echo 'x'#y", 'echo "x"#y'):
+            with self.subTest(text=text):
+                self.assertEqual(of_guard._split(text), [[("cmd", text)]])
+
+    def test_a_heredoc_body_is_read_as_before(self):
+        self.assertEqual(of_guard._split("cat <<EOF\n# kept body\nEOF\necho done"),
+                         [[("cmd", "cat <<EOF")], [("cmd", "# kept body")], [("cmd", "EOF")], [("cmd", "echo done")]])
+        self.assertEqual(of_guard._split("cat <<-'E'\n\t# body\n\tE\n# it's a comment\necho z"),
+                         [[("cmd", "cat <<-'E'")], [("cmd", "# body")], [("cmd", "E")], [("cmd", "echo z")]])
+
+
 class FixtureTokensTest(unittest.TestCase):
     """G1.2 (a user organization's security keeper through of_capacity, msg 01a1ef27-a8ad, 2026-11-18): a test fixture
     listing tokens refused every outside run on its repository."""
