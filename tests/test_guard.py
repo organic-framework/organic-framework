@@ -1312,6 +1312,21 @@ class UserSiteTest(unittest.TestCase):
                     f"{py} -m pip install --user --break-system-packages --dry-run x",
                     "python3 -m venv /tmp/v2 && /tmp/v2/bin/pip install x"):
             self.assertFalse(self.deny(cmd), cmd)
+        conf = os.path.join(venv, "pip.conf")   # a venv's own config can send its pip into the box
+        with open(conf, "w") as fh:
+            fh.write(f"[install]\ntarget = {u}\n")
+        for cmd in (f"{venv}/bin/python3 -m pip install x", f"{py} -m pip --log /tmp/l install --target {u} x",
+                    f"{py} -m pip install --target /tmp/a --target {u} x", "uv -q pip install --system x",
+                    f"git -C {u} restore ."):
+            self.assertTrue(self.deny(cmd), cmd)
+        os.unlink(conf)
+        self.assertFalse(self.deny(f"git -C {u} status"))
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"PIP_BREAK_SYSTEM_PACKAGES": "1"}):   # as a CI runner's environment has it
+            self.assertFalse(self.deny("python3 -m venv /tmp/v2 && /tmp/v2/bin/pip install x"))
+        for cmd in ("python3 -m pip config set global.break-system-packages true", "echo x > ~/.config/pip/pip.conf"):
+            self.assertTrue(self.deny(cmd), cmd)
+        self.assertFalse(self.deny("python3 -c \"import os  # O_CREAT named in a comment\nprint(open('/tmp/x').read())\""))
         if of_guard._kept_interpreter(_sys.executable, of_guard._user_site_box()):
             for cmd in (f"{py} -m pip install --user --break-system-packages /tmp/pkg",
                         f"PIP_BREAK_SYSTEM_PACKAGES=1 {py} -m pip install /tmp/pkg", f"{py} -Im ensurepip --user"):

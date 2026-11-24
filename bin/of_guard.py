@@ -1347,8 +1347,8 @@ def _code_deny(code, lang=None):
     if live:
         return LIVE_DENY, live
     usite = next((l for l in lits if not re.search(r"\s", l.strip()) and l.strip().lstrip("<>+|& ")
-                  and (l.strip().lstrip("<>+|& ").startswith(("/", "~", "$")) or _DENY_CWD[0])
-                  and _in_folders(l.strip().lstrip("<>+|& "), _user_site_box(), _DENY_CWD[0], gone)), None) \
+                  and (l.strip().lstrip("<>+|& ").startswith(("/", "~", "$")) or _rel_path_lit(l.strip().lstrip("<>+|& ")))
+                  and _in_folders(l.strip().lstrip("<>+|& "), _user_site_box(), _DENY_CWD[0], gone, gone and _deep_lit(l.strip().lstrip("<>+|& ")))), None) \
         if _CODE_WRITE.search(code) else None   # G42 in code
     if not usite and _CODE_WRITE.search(code):   # the folder computed in code (of_review on PR 631), by its call
         m = _CODE_SITE.search(bare)              # outside the strings: a document that names it is text
@@ -5252,8 +5252,10 @@ def _live_git(args, cwd, env, shvars):
 # a changed package there runs in every hook of every session before the guard decides. Denied from the start: no
 # session's command writes it by name (`pip install --user` writes it as pip, which the guard does not read as a path).
 USER_SITE_DENY = ("the Python user site, code every hook runs before the guard decides (a .pth, a sitecustomize, a "
-                  "package there; docs/guard.md G42): install or change it in a plain terminal, never from a session")
+                  "package there, or pip's config that sends installs there; docs/guard.md G42): install or change it "
+                  "in a plain terminal, never from a session")
 USER_SITE_GLOBS = ("~/Library/Python/*/lib/python/site-packages", "~/.local/lib/python*/site-packages")
+PIP_CONFIGS = ("~/.config/pip/pip.conf", "~/.pip/pip.conf", "~/Library/Application Support/pip/pip.conf")
 
 
 _USER_SITE_CACHE = {}   # one finding per guard call (critical_deny clears it), keyed by the home it was found under
@@ -5295,6 +5297,8 @@ def _user_site_find():
         pass
     for pat in USER_SITE_GLOBS:
         out |= {os.path.realpath(p) for p in _glob.glob(_expanduser(pat))}
+    for f in PIP_CONFIGS:   # pip's own config files: a line there breaks PEP 668 or sends every install into the box
+        out.add(os.path.realpath(_expanduser(f)))
     return {p.casefold() for p in out}
 
 
@@ -5322,14 +5326,34 @@ _PIP_TARGETS = ("--target", "--prefix", "--root")
 _PIP_BREAKS = re.compile(r"(?im)^\s*break[-_]system[-_]packages\s*[=:]\s*(?:1|true|yes|on)\s*$")
 
 
+_PIP_SUBS = {"install", "download", "uninstall", "freeze", "inspect", "list", "show", "check", "config", "search",
+             "cache", "index", "wheel", "hash", "completion", "debug", "help", "sync", "compile", "tree"}
+_PIP_TARGET_CONF = re.compile(r"(?im)^\s*(?:target|prefix|root)\s*[=:]\s*(\S[^\n]*?)\s*$")
+
+
+def _pip_config_target(env):
+    """A target, prefix or root a pip config file sets (any section), else None: it sends a venv's pip there too."""
+    for f in (env.get("PIP_CONFIG_FILE") or os.environ.get("PIP_CONFIG_FILE") or "", "~/.config/pip/pip.conf",
+              "~/.pip/pip.conf", "~/Library/Application Support/pip/pip.conf", "/etc/pip.conf", "/etc/xdg/pip/pip.conf",
+              "/Library/Application Support/pip/pip.conf"):
+        m = _PIP_TARGET_CONF.search(_read_small(_expanduser(f)) or "") if f else None
+        if m:
+            return _expanduser(m.group(1).strip("'\""))
+    return None
+
+
 def _pip_call(head, args):
     """(kind, the words after pip) for a pip, a python -m pip or -m ensurepip, a uv pip or an easy_install, else None."""
     if _PIP_HEAD.match(head):
         return "pip", list(args)
     if head.startswith("easy_install"):
         return "pip", ["install"] + list(args)
-    if head == "uv" and args[:1] == ["pip"]:
-        return "uv", list(args[1:])
+    if head == "uv" and "pip" in args:   # past uv's global options and their values (`uv -q pip`, `uv --directory d pip`)
+        k = args.index("pip")
+        before = args[:k]
+        if all(a.startswith("-") or (j and before[j - 1].startswith("--") and "=" not in before[j - 1])
+               for j, a in enumerate(before)):
+            return "uv", list(args[k + 1:])
     if head.startswith("python"):
         kind, val, rest = _py_walk(list(args))   # python's own reading: `-Im pip`, `-mpip`, `-I -m pip`
         if kind == "module" and val == "pip":
@@ -5428,18 +5452,31 @@ def _pip_target(head, args, stext, cwd, env, shvars=None):
     if not call:
         return None
     kind, rest = call
-    sub = next((a for a in rest if not a.startswith("-")), None)
+    sub = next((a for a in rest if a in _PIP_SUBS), None)   # `pip --log /tmp/l install`: a value is no subcommand
+    if sub == "config" and any(w in ("set", "edit") for w in rest) and \
+            (any(re.search(r"(?i)break[-_]system[-_]packages|\.(?:target|prefix|root|user)\b", w) for w in rest)
+             or "edit" in rest):
+        return "pip config " + " ".join(w for w in rest if not w.startswith("-"))[:60], True
     if sub not in ("install", "uninstall", "sync") or "--dry-run" in rest:
         return None   # list, show, freeze, download, wheel, a dry run, ...: pip writes nothing the hooks run
     box = _user_site_box()
     env = dict(env or {})
-    for i, a in enumerate(rest):   # an explicit folder decides: in a kept one (or above one), or outside them all
+    given = []   # every explicit folder: one in a kept folder (or above one) is denied, whichever pip takes
+    for i, a in enumerate(rest):
         for opt in _PIP_TARGETS + ("-t",):
             val = rest[i + 1] if a == opt and i + 1 < len(rest) else \
                 a.split("=", 1)[1] if a.startswith(opt + "=") else \
                 a[2:] if opt == "-t" and a.startswith("-t") and len(a) > 2 and not a.startswith("--") else None
             if val:
-                return (val, True) if _in_folders(_expand_vars(val, env), box, cwd, removal=True) else None
+                given.append(val)
+    hit = next((v for v in given if _in_folders(_expand_vars(v, env), box, cwd, removal=True)), None)
+    if hit:
+        return hit, True
+    conf = _pip_config_target(env)
+    if conf and _in_folders(conf, box, cwd, removal=True):
+        return f"a pip config's target {conf}", True
+    if given:
+        return None
     for var in ("PIP_TARGET", "PIP_PREFIX"):
         val = env.get(var) or os.environ.get(var)
         if val and _in_folders(val, box, cwd, removal=True):
@@ -5466,13 +5503,19 @@ def _pip_target(head, args, stext, cwd, env, shvars=None):
         found = _found(prog, env)
         if not found:
             return None   # no such program here: the shell runs nothing
-        if _in_venv(found):
+        if _in_venv(found):   # a venv's own pip.conf may send it elsewhere (Codex's pass on PR 631)
+            m = _PIP_TARGET_CONF.search(_read_small(os.path.join(os.path.dirname(os.path.dirname(found)), "pip.conf"))
+                                        or "")
+            if m and _in_folders(_expanduser(m.group(1).strip("'\"")), box, cwd, removal=True):
+                return f"the venv's pip.conf target {m.group(1)}", True
             return None
         interp = found if head.startswith("python") else _script_interpreter(found)
     if not interp:
         # one that does not exist yet, as a venv the line makes (`python3 -m venv $V && $V/bin/pip install …`), or
         # whose first line names none: it counts when the line asks for what no venv needs
-        return (("--user" if user else prog), True) if user or _pip_breaks(rest, env, None) else None
+        line_breaks = "--break-system-packages" in rest or str(env.get("PIP_BREAK_SYSTEM_PACKAGES") or "").lower() in \
+            ("1", "true", "yes", "on")
+        return (("--user" if user else prog), True) if user or line_breaks else None
     if _in_venv(interp):
         return None
     if _kept_interpreter(interp, box):   # the hooks' own: denied when pip would write it
