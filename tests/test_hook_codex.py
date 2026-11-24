@@ -198,6 +198,22 @@ class ThirdReview(unittest.TestCase):
         script = "apply_patch <<'EOF'\n" + patch("*** Update File: " + ENV, "@@", "-a", "+b") + "\nEOF"
         self.assertIn("deny", fire("Bash", {"command": ["bash", "-lc", script]}))
 
+    def test_a_second_patch_with_an_indented_marker_after_a_readable_one_is_unreadable(self):
+        """of_secrets-review on PR 475: the first patch's body was cut and checked, the second's files never were."""
+        first = patch("*** Update File: notes.txt", "@@", "-a", "+b")
+        script = ("apply_patch <<'EOF'\n" + first + "\nEOF\napply_patch <<'EOF'\n  *** Begin Patch\n*** Update File: "
+                  + ENV + "\n@@\n-a\n+b\n*** End Patch\nEOF")
+        out = fire("Bash", {"command": script})
+        self.assertIn("deny", out)
+        self.assertIn("cannot be read", out)
+
+    def test_two_readable_patches_are_both_judged(self):
+        script = ("apply_patch <<'EOF'\n" + patch("*** Update File: notes.txt", "@@", "-a", "+b") + "\nEOF\n"
+                  "apply_patch <<'EOF'\n" + patch("*** Update File: " + ENV, "@@", "-a", "+b") + "\nEOF")
+        out = fire("Bash", {"command": script})
+        self.assertIn("deny", out)
+        self.assertNotIn("cannot be read", out)
+
     def test_a_patch_whose_begin_marker_is_indented_is_unreadable(self):
         script = "apply_patch <<'EOF'\n  *** Begin Patch\n*** Update File: " + ENV + "\n@@\n-a\n+b\n*** End Patch\nEOF"
         out = fire("Bash", {"command": script})

@@ -1321,7 +1321,10 @@ def codex_calls(hook):
         re.search(r"(?m)^\s*\*\*\*\s*Begin Patch\s*$", text)
     if tool == "apply_patch" or shell_patch:
         bodies = _PATCH_BODY.findall(text) if tool != "apply_patch" else [text]
-        if not bodies:   # a patch found whose body cannot be cut (its begin marker not at column 0): one deny
+        # every begin marker, indented or not, must open a body cut here, or that patch's files go unchecked: a
+        # command with one patch at column 0 and a second whose marker is indented (of_secrets-review on PR 475)
+        markers = len(re.findall(r"(?m)^\s*\*\*\*\s*Begin Patch\s*$", text)) if tool != "apply_patch" else 1
+        if not bodies or markers > len(bodies):
             return [{"deny": PATCH_UNREADABLE, "subject": "a begin marker not at the line's start"}]
         try:
             for body in bodies:
