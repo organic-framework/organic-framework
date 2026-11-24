@@ -2621,7 +2621,7 @@ def _spawn_codex(args, p, positions, roots):
         subagents = False
     try:
         import of_subagent   # the organization's Codex model and effort (subagent_harnesses.codex), never its Claude one
-        codex_model, codex_effort = of_subagent.chosen(registry_docs().get(p["_org"]), "codex")
+        codex_model, codex_effort = of_subagent.chosen(registry_docs().get(p["_org"]), "codex", defaults=False)
         pl = of_spawn.codex_plan(p, positions, live_agents(), bind, p.get("_systems") or {}, _org_paths().get(p["_org"]),
                                  roots.get(p["_org"], ""), want_workspace, seat=args.config_dir, cwd=args.cwd,
                                  model=args.model or codex_model, deny=deny, subagents=subagents,
@@ -3465,7 +3465,7 @@ def cmd_resume_command(args):
     import of_spawn
     if p and of_spawn.harness_of(p) == "codex":   # a Codex position's session (hand-over 9ee1db9f, W4)
         import of_subagent
-        codex_model, codex_effort = of_subagent.chosen(registry_docs().get(p.get("_org")), "codex")
+        codex_model, codex_effort = of_subagent.chosen(registry_docs().get(p.get("_org")), "codex", defaults=False)
         line = of_resume.codex_command(args.session, p, model=codex_model, effort=codex_effort, deny=deny)
         if not line:
             return 1
