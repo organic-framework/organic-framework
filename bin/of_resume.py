@@ -74,6 +74,11 @@ def codex_command(sid, position, cwd=None, homes=None, model=None, deny=None, pr
     home = codex_home_of(sid, homes)
     if not home:
         return None
+    if not of_spawn.codex_seat_private_ok(home):   # as at a start: no private start context into an unread seat
+        return None
+    ok, _ = of_spawn.codex_requirements_ok()
+    if not ok:   # no resume where OF's hooks are not forced
+        return None
     cwd = cwd or os.getcwd()
     org = (position or {}).get("_org")
     if org and of_spawn.in_position_folder(cwd, org):
