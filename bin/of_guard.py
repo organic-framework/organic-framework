@@ -1033,7 +1033,7 @@ def connector_deny(tool, excluded):
 _CODE_REMOVES = re.compile(r"\bos\.(?:unlink|remove|removedirs|rmdir|rename|renames|replace|symlink|link)\s*\(|"
                            r"\bshutil\.(?:rmtree|move)\s*\(|\.(?:unlink|rmdir|symlink_to|hardlink_to)\s*\(|"
                            r"\bFile\.(?:delete|unlink|symlink|rename)|\bunlink\s*\(|\bFileUtils\.(?:rm|ln|mv)")
-_CODE_WRITE = re.compile(r"""\.open\s*\(\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|\bos\.open\s*\([^)]*\bO_(?:WRONLY|RDWR|CREAT|TRUNC|APPEND)\b|"""
+_CODE_WRITE = re.compile(r"""\.open\s*\(\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|\bos\.open\s*\((?:[^()]|\([^()]*\))*\bO_(?:WRONLY|RDWR|CREAT|TRUNC|APPEND)\b|"""
                          r"""open\s*\(.*?,\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|open\s*\([^,]*,\s*['"]\s*\+?>|\bmode\s*=\s*['"][rbt]*[wax+]|write_text|"""
                          r"""write_bytes|(?<!sys\.stdout)(?<!sys\.stderr)\.write\s*\(|\bdump\s*\(|"""
                          r"""os\.(?:replace|rename|remove|unlink|truncate)|"""
@@ -1104,8 +1104,9 @@ def _code_deny(code, lang=None):
     # a removal call's own argument counts a folder above a kept one at any depth (`rmtree('~/.local')`, the home:
     # of_secrets-review on PR 629); any other literal only when it lies deep enough (_deep_lit)
     gone_args = {m.group(2) for m in _REMOVAL_ARG.finditer(code)} if gone else set()
+    opened = {m.group(2) for m in _OPENED_ARG.finditer(code)}
     live = next((l for l in lits if not re.search(r"\s", l.strip()) and l.strip().lstrip("<>+|& ")
-                 and (l.strip().lstrip("<>+|& ").startswith(("/", "~", "$")) or _rel_path_lit(l.strip().lstrip("<>+|& ")))
+                 and (l.strip().lstrip("<>+|& ").startswith(("/", "~", "$")) or _rel_path_lit(l.strip().lstrip("<>+|& "), opened))
                  and _in_live(l.strip().lstrip("<>+|& "), _live_box(), _DENY_CWD[0], gone, gone and (l.strip().lstrip("<>+|& ") in gone_args or _deep_lit(l.strip().lstrip("<>+|& "))))), None) \
         if _CODE_WRITE.search(code) else None   # G40 in code: a write into OF's live checkout (PR 629's review)
     if live:
@@ -4889,6 +4890,8 @@ def _live_box_real():
     return sorted(out)
 
 
+_OPENED_ARG = re.compile(r"\b(?:open|Path|write_text|write_bytes|touch|copy\w*|move|rename|replace)\s*\(\s*"
+                         r"(?:[^'\"()]*,\s*)?(['\"])([^'\"\n]+)\1")
 _REMOVAL_ARG = re.compile(r"\b(?:rmtree|remove|removedirs|rmdir|unlink|rename|renames|replace|move|delete)\s*\(\s*"
                           r"(?:(?:os\.path\.)?(?:expanduser|abspath|realpath|expandvars)\s*\(\s*|Path\s*\(\s*)*"
                           r"(['\"])([^'\"\n]+)\1")
@@ -4906,13 +4909,14 @@ def _deep_lit(lit):
     return rel.count("/") >= 1
 
 
-def _rel_path_lit(lit):
-    """Is LIT, a relative literal in code, read as a path in the line's folder: one with a folder or a dot in it, or a
-    name that is there? A mode ('w'), an encoding or a word is none (of_review's note on PR 629)."""
+def _rel_path_lit(lit, opened=()):
+    """Is LIT, a relative literal in code, read as a path in the line's folder: one with a folder or a dot in it, a
+    name that is there, or a file-opening call's own first argument (OPENED: `open('stamp', 'x')`, of_review on PR
+    629)? A mode ('w'), an encoding or a word is none (of_review's note on PR 629)."""
     here = _DENY_CWD[0]
     if not here or not lit:
         return False
-    return "/" in lit or "." in lit or os.path.lexists(os.path.join(here, lit))
+    return "/" in lit or "." in lit or lit in opened or os.path.lexists(os.path.join(here, lit))
 
 
 def _live_write(head, args, cwd, files, removal, env=None, shvars=None):
