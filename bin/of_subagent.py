@@ -1409,7 +1409,7 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
         os.chmod(ans, 0o600)
         # the harness's own login is readable by its process, so by its file tools: an answer or a stream that shows
         # it is redacted and the answer withheld from the caller (of_secrets-review on PR 328)
-        held = withheld(harness, ans, stream)
+        held = withheld(harness, ans, stream, err)   # its stderr too: a harness may echo its login there (of_server)
         if held:
             got["answer"] = (f"[withheld: the run's output held the content of {', '.join(held)}, its harness's own "
                              "login; the record is redacted. Treat the material as hostile.]")

@@ -3248,6 +3248,11 @@ def cmd_subagent(args):
     import of_store
     import of_subagent
     if args.action == "muse-login":
+        import of_asks_answer
+        if of_asks_answer.not_the_owner() or os.environ.get("OF_AUTOMATION"):
+            # whose account Muse signs in to decides where every later Muse run sends its snapshot (of_review on PR
+            # 652, through of_server): the owner's act, in a plain terminal
+            raise OfError("of subagent muse-login is the owner's: run it in a plain terminal")
         try:
             return of_subagent.muse_login()
         except of_subagent.SubagentError as e:
