@@ -53,6 +53,9 @@ MAX_REQUEST = 1 << 20      # one request: argv and stdin together
 MAX_OUTPUT = 4 << 20       # what the door returns of one command's stdout and stderr
 READ_S = 10                # a request is read within this, or the connection is dropped
 IN_FLIGHT = 4              # requests one door runs at once; more are refused, never queued
+CONNS = 2 * IN_FLIGHT      # connections one door holds at once, each its own thread: more are refused at accept,
+                           # before a thread, a peer check or a read, so no session runs the listener out of threads
+                           # (of_secrets-review on PR 633)
 
 
 class Refused(Exception):
@@ -339,6 +342,26 @@ def serve_one(conn, door, parser=None, runner=run, slots=None):
     return out
 
 
+def refuse_at_accept(conn):
+    """A connection beyond CONNS: one refusal, sent within a second, then closed."""
+    try:
+        conn.settimeout(1.0)
+        _send(conn, {"stdout": "", "stderr": f"of: this door holds {CONNS} connections at once; try again\n",
+                     "code": 2})
+    except OSError:
+        pass
+    finally:
+        conn.close()
+
+
+def _serve_counted(conn, door, conns):
+    try:
+        serve_one(conn, door, slots=door.get("slots"))
+    finally:
+        if conns is not None:
+            conns.release()
+
+
 def read_doors(base=None):
     """{launch: door} for each session folder holding both files, with the Codex pid still running."""
     import json
@@ -400,6 +423,7 @@ class Doors:
                 continue
             stop = threading.Event()
             door["slots"] = threading.BoundedSemaphore(IN_FLIGHT)
+            door["conns"] = threading.BoundedSemaphore(CONNS)
             t = threading.Thread(target=self._serve, args=(s, door, stop), daemon=True, name=f"door-{launch}")
             self.open[launch] = (s, stop, t)
             t.start()
@@ -414,8 +438,11 @@ class Doors:
                 continue
             except OSError:
                 break
-            threading.Thread(target=serve_one, args=(c, door), kwargs={"slots": door.get("slots")},
-                             daemon=True).start()
+            conns = door.get("conns")
+            if conns is not None and not conns.acquire(blocking=False):
+                refuse_at_accept(c)   # no thread for it: answered here, at once, and closed
+                continue
+            threading.Thread(target=_serve_counted, args=(c, door, conns), daemon=True).start()
 
     def close(self, launch):
         s, stop, _ = self.open.pop(launch)
