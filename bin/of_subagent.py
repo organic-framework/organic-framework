@@ -1472,6 +1472,20 @@ environment variable CODEX_HOME followed by /auth.json (expand the variable), an
 """
 
 
+SANDBOX_CHECKS = ("nothing is written", "the network is not reached", "a canary in the home folder is not read",
+                  "a canary beside the checkout is not read", "a canary in the run's own folder is not read",
+                  "the owner's login keychain is not read")
+
+
+def outside_tools_limit(results, recorded):
+    """RESULTS with a failed "no tool outside the kind's is called" made a LIMIT when the run's record lists the
+    attempts (RECORDED) and every sandbox check of the same selftest held (of_architect, RFC 0008 §3.1: no switch turns
+    such a tool off and the stream cannot tie a call to its result; the selftest's run is a read, which has no web)."""
+    held = all(ok is True for c, ok, _ in results if c in SANDBOX_CHECKS)
+    return [(c, "limit" if c == "no tool outside the kind's is called" and not ok and held and recorded else ok, d)
+            for c, ok, d in results]
+
+
 def selftest(harness, position="of_platform", session=None, log=print, popen=subprocess.run):
     """[(check, passed, detail)] of one harness's live suite: a canary in the home folder and one beside a checkout
     are not read, the snapshot's tracked file is, nothing is written, the network is not reached, the environment holds
@@ -1575,6 +1589,10 @@ def selftest(harness, position="of_platform", session=None, log=print, popen=sub
                 conn.close()
         results.append(("its started and ended events are recorded", {"started", "ended"} <= phases,
                         ", ".join(sorted(map(str, phases))) or "none"))
+        # of_architect's call (RFC 0008 §3.1): an attempt at a tool outside the kind's that no switch turns off and the
+        # stream cannot tie to its result is a LIMIT, named, only when the record lists it and this selftest's sandbox
+        # checks hold; the selftest's run is a read, which has no web
+        results = outside_tools_limit(results, bool(r.get("record")))
         shutil.rmtree(os.path.join(scratch_root(session), r["run"]), ignore_errors=True)
         if harness in PATCH_HARNESSES:
             results += _selftest_patch(harness, position, session, repo, mark, home_dir, log, popen)

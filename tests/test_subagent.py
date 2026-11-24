@@ -1190,3 +1190,16 @@ class OrgChoiceTest(unittest.TestCase):
         self.assertEqual(len(got), 2)
         self.assertTrue(all(g.startswith("b:") for g in got))
         self.assertTrue(of_subagent.choice_problems(docs, known=None)[0].startswith("warning: "))
+
+
+class OutsideToolsLimitTest(unittest.TestCase):
+    def test_an_outside_tool_is_a_limit_only_while_the_sandbox_held(self):
+        base = [(c, True, "-") for c in of_subagent.SANDBOX_CHECKS]
+        tools = ("no tool outside the kind's is called", False, "monitor")
+        got = dict((c, ok) for c, ok, _ in of_subagent.outside_tools_limit(base + [tools], True))
+        self.assertEqual(got["no tool outside the kind's is called"], "limit")
+        broken = [("nothing is written", False, "x")] + base[1:] + [tools]
+        got = dict((c, ok) for c, ok, _ in of_subagent.outside_tools_limit(broken, True))
+        self.assertIs(got["no tool outside the kind's is called"], False)
+        got = dict((c, ok) for c, ok, _ in of_subagent.outside_tools_limit(base + [tools], False))
+        self.assertIs(got["no tool outside the kind's is called"], False)          # no record of the attempts
