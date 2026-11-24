@@ -248,6 +248,28 @@ class WatchdogTest(unittest.TestCase):
         self.assertEqual(got[-1], "restart_failed")
         self.assertIn("launchctl exit 113", self.said[-1])
 
+    def test_a_plist_is_written_new_and_a_link_at_its_name_refused(self):
+        """of_platform, 2026-11-24: a fixed .tmp name let a planted link be written through and renamed into place."""
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            agents = os.path.join(home, "Library/LaunchAgents")
+            os.makedirs(agents)
+            calls = []
+            run = lambda argv, **k: (calls.append(argv), type("R", (), {"returncode": 0})())[1]
+            out = of_server.load_launchd({"dev.example.one": "<plist/>"}, run=run)
+            self.assertIn("loaded", out)
+            with open(os.path.join(agents, "dev.example.one.plist")) as fh:
+                self.assertEqual(fh.read(), "<plist/>")
+            self.assertEqual([f for f in os.listdir(agents) if not f.endswith(".plist")], [])   # no temporary left
+            target = os.path.join(home, "mine.txt")
+            open(target, "w").close()
+            os.symlink(target, os.path.join(agents, "dev.example.two.plist"))
+            out = of_server.load_launchd({"dev.example.two": "<plist/>"}, run=run)
+            self.assertIn("refused, a link", out)
+            with open(target) as fh:
+                self.assertEqual(fh.read(), "")   # never written through
+
     def test_without_launchd_it_only_says_so(self):
         with mock.patch.object(of_server, "launchd_job", lambda: None), \
                 mock.patch.object(of_server.of_events, "emit", lambda *a, **k: None):

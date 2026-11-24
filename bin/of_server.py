@@ -3170,6 +3170,9 @@ def load_launchd(plists, uninstall=False, run=subprocess.run):
     out = []
     for label, text in plists.items():
         path = os.path.expanduser(f"~/Library/LaunchAgents/{label}.plist")
+        if os.path.islink(path):   # a link at the plist's own name: launchd would load whatever it leads to
+            out.append(f"{label}: refused, a link at {path}")
+            continue
         try:
             with open(path) as fh:
                 same = fh.read() == text
@@ -3186,9 +3189,9 @@ def load_launchd(plists, uninstall=False, run=subprocess.run):
             out.append(f"removed {label}")
             continue
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path + ".tmp", "w") as fh:
-            fh.write(text)
-        os.replace(path + ".tmp", path)
+        # through a new file of an unguessable name (O_EXCL, O_NOFOLLOW), never a fixed .tmp a link could stand at
+        # (of_platform, 2026-11-24: the same class as PR 628's setup)
+        of_events.write_new(path, text, mode=0o644)
         r = run(["launchctl", "bootstrap", domain, path], capture_output=True)
         out.append(f"{label}: {'loaded' if r.returncode == 0 else 'not loaded (launchctl ' + str(r.returncode) + ')'}")
     return "; ".join(out)
