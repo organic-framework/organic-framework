@@ -731,6 +731,29 @@ def sandbox_settings(deny=None, platform=None, scratch=None, org=None, rules_dir
                         "allowedDomains": list(SANDBOX_DOMAINS), "deniedDomains": []}}
 
 
+def make_denied_folders(deny, home=None):
+    """Make each folder a deny rule names by its whole tree (`Read(//<path>/**)`) that is not there yet, inside the
+    home, before the session starts: Claude Code's Linux sandbox leaves an empty read-only file at a denied path that
+    does not exist, and the folder can then never be made there (agent-host_keeper's read on the agent host,
+    2026-11-24, through of_server: the state folder's subagent/muse-login). Returns the folders made."""
+    home = os.path.realpath(home or os.path.expanduser("~"))
+    made = []
+    for r in deny or []:
+        m = re.fullmatch(r"Read\(/(/[^*?\[\]]+?)/\*\*\)", r or "")
+        if not m:
+            continue
+        p = os.path.normpath(m.group(1))
+        parent = os.path.realpath(os.path.dirname(p))
+        if os.path.lexists(p) or not (parent == home or parent.startswith(home + os.sep)):
+            continue
+        try:
+            os.makedirs(p, mode=0o700)
+            made.append(p)
+        except OSError:
+            pass
+    return made
+
+
 def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=None, org=None, rules_dirs=None):
     """The one --settings JSON: AGENT_SETTINGS, the memory directory (bin/of_memory.py, RFC 0006), the credential
     deny rules, on Linux the sandbox block (sandbox_settings), and extra keys such as the tool profile's
@@ -741,6 +764,7 @@ def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=
         s.setdefault("permissions", {}).setdefault("deny", []).extend(deny)
     box = sandbox_settings(deny, platform, scratch, org, rules_dirs)
     if box:
+        make_denied_folders(deny)   # a folder, not the sandbox's empty read-only placeholder file, at each denied tree
         s["sandbox"] = box
         # the sandbox binds Bash only; the file tools, MCP servers and command hooks run outside it
         # (code.claude.com/docs/en/sandboxing): the file tools write only inside the working folders, and never the

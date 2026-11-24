@@ -495,6 +495,25 @@ class PositionFolderTest(unittest.TestCase):
         self.assertIsNone(of_spawn.position_folder(dict(self.p, _org="acme")))          # no work_root: today's rule
         self.assertTrue(of_spawn.clone_guard()(os.path.join(self.pf, "framework", "doc.md")))   # never a reader's
 
+    def test_each_denied_tree_is_a_folder_before_the_sandbox_starts(self):
+        """agent-host_keeper's read on the host, through of_server (2026-11-24): the sandbox leaves an empty read-only
+        file at a denied path not there yet, and the folder (subagent/muse-login) can then never be made."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:
+            home = os.path.realpath(t)
+            state = os.path.join(home, ".local", "state", "of")
+            os.makedirs(state)
+            login, there = os.path.join(state, "subagent", "muse-login"), os.path.join(home, "keys")
+            os.makedirs(there)
+            made = of_spawn.make_denied_folders([f"Read(/{login}/**)", f"Read(/{there}/**)",
+                                                 f"Read(/{home}/a-file.txt)", f"Read(/{home}/*.pem)",
+                                                 "Read(//elsewhere/outside/**)"], home=home)
+            self.assertEqual(made, [login])
+            self.assertTrue(os.path.isdir(login))
+            self.assertEqual(oct(os.stat(login).st_mode & 0o777), "0o700")
+            self.assertFalse(os.path.exists(os.path.join(home, "a-file.txt")))   # a file pattern makes nothing
+            self.assertFalse(os.path.exists("/elsewhere/outside"))
+
     def test_the_top_and_the_clones_control_are_closed_in_the_sandbox(self):
         with mock.patch.object(of_spawn, "_accounts_dirs", return_value=[]):
             box = json.loads(of_spawn.session_settings(None, [], platform="linux", org="ofb",
