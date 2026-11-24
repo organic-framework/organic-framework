@@ -74,6 +74,13 @@ class ProbeParsing(unittest.TestCase):
         self.assertIn("Not logged in", r["error"])
         self.assertIsNone(r["probe"]["cost_usd"])
 
+    def test_expired_login(self):
+        err = ("Failed to authenticate: this login reached its time limit and cannot be renewed. "
+               "Run `claude auth login` to sign in again, or use `claude setup-token` and set "
+               "CLAUDE_CODE_OAUTH_TOKEN for unattended jobs")
+        self.assertIs(of_capacity.parse_probe([], err, 1)["logged_in"], False)
+        self.assertIsNone(of_capacity.parse_probe([], "probe timed out after 120s", 124)["logged_in"])
+
     def test_no_reading_is_not_logged_out(self):
         for err, rc in (("claude not found", 127), ("probe timed out after 120s", 124), ("", 1)):
             r = of_capacity.parse_probe([], err, rc)
