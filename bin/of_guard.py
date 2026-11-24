@@ -1036,7 +1036,7 @@ _CODE_REMOVES = re.compile(r"\bos\.(?:unlink|remove|removedirs|rmdir|rename|rena
 _CODE_WRITE_RE = re.compile(r"""\.open\s*\(\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|"""
                          r"""open\s*\(.*?,\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|open\s*\([^,]*,\s*['"]\s*\+?>|\bmode\s*=\s*['"][rbt]*[wax+]|write_text|"""
                          r"""write_bytes|(?<!sys\.stdout)(?<!sys\.stderr)\.write\s*\(|\bdump\s*\(|"""
-                         r"""os\.(?:replace|rename|remove|unlink|truncate)|\bos\.(?:symlink|link)\s*\(|"""
+                         r"""os\.(?:replace|rename|remove|unlink|truncate|symlink|link)\b|"""
                          r"""shutil\.|\.unlink\s*\(|\.touch\s*\(|\.rename\s*\(|File\.(?:write|delete|rename)|"""
                          r"""File\.open\s*\(.*?,\s*['"][rbt]*[wa+]|"""
                          r"""FileUtils\.|fs\.(?:write|append|rename|unlink|rm|copy)|writeFile|appendFile|"""
@@ -1045,53 +1045,65 @@ _OS_OPEN = re.compile(r"\bos\.open\s*\(")
 _OS_OPEN_FLAGS = re.compile(r"\bO_(?:WRONLY|RDWR|CREAT|TRUNC|APPEND)\b")
 
 
-_DEST_CALL = re.compile(r"(?:\b(?:os|shutil)\.(?:copy\w*|move|rename|renames|replace|symlink|link)|"
-                        r"(?<![.\w])(?:copy\w*|move|rename|renames|symlink|link))\s*\(")   # never a str's replace()
+_DEST_CALL = re.compile(r"(?:\b(?:os|shutil)\.(?:replace)|"
+                        r"\b(?:copy\w*|move\w*|rename\w*|symlink\w*|link\w*|cp|cpSync))\s*\(")   # never a str's replace()
 
 
-def _call_args(code, start, limit=4000):
-    """The top-level arguments of the call whose '(' ends at START, as text: quotes and comments kept whole, read
-    for at most LIMIT characters."""
-    args, cur, depth, k, quote = [], [], 1, start, None
-    end = min(len(code), start + limit)
-    while k < end and depth:
+def _call_frames(code):
+    """Every call's arguments in CODE, read in one pass: {offset of its '(' + 1: [argument text, ...]}, with quotes
+    and comments read as the scanner reads them (a comment left out, a string kept whole, an escape with its next
+    character). One pass however the calls nest or however long their arguments run (of_review and Codex on PR 629: a
+    long comment hid a destination, and a scan per call cost a square on many copy( tokens)."""
+    frames, stack, k, n, quote = {}, [], 0, len(code), None
+    def put(ch):
+        if stack:
+            stack[-1][1].append(ch)
+    while k < n:
         ch = code[k]
         if quote:
             if ch == "\\":
-                cur.append(code[k:k + 2])
+                put(code[k:k + 2])
                 k += 2
                 continue
             quote = None if ch == quote else quote
+            put(ch)
         elif ch == "#":
             nl = code.find("\n", k)
-            k = len(code) if nl < 0 else nl
+            k = n if nl < 0 else nl
             continue
         elif ch in "'\"":
             quote = ch
+            put(ch)
         elif ch in "([{":
-            depth += 1
+            put(ch)
+            stack.append((k + 1, [], [], ch))   # start, current argument, arguments so far, bracket
         elif ch in ")]}":
-            depth -= 1
-            if not depth:
-                break
-        elif ch == "," and depth == 1:
-            args.append("".join(cur))
-            cur = []
-            k += 1
-            continue
-        cur.append(ch)
+            if stack:
+                start, cur, args, _ = stack.pop()
+                frames[start] = [x.strip() for x in args + ["".join(cur)]]
+            put(ch)
+        elif ch == "," and stack:
+            top = stack[-1]
+            top[2].append("".join(top[1]))
+            top[1].clear()
+        else:
+            put(ch)
         k += 1
-    args.append("".join(cur))
-    return [a.strip() for a in args]
+    while stack:   # a call left open runs to the end of the code
+        start, cur, args, _ = stack.pop()
+        frames[start] = [x.strip() for x in args + ["".join(cur)]]
+    return frames
 
 
 def _dest_names(code):
     """The second argument of each copy, move, rename or link call, when it is a plain literal (of_review on PR 629:
-    shutil.copyfile(os.path.join('/tmp', 'x'), 'stamp'))."""
-    out = set()
+    shutil.copyfile(os.path.join('/tmp', 'x'), 'stamp')). A call named inside a comment or a string is no call."""
+    out, frames = set(), None
     for m in _DEST_CALL.finditer(code):
-        args = _call_args(code, m.end())
-        if len(args) > 1:
+        if frames is None:
+            frames = _call_frames(code)
+        args = frames.get(m.end())   # absent when the name lies in a comment or a string: the pass saw no '(' there
+        if args and len(args) > 1:
             lit = re.fullmatch(r"(?:(?:dst|dest|target)\s*=\s*)?(['\"])((?:(?!\1)[^\n\\]|\\.)+)\1", args[1])
             if lit:
                 out.add(lit.group(2))
