@@ -1056,9 +1056,14 @@ class ContinuedSessions(unittest.TestCase):
     new = "cccccccc-0000-4000-8000-000000000003"
 
     def setUp(self):
+        import sqlite3
+
         home = tempfile.TemporaryDirectory()
         self.addCleanup(home.cleanup)
         self.root = home.name
+        self.store = sqlite3.connect(":memory:")
+        self.addCleanup(self.store.close)
+        self.store.execute("CREATE TABLE event (name TEXT, payload TEXT)")
         self.src, self.dst = [os.path.join(self.root, d) for d in (".claude-a", ".claude-b")]
         self.pos = {"name": "keeper", "_root": self.root, "holder": {"session": self.old}}
         self.registry = os.path.join(self.root, "registry", "positions.yaml")
@@ -1090,16 +1095,24 @@ class ContinuedSessions(unittest.TestCase):
         self.assertIsNone(of_capacity.continued_in(path + ".missing"))
         self.assertIsNone(of_capacity.continued_in(self.transcript(self.src, self.old, "../other")))
 
-    def test_follows_two_hops_and_stops_before_repeating_a_session(self):
+    def test_only_a_terminal_session_resolves_a_chain_at_the_hop_limit(self):
         a = self.transcript(self.src, self.old, self.middle)
         b = self.transcript(self.dst, self.middle, self.new)
         dirs = [self.src, self.dst]
         evidence = [f"{a}: continued-in {self.middle}", f"{b}: continued-in {self.new}"]
-        self.assertEqual(of_capacity.continuation(dirs, self.old), (self.new, evidence))
-        self.assertEqual(of_capacity.continuation(dirs, self.old, hops=1), (self.middle, evidence[:1]))
+        self.assertEqual(of_capacity.continuation(dirs, self.old), (self.new, evidence, True))
+        self.assertEqual(of_capacity.continuation(dirs, self.old, hops=2), (self.new, evidence, True))
+        self.assertEqual(of_capacity.continuation(dirs, self.old, hops=1), (self.middle, evidence[:1], False))
         self.assertIsNone(of_capacity.continuation(dirs, self.new))
-        self.transcript(self.dst, self.new, self.old)
-        self.assertEqual(of_capacity.continuation(dirs, self.old), (self.new, evidence))
+
+    def test_a_cycle_is_unresolved_at_the_last_distinct_session(self):
+        a = self.transcript(self.src, self.old, self.middle)
+        self.transcript(self.dst, self.middle, self.old)
+        dirs = [self.src, self.dst]
+        self.assertEqual(of_capacity.continuation(dirs, self.old),
+                         (self.middle, [f"{a}: continued-in {self.middle}"], False))
+        with self.assertRaisesRegex(of_capacity.MoveError, f"unresolved at {self.middle}"):
+            of_capacity._check_pane_session("keeper", self.old, dict.fromkeys(dirs, []))
 
     def test_an_older_copy_with_a_handoff_does_not_count_once_a_newer_copy_goes_on(self):
         stale = self.transcript(self.dst, self.old, self.new)
@@ -1120,6 +1133,30 @@ class ContinuedSessions(unittest.TestCase):
         with open(self.registry) as fh:
             self.assertEqual(fh.read(), self.registry_text)
 
+    def check_registry_diff(self, diff):
+        checked = subprocess.run(["git", "apply", "--check", "-"], cwd=self.root, env=GIT_ENV, input=diff,
+                                 capture_output=True, text=True)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+
+    def test_proposal_replaces_a_flow_holder_session_in_one_line(self):
+        holder = f"    holder: {{runtime: claude-code, session: '{self.old}', workplace: herdr}}"
+        with open(self.registry, "w") as fh:
+            fh.write(f"positions:\n  - name: keeper\n{holder}\n")
+        diff, _ = of_capacity.propose_registry(self.registry, "keeper", session=self.new, previous_session=self.old)
+        self.assertEqual([ln for ln in diff.splitlines() if ln.startswith(("+ ", "- "))],
+                         ["-" + holder, "+" + holder.replace(f"'{self.old}'", self.new)])
+        self.check_registry_diff(diff)
+
+    def test_proposal_marks_both_versions_of_an_unterminated_last_line(self):
+        with open(self.registry, "w") as fh:
+            fh.write(f"positions:\n  - name: keeper\n    holder:\n      session: {self.old}")
+        diff, _ = of_capacity.propose_registry(self.registry, "keeper", session=self.new, previous_session=self.old)
+        marker = "\\ No newline at end of file\n"
+        self.assertTrue(diff.endswith(f"-      session: {self.old}\n{marker}"
+                                      f"+      session: {self.new}  # continued-in from {self.old[:8]} (of_capacity)\n"
+                                      + marker), diff)
+        self.check_registry_diff(diff)
+
     def test_move_restart_model_and_resume_refuse_the_handoff_and_background_daemon(self):
         path = self.transcript(self.src, self.old, self.new)
         live = [{"session": self.old}, {"session": self.new, "kind": "bg"}]
@@ -1135,9 +1172,81 @@ class ContinuedSessions(unittest.TestCase):
                     of_capacity.resume("keeper", sid, self.dst, "w1:p1")
                 self.assertIn(message, str(cm.exception))
 
+    def restore(self, entries, kind="reboot", only=None):
+        plan_path = os.path.join(self.root, "plan.json")
+        with open(plan_path, "w") as fh:
+            json.dump({"kind": kind, "prepared_at": "2026-11-24T10:00:00Z", "entries": entries}, fh)
+        logs = []
+        start = mock.Mock(side_effect=lambda e, *a, **k: {"session": e["session"], "pane": e.get("pane")})
+        with mock.patch.multiple(of_capacity, config_dirs=lambda: [self.src, self.dst], live_sessions=lambda _: [],
+                                 actor=lambda: "of_capacity", _restore_one=start), \
+                mock.patch.object(of_capacity.of_events, "emit"):
+            done = of_capacity.reboot_restore([self.pos], only=only, plan_path=plan_path, log=logs.append)
+        return done, [call.args[0] for call in start.call_args_list], logs
+
+    def test_restore_uses_the_successors_entry_with_the_old_pane_in_either_order(self):
+        path = self.transcript(self.src, self.old, self.new)
+        old = {"name": "keeper", "position": "keeper", "session": self.old, "config_dir": self.src,
+               "pane": "p1", "workspace": "w1", "tab": "t1"}
+        new = {"name": "daemon", "session": self.new, "config_dir": self.dst, "pane": None}
+        for entries in ([old, new], [new, old]):
+            with self.subTest(entries=entries):
+                done, starts, logs = self.restore(entries)
+                self.assertCountEqual(done, [("keeper", "continued", self.new),
+                                             ("daemon", "resumed", {"session": self.new, "pane": "p1"})])
+                self.assertEqual(starts, [dict(new, pane="p1", workspace="w1", tab="t1", position="keeper")])
+                self.assertIn(f"keeper: session {self.old[:8]} continued in {self.new[:8]} "
+                              f"({path}: continued-in {self.new}); {self.new[:8]} is resumed instead", logs)
+                self.assertIn("1 continued, 0 failed", logs[-1])
+
+    def test_restore_uses_the_old_entry_when_only_the_predecessor_was_recorded(self):
+        self.transcript(self.src, self.old, self.new)
+        old = {"name": "keeper", "position": "keeper", "session": self.old, "config_dir": self.src, "pane": "p1"}
+        for kind in ("reboot", "carry"):
+            with self.subTest(kind=kind):
+                done, starts, _ = self.restore([old], kind=kind)
+                self.assertEqual(starts, [dict(old, session=self.new)])
+                self.assertEqual(done, [("keeper", "continued", self.new),
+                                        ("keeper", "resumed", {"session": self.new, "pane": "p1"})])
+
+    def test_restore_resumes_a_shared_successor_only_once(self):
+        self.transcript(self.src, self.old, self.new)
+        self.transcript(self.dst, self.middle, self.new)
+        old = {"name": "keeper", "session": self.old, "config_dir": self.src, "pane": "p1"}
+        middle = {"name": "previous", "session": self.middle, "config_dir": self.dst, "pane": "p2"}
+        new = {"name": "daemon", "session": self.new, "config_dir": self.dst, "pane": "p3"}
+        done, starts, logs = self.restore([old, middle, new])
+        self.assertEqual(starts, [new])
+        self.assertIn(("keeper", "continued", self.new), done)
+        self.assertIn(("previous", "continued", self.new), done)
+        self.assertIn("2 continued, 0 failed", logs[-1])
+
+    def test_restore_resumes_neither_session_in_an_unresolved_chain(self):
+        self.transcript(self.src, self.old, self.new)
+        self.transcript(self.dst, self.new, self.old)
+        old = {"name": "keeper", "session": self.old, "config_dir": self.src, "pane": "p1"}
+        new = {"name": "daemon", "session": self.new, "config_dir": self.dst, "pane": None}
+        done, starts, logs = self.restore([old, new])
+        self.assertEqual(starts, [])
+        self.assertEqual([(n, s) for n, s, _ in done], [("keeper", "failed"), ("daemon", "failed")])
+        self.assertIn(f"continuation unresolved at {self.new}", done[0][2])
+        self.assertIn(f"continuation unresolved at {self.old}", done[1][2])
+        self.assertIn("2 failed: keeper, daemon", logs[-1])
+
+    def test_carry_restore_keeps_the_successor_within_its_selected_entries(self):
+        self.transcript(self.src, self.old, self.new)
+        old = {"name": "keeper", "session": self.old, "config_dir": self.src, "pane": "p1"}
+        new = {"name": "daemon", "session": self.new, "config_dir": self.dst, "pane": None}
+        done, starts, _ = self.restore([old, new], kind="carry", only={"keeper"})
+        self.assertEqual(starts, [])
+        name, state, reason = done[0]
+        self.assertEqual((name, state), ("keeper", "failed"))
+        self.assertIn("successor is outside the selected carry entries", reason)
+
     def balance(self, positions, live, emit, move, logs, dry_run=False):
         rows = [_row(self.src, 100, 100), _row(self.dst, 0, 0)]
-        with mock.patch.multiple(of_capacity, STATE_DIR=self.root, status=lambda *a, **k: rows,
+        with mock.patch.multiple(of_capacity, STATE_DIR=self.root, REBOOT_DIR=os.path.join(self.root, "reboot"),
+                                 status=lambda *a, **k: rows, ensure_statusline=mock.Mock(),
                                  live_sessions=lambda d: live if d == self.src else [],
                                  current_index=lambda *_: {}, moves_allowed=lambda *_: {},
                                  recent_remote_moves=lambda *_: {}, heal_permission_modes=mock.Mock(),
@@ -1145,7 +1254,8 @@ class ContinuedSessions(unittest.TestCase):
                                  sync_muse_training=mock.Mock(), tool_docs_all=lambda: [], tool_docs=lambda: [],
                                  connectors_seen=lambda _: set(), plugins_ready=lambda _: set(),
                                  with_labels=lambda have, _: have, move=move, api_online=lambda: True), \
-                mock.patch.object(of_capacity.of_events, "emit", emit):
+                mock.patch.multiple(of_capacity.of_events, STATE_DIR=self.root, CONFIG_DIR=self.root,
+                                    _conn=lambda: self.store, emit=emit):
             return of_capacity.balance(positions, dry_run=dry_run, policy=POLICY, now=Balance.NOW, log=logs.append)
 
     def test_balance_records_the_live_successor_and_leaves_its_old_pane_alone(self):
@@ -1169,11 +1279,44 @@ class ContinuedSessions(unittest.TestCase):
         self.assertIn(f"balance: keeper's session {self.old[:8]} continued in {self.new[:8]} ({evidence[0]}); "
                       "not moved until the registry names it", logs)
         move.assert_not_called()
-        with self.subTest("registry proposal"):
-            diffs = glob.glob(os.path.join(self.root, "capacity", "moves", "*", "registry.diff"))
-            self.assertEqual(len(diffs), 1)
-            with open(diffs[0]) as fh:
-                self.assertIn(f"+      session: {self.new}", fh.read())
+
+    def test_balance_proposes_without_repeating_the_hooks_holder_change(self):
+        self.transcript(self.src, self.old, self.new)
+        payload = {"previous_session": self.old, "new_session": self.new}
+        self.store.execute("INSERT INTO event VALUES ('of.holder_changed', ?)", (json.dumps(payload),))
+        live = [{"session": self.new, "status": "idle", "kind": "bg"}]
+        emit, move, logs = mock.Mock(), mock.Mock(), []
+        with mock.patch.object(of_capacity, "propose_registry") as propose:
+            self.assertEqual(self.balance([self.pos], live, emit, move, logs), [])
+        self.assertFalse(any(c.args[0] == "holder_changed" for c in emit.call_args_list))
+        self.assertEqual(propose.call_args.kwargs["session"], self.new)
+        move.assert_not_called()
+
+    def test_balance_leaves_an_aliased_holder_for_the_structure_keeper(self):
+        self.transcript(self.src, self.old, self.new)
+        with open(self.registry, "w") as fh:
+            fh.write(f"positions:\n  - name: other\n    holder: &shared\n      session: {self.old}\n"
+                     "  - name: keeper\n    holder: *shared\n")
+        self.assertEqual(of_capacity.propose_registry(self.registry, "other", session=self.new), ("", None))
+        emit, move, logs = mock.Mock(), mock.Mock(), []
+        live = [{"session": self.new, "status": "idle", "kind": "bg"}]
+        self.assertEqual(self.balance([self.pos], live, emit, move, logs), [])
+        self.assertIn("balance: keeper: no registry proposal (holder or session uses an anchor or alias); "
+                      f"the structure keeper rebinds holder.session to {self.new}", logs)
+        self.assertFalse(glob.glob(os.path.join(self.root, "capacity", "moves", "*", "registry.diff")))
+        move.assert_not_called()
+
+    def test_balance_holds_an_unresolved_chain_without_an_event_or_proposal(self):
+        self.transcript(self.src, self.old, self.new)
+        self.transcript(self.dst, self.new, self.old)
+        live = [{"session": self.old, "status": "idle"}, {"session": self.new, "status": "idle", "kind": "bg"}]
+        emit, move, logs = mock.Mock(), mock.Mock(), []
+        with mock.patch.object(of_capacity, "propose_registry") as propose:
+            self.assertEqual(self.balance([self.pos], live, emit, move, logs), [])
+        self.assertTrue(any(f"unresolved continuation at {self.new}" in ln for ln in logs))
+        self.assertFalse(any(c.args[0] == "holder_changed" for c in emit.call_args_list))
+        propose.assert_not_called()
+        move.assert_not_called()
 
     def test_balance_keeps_a_background_holder_out_of_rescue(self):
         pos = dict(self.pos, holder={"session": self.new})
@@ -2484,6 +2627,26 @@ class Resume(unittest.TestCase):
         with open(settings) as fh:
             self.assertEqual(fh.read(), '{"launched": "before"}')
         self.assertEqual([c for c in self.calls if c[:2] == ("emit", "session_settings")], [])
+
+    def test_move_rechecks_live_sessions_after_exit(self):
+        live = {"session": "s1", "cwd": self.cwd, "pid": 9, "status": "idle"}
+        exited = mock.Mock()
+        sessions = mock.Mock(side_effect=lambda _: [dict(live, kind="bg")] if exited.called else [live])
+        start = mock.Mock()
+        with mock.patch.multiple(of_capacity, live_sessions=sessions, exit_session=exited, start_session=start,
+                                 _agent_by_session=lambda _: {"pane_id": "w6:p18", "agent_status": "idle"},
+                                 _continuation=lambda _: {}, load_policy=lambda: {}, proc_env=lambda _: {},
+                                 proc_args=lambda _: "claude", background_processes=lambda _: [],
+                                 connectors_seen=lambda _: set(), plugins_ready=lambda _: set(), granted_labels=lambda _: {},
+                                 held_back=lambda _: set(), with_labels=lambda have, _: have, tools_for=lambda *_: None,
+                                 deny_for=lambda *_: None):
+            with self.assertRaisesRegex(of_capacity.MoveError, "the old pane has exited and the conversation goes on "
+                                        "in s1. Nothing was lost and nothing is to be resumed."):
+                of_capacity.move({"name": "runners_keeper", "holder": {"session": "s1"}}, None, restart=True,
+                                 assume_empty_input=True, log=lambda *_: None)
+        self.assertEqual(sessions.call_args_list, [mock.call(self.cfg), mock.call(self.cfg)])
+        exited.assert_called_once()
+        start.assert_not_called()
 
     def test_a_restore_resumes_a_start_in_position_in_its_start_folder(self):
         """of_agent-server, hand-over 56a0e7dc (2026-11-22): carry restore rewrote the home only, so a session landed in
