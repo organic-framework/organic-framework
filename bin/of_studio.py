@@ -891,7 +891,8 @@ class Data:
         repo = getattr(self, "repo", None)
         ctx = {"keeper_since": lambda sysid, k: of_model.keeper_since(repo, sysid, k),
                "code_activity": self.code_activity} if repo else {"code_activity": self.code_activity}   # RFC 0007
-        diag = of_diagnose.diagnose(full, self.rows, self.a, self.b, context=ctx)
+        diag = of_diagnose.diagnose(full, self.rows, self.a, self.b, context=ctx,
+                                    label_rows=self.history(("of.issue_labelled",)))
         self.diagnosis = of_diagnose.restrict(diag, names, self.model["systems"]) if unit else diag
         # delegated units below this viewer, rolled up as one row each (RFC 0001 §5.8, the reporting line)
         humans = sorted(h for h in full["units"] if h != who and (not unit or h in names))
@@ -3127,27 +3128,37 @@ def write_issues(d):
     issues one by one took hours, and a call cut at an agent's two-minute limit left no trace (its structure keeper,
     2026-11-15). Returns 1 when written."""
     import json
-    issues = [dict(i, org=d.org) for i in (d.diagnosis or {}).get("issues") or [] if i.get("state") == "open"]
-    _write_page(issues_path(d.org), json.dumps({"org": d.org, "computed_at": d.now, "issues": issues},
+    diag = d.diagnosis or {}
+    issues = [dict(i, org=d.org) for i in diag.get("issues") or [] if i.get("state") == "open"]
+    # the rules' status and the keeper too, so that `of model issues` lists from this file as its own run would print
+    _write_page(issues_path(d.org), json.dumps({"org": d.org, "computed_at": d.now, "issues": issues,
+                                                "rules": diag.get("rules") or [],
+                                                "structure_keeper": diag.get("structure_keeper")},
                                                ensure_ascii=False, default=str))
     return 1
 
 
-def read_issues(names, now=None):
-    """[open issue] of the organizations NAMES from the render's files, or None when one is missing or is not the
-    render's latest (not_latest)."""
+def read_issue_files(names, now=None):
+    """{organization: its file as write_issues wrote it} for the organizations NAMES, or None when one is missing or is
+    not the render's latest (not_latest)."""
     import json
-    out = []
+    out = {}
     for n in names:
         try:
             with open(issues_path(n)) as fh:
                 doc = json.load(fh)
         except (OSError, ValueError):
             return None
-        if not_latest(float(doc.get("computed_at") or 0), now):
+        if not isinstance(doc, dict) or not_latest(float(doc.get("computed_at") or 0), now):
             return None
-        out += doc.get("issues") or []
+        out[n] = doc
     return out
+
+
+def read_issues(names, now=None):
+    """[open issue] of the organizations NAMES from the render's files, or None (read_issue_files)."""
+    docs = read_issue_files(names, now)
+    return None if docs is None else [i for n in names for i in docs[n].get("issues") or []]
 
 
 def last_render(path=None, started=False):

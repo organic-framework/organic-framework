@@ -198,16 +198,20 @@ def _to_keeper(model, i, keeper=None):
     return i
 
 
-def diagnose(model, rows, a, b, cat=None, context=None):
+def diagnose(model, rows, a, b, cat=None, context=None, label_rows=None):
     """context: optional {keeper_since: fn(system, keeper) -> epoch | None} from the organization's registry history;
-    code_activity: fn() -> of_model.code_activity over the last 30 days (RFC 0007 §2.2), computed on first call."""
+    code_activity: fn() -> of_model.code_activity over the last 30 days (RFC 0007 §2.2), computed on first call.
+    label_rows: every of.issue_labelled of the organization, whatever the window, since a label is the one stored part
+    and holds until another replaces it; None: those among ROWS. Until 2026-11-24 the labels came from the rows, so a
+    label older than the rows read (9 days in the page render, 16 in `of model issues`) was lost, and the issue it had
+    dismissed was open again in the inbox and could be escalated."""
     a, b = epoch(a), epoch(b)
     try:
         cat = cat or catalogue()
     except OSError as exc:
         return {"issues": [], "rules": [], "error": f"no catalogue: {exc}"}
     have = present(model, rows, a, b, cat)
-    labs = labels(rows)
+    labs = labels(rows if label_rows is None else [r for r in label_rows if (epoch(r.get("ts")) or 0) <= b])
     issues, status = [], []
     keeper = structure_keeper(model)
     for name, spec in (cat.get("rules") or {}).items():

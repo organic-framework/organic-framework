@@ -6256,19 +6256,20 @@ ISSUE_LABELS = ("true_positive", "false_positive", "true_but_not_now", "wrong_re
 def cmd_issues(args):
     """`of issues [list]` shows of_studio's diagnosed issues; `of issues label <id> <label>`, or `--file F` with one
     label a line, writes the owner's label, the only stored kind of the catalogue (docs/diagnose.md): of.issue_labelled.
-    The ids are matched against the issues of the last page render when it is fresh (of_studio_cli.issues_for_label),
-    else against one diagnose run here."""
+    Both read the issues of the last page render while it is the render's latest (`list` with an id shows that issue
+    in full), else one diagnose run here (of_studio_cli.cmd_issues, issues_for_label); --fresh runs it always."""
     import of_events
     if args.action == "list":
         import of_studio_cli
-        return of_studio_cli.main(["model", "issues", "--org", args.org or "all"] + (["--json"] if args.json else []))
+        return of_studio_cli.main(["model", "issues", "--org", args.org or "all"] + (["--id", args.id] if args.id else [])
+                                  + (["--fresh"] if args.fresh else []) + (["--json"] if args.json else []))
     import of_studio_cli
     entries = _label_entries(args)
     # every organization's issues: an id from one organization's keeper digest labels without --org (2026-11-11); an
     # issue no longer open, named by its full id with --rule-version and --org, needs none (a user organization's
     # structure keeper, 2026-11-15: each label ran the whole diagnose, and calls cut at a two-minute limit left nothing)
     need = [x[0] for x in entries if not (x[3] and args.org)]
-    issues, _ = of_studio_cli.issues_for_label(args.org or "all", need, run=bool(need),
+    issues, _ = of_studio_cli.issues_for_label(args.org or "all", need, run=bool(need), fresh=getattr(args, "fresh", False),
                                                log=lambda m: print(m, file=sys.stderr, flush=True))
     # who labels: the owner (a shell that is no agent's session) or a position the owner delegates (--from)
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
@@ -9147,7 +9148,7 @@ def main(argv=None):
     df.add_argument("--ask", help="propose: the owner's question in his language, standing on its own "
                     "(default: built from the English hypothesis); options stay approve|reject")
     df.set_defaults(fn=cmd_diff)
-    iss = sub.add_parser("issues", help="diagnosed issues (of_studio): of issues [list]; of issues label <id> <label> [--note] | --file F")
+    iss = sub.add_parser("issues", help="diagnosed issues (of_studio): of issues [list [<id>]]; of issues label <id> <label> [--note] | --file F")
     iss.add_argument("action", nargs="?", default="list", choices=["list", "label"])
     iss.add_argument("id", nargs="?")
     iss.add_argument("label", nargs="?", choices=list(ISSUE_LABELS))
@@ -9155,6 +9156,7 @@ def main(argv=None):
     iss.add_argument("--rule-version", dest="rule_version", help="for an issue that is no longer open")
     iss.add_argument("--org", help="one organization (default: every organization in orgs.yaml)")
     iss.add_argument("--json", action="store_true")
+    iss.add_argument("--fresh", action="store_true", help="run the diagnose here instead of reading the last page render's issues")
     iss.add_argument("--from", dest="sender", help="a position the owner delegated labelling to")
     iss.add_argument("--file", help="label several issues: one '<issue id> <label> [ap.<rule>@<n>] [note]' a line")
     iss.set_defaults(fn=cmd_issues)
