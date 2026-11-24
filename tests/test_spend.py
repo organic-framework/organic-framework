@@ -3,6 +3,7 @@ goal, and the month's sums."""
 import calendar
 import json
 import os
+from pathlib import Path
 import shutil
 import sqlite3
 import sys
@@ -391,6 +392,20 @@ class Store(unittest.TestCase):
         self.assertEqual({k: v["cost_usd"] for k, v in out["periods"][0]["works"].items()},
                          {"acme/w-retry": 4.0, "beta/w-retry": 4.0})
         self.assertIn("acme/acme_a $4", of_spend.render_periods(out))       # one name in two: both named in full
+
+    def test_goal_spend_ignores_and_replaces_a_symlink(self):
+        path = Path(of_spend.cache_path())
+        path.parent.mkdir()
+        target = Path(self.tmp.name, "target.json")
+        target.write_text('{"from_target": true}')
+        path.symlink_to(target)
+        os.symlink(target, f"{path}.tmp")
+        self.assertIsNone(of_spend.load())
+        of_spend.write({"total": 1})
+        self.assertEqual(target.read_text(), '{"from_target": true}')
+        self.assertFalse(path.is_symlink())
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(of_spend.load(), {"total": 1})
 
     def test_end_to_end_with_a_declaration_and_the_cache(self):
         now = T0 + 2 * 86400

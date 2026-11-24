@@ -466,24 +466,25 @@ def prune_statusline_files(now, keep_s=86400):
 
 # ------------------------------------------------------------------ cache
 
+# A session can put a link at either cache name (docs/guard.md, Gaps, "A process outside the sandbox follows a link").
+CACHE_MAX_BYTES = 64 << 20
+
+
 def _cache_path():
     return os.path.join(STATE_DIR, "capacity.json")
 
 
 def load_cache():
     try:
-        with open(_cache_path()) as fh:
-            return json.load(fh)
-    except Exception:
+        text = of_events.read_own(_cache_path(), cap=CACHE_MAX_BYTES)
+        return json.loads(text)
+    except (OSError, ValueError):
         return {}
 
 
 def save_cache(c):
-    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
-    tmp = f"{_cache_path()}.{os.getpid()}.tmp"
-    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-        json.dump(c, fh, indent=1)
-    os.replace(tmp, _cache_path())
+    of_events.own_dir(STATE_DIR)
+    of_events.write_new(_cache_path(), json.dumps(c, indent=1))
 
 
 def readings_behind(dirs=None, now=None, factor=2, home=None):
@@ -6127,21 +6128,31 @@ def seek_records(path, size, floor, min_bytes=None, step=None):
 
 _TS_FIELD = _re.compile(rb'"timestamp":\s*"([0-9T:.+Z-]+)"')
 _CONFIG_DIR_RE = _re.compile(r"^(.*/\.claude[^/]*)/projects/")
+SPEND_MAX_BYTES = 512 << 20
 
 
 def _spend_path():
     return os.path.join(STATE_DIR, "capacity", "spend.json")
 
 
+def _load_spend_index():
+    try:
+        return json.loads(of_events.read_own(_spend_path(), cap=SPEND_MAX_BYTES))
+    except Exception:
+        return {"files": {}, "msgs": {}}
+
+
+def _save_spend_index(st):
+    path = _spend_path()
+    of_events.own_dir(os.path.dirname(path))
+    of_events.write_new(path, json.dumps(st))
+
+
 def spend_index(dirs, now=None, keep_s=SPEND_KEEP_S):
     """Incremental: a byte cursor per transcript, a rolling index of responses {message id: [epoch, session,
     $ at list, config dir]} over the last `keep_s` seconds. Each call reads only what was appended."""
     now = now or time.time()
-    try:
-        with open(_spend_path()) as fh:
-            st = json.load(fh)
-    except Exception:
-        st = {"files": {}, "msgs": {}}
+    st = _load_spend_index()
     files, msgs, copied = st["files"], st["msgs"], st.get("copied") or {}
     born = st.get("born") or {}  # session -> birth of its oldest transcript file (a fork's copy is younger)
     for d in dirs:
@@ -6182,11 +6193,7 @@ def spend_index(dirs, now=None, keep_s=SPEND_KEEP_S):
     copied = {k: v for k, v in copied.items() if v >= now - 7 * 86400}
     live_sids = {v[1] for v in msgs.values()}
     born = {k: v for k, v in born.items() if k in live_sids}
-    os.makedirs(os.path.dirname(_spend_path()), mode=0o700, exist_ok=True)
-    tmp = f"{_spend_path()}.{os.getpid()}.tmp"
-    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-        json.dump({"files": files, "msgs": msgs, "copied": copied, "born": born}, fh)
-    os.replace(tmp, _spend_path())
+    _save_spend_index({"files": files, "msgs": msgs, "copied": copied, "born": born})
     return msgs
 
 
@@ -6194,11 +6201,7 @@ def mark_copied(paths, t=None):
     """Record that these transcript paths (files or session dirs) were copied in at time t: the spend
     index counts their records from t on (the earlier ones belong to the account they were copied from)."""
     t = t or time.time()
-    try:
-        with open(_spend_path()) as fh:
-            st = json.load(fh)
-    except Exception:
-        st = {"files": {}, "msgs": {}}
+    st = _load_spend_index()
     st.setdefault("copied", {}).update({p: t for p in paths})
     m = [_CONFIG_DIR_RE.match(p) for p in paths]
     sessions = {(x.group(1), _session_of(p) if p.endswith(".jsonl") else os.path.basename(p))
@@ -6207,11 +6210,7 @@ def mark_copied(paths, t=None):
     st["files"] = {f: v for f, v in st["files"].items()
                    if not any(f.startswith(d + os.sep) and _session_of(f) == sid for d, sid in sessions)}
     st["msgs"] = {k: v for k, v in st["msgs"].items() if (v[3], v[1]) not in sessions}
-    os.makedirs(os.path.dirname(_spend_path()), mode=0o700, exist_ok=True)
-    tmp = f"{_spend_path()}.{os.getpid()}.tmp"
-    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-        json.dump(st, fh)
-    os.replace(tmp, _spend_path())
+    _save_spend_index(st)
 
 
 def spend_since(d, t0, index=None):
