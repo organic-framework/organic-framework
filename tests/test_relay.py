@@ -40,6 +40,16 @@ class RelayTest(unittest.TestCase):
             return ok, None if ok else "pane gone"
         return deliver
 
+    def test_a_message_held_over_an_unreadable_box_is_waiting_not_arriving(self):
+        """of_review on PR 639: of status told the position such a message was arriving and needed nothing."""
+        m = {"msg_id": "m-unread", "to": "ofb:of_a", "from": "zeta:acme_org", "text": "hi", "authority": "verified"}
+        held = lambda pane, text, session, sender, working_ok=False, skip_if=None: ("deferred", of_relay.UNREAD_BOX)
+        self.assertEqual(of_relay.deliver(self.conn, m, LOCAL, held), ("deferred", of_relay.UNREAD_BOX))
+        self.assertNotIn("m-unread", of_relay.arriving("ofb:of_a"))
+        busy = lambda pane, text, session, sender, working_ok=False, skip_if=None: ("deferred", "agent busy")
+        self.assertEqual(of_relay.deliver(self.conn, dict(m, msg_id="m-busy"), LOCAL, busy)[0], "deferred")
+        self.assertIn("m-busy", of_relay.arriving("ofb:of_a"))   # a busy agent: it comes in when idle
+
     def test_agent_delivery_once_with_header(self):
         m = {"msg_id": "m1", "to": "ofb:of_a", "from": "zeta:acme_org", "text": "please review", "authority": "verified"}
         self.assertEqual(of_relay.deliver(self.conn, m, LOCAL, self.fake()), ("delivered", None))
@@ -873,6 +883,22 @@ class RelayTest(unittest.TestCase):
         res, typed = self._deliver_with_box(self.CODEX_EMPTY)
         self.assertEqual(res, (True, None))
         self.assertEqual(len(typed), 1)
+
+    def test_codex_box_under_rules_is_read_as_codex_and_unread_holds(self):
+        """of_review on PR 639: two rules above a › box read as Claude Code's empty box and were typed into; an
+        unreadable box counted as an 8-character stuck draft, and its message showed as arriving."""
+        ruled = "─" * 40 + "\n" + "─" * 40 + "\n" + "\x1b[0m\x1b[1m› \x1b[0ma person's draft\n \n  status"
+        res, typed = self._deliver_with_box(ruled)
+        self.assertEqual((res, typed), (("deferred", "the input box holds text (16 chars)"), []))
+        saved = of_relay.codex_box_text
+        of_relay.codex_box_text = lambda screen: None   # a Codex box the reader cannot read
+        try:
+            before = of_relay.read_stuck()
+            res, typed = self._deliver_with_box(self.CODEX_EMPTY)
+            self.assertEqual((res, typed), (("deferred", of_relay.UNREAD_BOX), []))
+            self.assertEqual(of_relay.read_stuck(), before)   # no stuck draft counted
+        finally:
+            of_relay.codex_box_text = saved
 
     def test_codex_folder_trust_hooks_list_and_sign_in_are_dialogs(self):
         """of_herdr's lab screens: each draws `› 1. …` like a box, and Enter there would answer it."""
