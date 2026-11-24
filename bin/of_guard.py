@@ -3403,8 +3403,8 @@ def _line_act(words):
             return True
         if rest[:1] == ["access"] and any(x in ("grant", "revoke", "link", "record") for x in rest[1:]):
             return True
-        if _org_path_act(rest) or _server_route_act(rest):
-            return True
+        if _org_path_act(rest) or _server_route_act(rest) or _issues_label_act(rest):
+            return True   # and of issues label, as the per-command reading takes it
     return False
 
 
@@ -3690,6 +3690,25 @@ def _command_word(text, names, interpreters=False):
     return False
 
 
+ACTOR_SET_WARN = ("of run with a variable that names its caller set on the line (docs/guard.md G31): of takes its "
+                  "caller from CLAUDE_CODE_SESSION_ID and OF_POSITION, so the message, status or record would be "
+                  "another position's. Leave them as your session set them")
+
+
+def _actor_set_warn(cmd):
+    """G31's warning for any of command on a line that sets a caller variable to a value: `of send`, `of status`, a
+    hand-over. A deny for of's acts (_actor_line_deny); a warning for the rest until the replay shows none of the
+    sessions' own scripts need it (14 lines in the 21 days to 2026-11-24, all of them reading or tools)."""
+    if "of" not in cmd or not any(v in cmd for v in ACTOR_VARS):
+        return
+    flat = _strip_quoted(_without_code_text(cmd))   # a message's own words are prose, its prefix is not
+    if _command_word(flat, {"of"}) and any(re.search(rf"\b{v}=[^\s;&|)]", flat) for v in ACTOR_VARS):
+        note = (ACTOR_SET_WARN, "of with its caller set", "a warning now, a deny once the sessions' scripts no longer "
+                "set it")
+        if note not in _WARNINGS:
+            _WARNINGS.append(note)
+
+
 def _actor_line_deny(cmd):
     """(reason, what) when the line runs one of of's acts and holds a way to clear or replace its caller's variables
     anywhere (G31's line reading); else None. A help call with a clear on the line is refused too: the line's words
@@ -3710,6 +3729,10 @@ def _actor_line_deny(cmd):
     if any(re.search(rf"\b{v}=(?:\s|$|[;&|)]|\$)|\b(?:unset|export\s+-\w*n|declare|typeset|local|readonly)\b"
                      rf"[^;&|\n]*\b{v}\b|(?:-u\s*|--unset=?\s*){v}\b", flat) for v in ACTOR_VARS):
         why = "a variable that names its caller, cleared on the line"   # an empty value, unset, -u, export -n…
+    elif any(re.search(rf"\b{v}\b", flat) for v in ACTOR_VARS):
+        # set to another session's id or position, or named at all: of takes its caller from it (of_review, private,
+        # on PR 630: `CLAUDE_CODE_SESSION_ID=<a keeper's session> of issues label …` labelled as the keeper)
+        why = "a variable that names its caller, set or named on the line"
     elif any(f == "env" and k + 1 < len(words) and words[k + 1].startswith("-") for k, f in enumerate(folded)):
         why = "env with an option"
     elif re.search(r"(?<![\w-])exec\s+-\w*c", flat):
@@ -6539,6 +6562,8 @@ def critical_deny(tool, tool_input, cwd=None):
         _DENY_CWD[0] = cwd
         try:
             hit = _actor_line_deny(cmd) or _bash_deny(cmd)
+            if not hit:
+                _actor_set_warn(cmd)
         except Exception as e:  # a parser slip: the old text match first, then a deny unless the shell would refuse
             # the line itself (of_review on PR 575)
             bare = _strip_quoted(cmd)
