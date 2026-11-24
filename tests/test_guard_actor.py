@@ -229,5 +229,22 @@ class ServerRouteAct(unittest.TestCase):
         self.assertIsNone(deny("of issues list"))
 
 
+    def test_a_caller_variable_set_on_the_line_is_refused_for_an_act(self):
+        """of_review, private, on PR 630: set to another session's id, the variable makes the act that session's."""
+        import of_guard
+        for cmd in ("CLAUDE_CODE_SESSION_ID=0b1c-other of issues label OF-1 false_positive",
+                    "env CLAUDE_CODE_SESSION_ID=0b1c-other of issues label OF-1 false_positive",
+                    "export CLAUDE_CODE_SESSION_ID=0b1c-other; of issues label OF-1 false_positive",
+                    "CLAUDE_CODE_SESSION_ID=0b1c-other of asks answered XX-1",
+                    "OF_POSITION=of_other of asks withdraw XX-1"):
+            self.assertTrue(deny(cmd), cmd)
+        of_guard._WARNINGS.clear()
+        self.assertIsNone(deny("CLAUDE_CODE_SESSION_ID=0b1c-other of send of_x hello"))   # a warning, not a deny
+        self.assertTrue(any("names its caller set" in w[0] for w in of_guard._WARNINGS))
+        of_guard._WARNINGS.clear()
+        self.assertIsNone(deny("of send of_x 'my session id is in CLAUDE_CODE_SESSION_ID'"))   # prose
+        self.assertFalse(of_guard._WARNINGS)
+
+
 if __name__ == "__main__":
     unittest.main()
