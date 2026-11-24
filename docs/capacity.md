@@ -93,6 +93,12 @@ Plugins, MCP servers and hooks are per config dir. Before the first move to an a
 
 **When the old account is already exhausted**, the holder cannot take a turn: a message to it ends in the harness's limit dialog ("Stop and wait for limit to reset", "Wait here", "Switch to usage credits"). Choose the first option (never the paid one), then move it; the move itself needs no turn on the old account.
 
+### A session that continued in another
+
+In Claude Code 2.1.331 (observed 2026-11-24), a session in a herdr pane can continue in the background daemon. The pane stays alive and shows the conversation, and the daemon writes to a new session's transcript. The old transcript ends with a `continued-in` record naming the new session.
+
+The balancer follows up to five such records. When the successor is live, it records one `of.holder_changed` event with the transcript evidence and writes a `registry.diff` under `capacity/moves/continued-in-<event id>/` in the OF state directory. The structure keeper can apply the proposed `holder.session` change. Capacity never moves or restarts the old session, which would create a second copy of the conversation. It also leaves a live `kind: bg` session in its daemon, outside the pane.
+
 ### From another terminal multiplexer
 
 A holder running in a Zellij pane (`ZELLIJ_SESSION_NAME` and `ZELLIJ_PANE_ID` in its process environment) moves the same way, into herdr: the draft check reads `zellij action dump-screen --pane-id`, `/exit` goes through `write-chars` and `send-keys`, and the session resumes in a new herdr pane in its unit's workspace (`<org short>·<unit>`) and its system's tab, created when missing (`--into WORKSPACE/TAB` overrides). The Zellij pane is left at its shell. The launch flags follow the old process (`--dangerously-skip-permissions` only when it had it), and `--note` / `--note-file` append the organization's continuation text to the hand-over note. An account move and a runtime move are one restart.
