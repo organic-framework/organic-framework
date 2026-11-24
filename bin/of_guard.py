@@ -3742,7 +3742,14 @@ def _actor_act(words):
         return False  # `of asks withdraw --help` records nothing (of_review on organic-framework PR 387)
     return (words[:1] == ["asks"] and len(words) > 1 and words[1] in ACTOR_ACTS) or \
         (words[:1] == ["access"] and len(words) > 1 and words[1] in ("grant", "revoke", "link", "record")) or \
-        _org_path_act(words) or _server_route_act(words)
+        _org_path_act(words) or _server_route_act(words) or _issues_label_act(words)
+
+
+def _issues_label_act(words):
+    """`of issues label`: with no caller named it records the owner's label, which holds over all time, so a cleared
+    caller is refused as for every act here (of_review on organic-framework PR 630). A session's own label passes."""
+    words = [w for w in words if w != "--"]
+    return words[:1] == ["issues"] and "label" in words[1:]
 
 
 def _server_route_act(words):
