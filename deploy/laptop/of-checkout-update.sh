@@ -6,7 +6,8 @@
 # started by launchd on a request (dev.organic-framework.checkout-update, WatchPaths on
 # ~/.local/state/of/checkout-update.request, whose content is never read), it fetches public main privately, lets
 # `of protected ff` (PR 511) move the checkout to a merged pull request's commit with its checks green, and restarts
-# of-server, of-relay and of-listen through launchctl. Installed by `of live setup` (bin/of_live.py).
+# of-server, of-relay and of-listen through launchctl. launchd runs it from the live checkout itself, which G40 keeps
+# from every session, so it changes only with a reviewed commit; `of live setup` writes the agent (bin/of_live.py).
 set -euo pipefail
 export PATH=/usr/bin:/bin SSH_AUTH_SOCK= OF_AUTOMATION=1 GIT_TERMINAL_PROMPT=0
 unset PYTHONPATH PYTHONHOME PYTHONSTARTUP
@@ -45,10 +46,12 @@ check_checkout() {
   while IFS= read -r line; do
     case "$line" in
       core.repositoryformatversion=0|core.filemode=true|core.bare=false|core.logallrefupdates=true) ;;
+      core.ignorecase=true|core.precomposeunicode=true) ;;   # what git writes into any clone on macOS
       "remote.origin.url=$URL") ;;
       'remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*') ;;
       branch.main.remote=origin|branch.main.merge=refs/heads/main) ;;
-      *) echo "refused: the checkout's config holds a line the update does not know: ${line%%=*}"; return 1 ;;
+      *) echo "refused: the checkout's config holds a line the update does not know, in its section ${line%%.*}"
+         return 1 ;;   # the section only: a key's subsection can hold a URL with a user and a token
     esac
   done <<<"$lines"
 }
@@ -80,7 +83,9 @@ main() {
   echo "update requested"
   check_checkout
   old=$(live '' rev-parse --verify 'HEAD^{commit}')
-  P=$(mktemp -d "$HOME/.of-update.XXXXXX")
+  # the private store lies inside the live checkout's .git, which G40 keeps: no session can put a .pyc in its
+  # cache folder while an update runs (of_secrets-review on PR 629)
+  P=$(mktemp -d "$LIVE/.git/of-update.XXXXXX")
   trap "rm -rf '$P'" EXIT
   g '' -C / init -q --bare -b main "$P"
   g "$NET" -C / --git-dir="$P" fetch -q --no-tags "$URL" +refs/heads/main:refs/heads/main
@@ -88,17 +93,9 @@ main() {
   if ! g '' -C / --git-dir="$P" merge-base --is-ancestor "$old" "$tip"; then
     echo "refused: the checkout's $old is not on public main"; return 1
   fi
-  if [ "$old" = "$tip" ]; then
-    if older_than_move; then
-      echo "at $tip already, but a service is older than that move: restarting"
-      restart || { echo "UPDATE: A SERVICE IS NOT BACK at $tip"; return 1; }
-    fi
-    echo "UPDATE: nothing to do, at $tip"
-    return 0
-  fi
-
-  # before any of the checkout's code runs: its tracked files are exactly old's, read from the private store, or that
-  # code could decide its own move (of_server's review, message 01a2032c-9e79)
+  # before any of the checkout's code runs, and before a restart at the tip (of_secrets-review on PR 629): its
+  # tracked files are exactly old's, read from the private store, or that code could decide its own move (of_server's
+  # review, message 01a2032c-9e79)
   private read-tree "$old"
   private update-index -q --refresh >/dev/null || true
   if ! private diff-files --quiet --ignore-submodules=none; then
@@ -111,6 +108,15 @@ main() {
     echo "refused: files that are no commit's lie where the services import from:"
     printf '%s\n' "$extras" | head -20 | LC_ALL=C tr -cd '\11\12\40-\176'
     return 1
+  fi
+
+  if [ "$old" = "$tip" ]; then
+    if older_than_move; then
+      echo "at $tip already, but a service is older than that move: restarting"
+      restart || { echo "UPDATE: A SERVICE IS NOT BACK at $tip"; return 1; }
+    fi
+    echo "UPDATE: nothing to do, at $tip"
+    return 0
   fi
 
   live file fetch -q --no-tags --no-write-fetch-head "$P" refs/heads/main
@@ -130,4 +136,6 @@ main() {
   restart || { echo "UPDATE: A SERVICE IS NOT BACK; moved $old to $tip"; return 1; }
   echo "UPDATE: moved $old to $tip (of protected ff ended $rc); services restarted"
 }
-main </dev/null
+# launchd runs this file from the live checkout it moves: bash has read this whole line before main starts, and the
+# exit stops it before it reads on in a file the move may have rewritten. Sourced, by tests/test_live.py, it runs nothing.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then main </dev/null; exit $?; fi

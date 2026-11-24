@@ -12,13 +12,15 @@ tool call of every session on the laptop, both organizations', until the owner r
 
 ## Set it up (the owner, once, in a plain terminal)
 
-    of live setup     # clones public main into ~/.local/share/of/live, installs the update agent
+    of live setup     # clones public main into ~/.local/share/of/live, writes the update agent
     of live switch    # every hooked account's hooks, the units and ~/.local/bin/of now run from it
 
 `of live switch` runs `of hooks install` from the live checkout for each account whose settings already run OF's
 hooks, with the flags it had (`--guard` where a `PreToolUse` hook runs, `--deny-secrets` where the prompt's mention
-guard does), then `of listen install`, `of relay install`, `of server install` and `of health install` from there, so
-each launchd unit names the live checkout's `bin/of`. Both commands refuse in an agent's session.
+guard does) and `--replace` for the checkout its hooks ran from, so no hook of the working copy stays beside the
+live one; then `of listen install`, `of relay install`, `of server install` and `of health install` from there, so
+each launchd unit names the live checkout's `bin/of`. It stops at the first command that fails and leaves
+`~/.local/bin/of` as it was. Both commands refuse in an agent's session.
 
 ## How it moves
 
@@ -26,12 +28,16 @@ each launchd unit names the live checkout's `bin/of`. Both commands refuse in an
     of live status    # where it is, and what the of on PATH runs
 
 A request writes `~/.local/state/of/checkout-update.request`; its content is never read. The launchd agent
-`dev.organic-framework.checkout-update` watches that file and runs `~/.local/libexec/of-checkout-update`
-(`deploy/laptop/of-checkout-update.sh`, the macOS form of the agent host's update): it fetches public main privately,
-refuses when the checkout's tracked files differ from its commit or untracked files lie in `bin/` or `deploy/`, lets
+`dev.organic-framework.checkout-update` watches that file and runs the live checkout's own
+`deploy/laptop/of-checkout-update.sh` (the macOS form of the agent host's update): it fetches public main privately
+into a store inside the checkout's `.git`, refuses when the checkout's tracked files differ from its commit or untracked
+files lie in `bin/` or `deploy/` (before anything else, a restart at the tip included), lets
 `of protected ff` (organic-framework PR 511) move it to a merged pull request's commit with its checks green, and
 restarts of-server, the relay and the listener with `launchctl kickstart`. Its log is
 `~/.local/log/of/checkout-update.log`.
+
+The guard's G40 (docs/guard.md) denies every session a write into the live checkout and into what runs it, so the
+script changes only with a reviewed commit.
 
 The working copy stays where development happens: its tests, its commits and the release gate. A change there runs
 live only after its pull request merges and someone asks for a move.
