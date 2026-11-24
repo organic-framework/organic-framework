@@ -3230,6 +3230,15 @@ def cmd_codex(args):
     installs once with sudo (bin/of_codex.py; W3 of the Codex positions plan), and on stderr what it leaves to each
     position's own layer and why."""
     import of_codex
+    if args.action == "answer-start":
+        # a resume of_resume-command made: Codex's folder-access screen in this pane alone, answered once (of_spawn
+        # FOLDER_ACCESS; of_architect, message 01a20f55-3dcb)
+        import of_spawn
+        pane = os.environ.get("HERDR_PANE_ID")
+        if not args.pane or args.pane != pane or not args.folder:
+            raise OfError("of codex answer-start --pane <this pane> --folder <its folder>: only in the pane it names")
+        return 0 if of_spawn.watch_folder_access(args.pane, args.folder, timeout=args.timeout,
+                                                 log=lambda m: None) else 1
     if args.action != "requirements":
         raise OfError("of codex requirements [--of-bin PATH]")
     try:
@@ -3446,6 +3455,25 @@ def _panel_panes(v, panes_now, dry_run, say, anchor=None, start=True):
     return out
 
 
+def _watch_codex_start(line, popen=subprocess.Popen):
+    """In a herdr pane, before the resume line runs there: a detached `of codex answer-start` for this pane and the
+    line's folder, which answers Codex's folder-access screen once and exits (the line is exec'd, so nothing after it
+    could). Outside a pane, nothing."""
+    import shlex
+    pane = os.environ.get("HERDR_PANE_ID")
+    try:
+        words = shlex.split(line)
+        folder = words[words.index("-C") + 1]
+    except (ValueError, IndexError):
+        return None
+    if not pane:
+        return None
+    env = dict(os.environ, OF_AUTOMATION="1")
+    return popen([sys.executable, os.path.abspath(__file__), "codex", "answer-start", "--pane", pane, "--folder",
+                  folder, "--timeout", "120"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                 stderr=subprocess.DEVNULL, env=env, start_new_session=True)
+
+
 def cmd_resume_command(args):
     """Print the line that resumes a session as it ran; exit 1 (print nothing) when no account holds it."""
     import of_capacity
@@ -3469,6 +3497,7 @@ def cmd_resume_command(args):
         line = of_resume.codex_command(args.session, p, model=codex_model, effort=codex_effort, deny=deny)
         if not line:
             return 1
+        _watch_codex_start(line)
         print(line)
         return 0
     d, _ = of_resume.newest_copy(args.session)
@@ -9034,7 +9063,10 @@ def build_parser():
 
     cx = sub.add_parser("codex", help="Codex as a position's harness: requirements prints the managed requirements file "
                                       "the machine's owner installs once with sudo (/etc/codex/requirements.toml)")
-    cx.add_argument("action", choices=["requirements"])
+    cx.add_argument("action", choices=["requirements", "answer-start"])
+    cx.add_argument("--pane", help="answer-start: this pane (HERDR_PANE_ID)")
+    cx.add_argument("--folder", help="answer-start: the folder its Codex was resumed in")
+    cx.add_argument("--timeout", type=int, default=120, help="answer-start: seconds to wait for the screen")
     cx.add_argument("--of-bin", help="one program for every user's hooks, for a machine with one OF install (default: each "
                          "user's own ~/.local/bin/of)")
     cx.set_defaults(fn=cmd_codex)

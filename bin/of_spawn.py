@@ -1132,6 +1132,89 @@ def declare_first_prompt(pane, text, window_s, injector="of_spawn"):
         {"ts": _time.time(), "pane": pane, "sha256": digest, "injector": injector, "window": window_s}) + "\n")
 
 
+# Codex's start screen for a folder marked untrusted (codex_untrust), as Codex 0.170.0 draws it (read on the agent host,
+# 2026-11-25): its first option, already selected, keeps the folder's config, hooks and exec policies off. of spawn and
+# of resume-command answer it with that option alone, only at a start or a resume they make, only for this text of a
+# version read here; any other screen, or this one in another text (a new Codex), stays a block for a person
+# (of_architect, message 01a20f55-3dcb). The relay never answers it.
+FOLDER_ACCESS = {
+    "0.170.0": ("Folder access", "Config, hooks, and exec policies from untrusted folders stay disabled.",
+                "Opening will not change saved trust.", "› 1. Open restricted", "2. Back to Agent Command Center",
+                "enter continue · esc back"),
+}
+
+
+def codex_version(exe="codex", run=subprocess.run):
+    """The installed Codex's version ("0.170.0"), or None."""
+    try:
+        r = run([exe, "--version"], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"\b(\d+\.\d+\.\d+)\b", r.stdout or "")
+    return m.group(1) if m and r.returncode == 0 else None
+
+
+def folder_access_screen(text, folder, version):
+    """Whether TEXT (a pane's screen) is Codex VERSION's folder-access start screen for FOLDER, word for word: the
+    screen's line breaks and indents are its width's, so blanks are not compared."""
+    want = FOLDER_ACCESS.get(version or "")
+    if not want or not isinstance(text, str):
+        return False
+    flat = re.sub(r"\s+", "", text)
+    return all(re.sub(r"\s+", "", w) in flat for w in want) and \
+        re.sub(r"\s+", "", "Folder access" + os.path.realpath(folder)) in flat
+
+
+def screen_text(herdr, pane):
+    """The visible text of PANE, or "" when it cannot be read."""
+    try:
+        r = herdr("pane", "read", pane, "--source", "visible", "--lines", "40")
+    except Exception:  # noqa: BLE001  an unreadable pane reads as nothing
+        return ""
+    if isinstance(r, str):
+        return r
+    if isinstance(r, dict):
+        inner = r.get("read") if isinstance(r.get("read"), dict) else (r.get("result") or {})
+        for d in (inner, r):
+            for k in ("text", "content", "output"):
+                if isinstance(d, dict) and isinstance(d.get(k), str):
+                    return d[k]
+    return ""
+
+
+DIALOG_FOOTER = re.compile(r"enter\s+continue|esc\s+back|Press\s+enter\s+to\s+continue", re.I)
+
+
+def answer_folder_access(herdr, pane, folder, version, log=print, injector="of_spawn", sleep=time.sleep):
+    """At a start or a resume OF made: when PANE shows VERSION's folder-access screen for FOLDER, press Enter once on
+    its selected '1. Open restricted', declared and recorded first. Returns None while the screen is not there, else
+    "answered" (the screen gone after the key) or "left" (nothing sent, or the screen did not go): a person's then,
+    and never tried again (of_server, message 01a20f5a-1acd: the screen read again just before the key, nothing sent
+    when anything changed; one key; read once more after it, with no retry)."""
+    first = screen_text(herdr, pane)
+    if not folder_access_screen(first, folder, version):
+        return None
+    again = screen_text(herdr, pane)
+    if again != first:
+        log("  Codex's folder-access screen changed before the key: nothing sent, left to a person")
+        return "left"
+    import hashlib
+    import of_events
+    of_events.emit("injected_prompt", {"injector": injector, "target_pane": pane,
+                                       "text_sha256": hashlib.sha256(b"enter").hexdigest(),
+                                       "reason": f"Codex {version}'s folder-access start screen answered with its "
+                                                 "selected '1. Open restricted' (the folder stays untrusted)"})
+    herdr("pane", "send-keys", pane, "enter")
+    sleep(2)
+    after = screen_text(herdr, pane)
+    # gone: neither this screen nor any dialog's footer is drawn (Codex's input box then, as of_herdr reads it)
+    if folder_access_screen(after, folder, version) or DIALOG_FOOTER.search(after or ""):
+        log("  Codex's folder-access screen is still there after one Enter: left to a person, not tried again")
+        return "left"
+    log("  Codex's folder-access screen answered: 1. Open restricted (the folder stays untrusted)")
+    return "answered"
+
+
 def codex_session(launch, timeout, sleep=time.sleep, clock=time.time):
     """Codex's own session id, once its SessionStart hook wrote codex.json in the launch's folder, or None."""
     import json as _json
@@ -1159,6 +1242,45 @@ def codex_session(launch, timeout, sleep=time.sleep, clock=time.time):
         sleep(1)
 
 
+def watch_folder_access(pane, folder, timeout=120, herdr=None, version=None, log=print, sleep=time.sleep,
+                        clock=time.time, injector="of_resume"):
+    """`of codex answer-start`: for a resume `of resume-command` made in its own pane, wait up to TIMEOUT for Codex's
+    folder-access screen there and answer it once (answer_folder_access); True when it did."""
+    if herdr is None:
+        import of_capacity
+        herdr = of_capacity._herdr
+    version = version if version is not None else codex_version()
+    if not version or version not in FOLDER_ACCESS:
+        return False
+    end = clock() + timeout
+    while clock() < end:   # waiting for the screen to show, never trying a key again
+        got = answer_folder_access(herdr, pane, folder, version, log=log, injector=injector, sleep=sleep)
+        if got is not None:
+            return got == "answered"
+        sleep(2)
+    return False
+
+
+def wait_codex_session(herdr, pane, pl, timeout, session=None, log=print, version=None, clock=time.time):
+    """Codex's session id once its hook reports it; meanwhile its folder-access start screen, when it shows, is
+    answered once (answer_folder_access). A second appearance, or any other screen, waits for a person. SESSION, a
+    test's stand-in, is asked once, after one look at the screen."""
+    version = version if version is not None else codex_version(pl.get("codex") or "codex")
+    if session is not None:
+        if version:
+            answer_folder_access(herdr, pane, pl["cwd"], version, log=log, sleep=lambda s: None)
+        return session(pl["launch"], timeout)
+    end, answered = clock() + timeout, False
+    while True:
+        sid = codex_session(pl["launch"], 3)
+        if sid:
+            return sid
+        if not answered and version:   # once it was tried, answered or left, never again
+            answered = answer_folder_access(herdr, pane, pl["cwd"], version, log=log) is not None
+        if clock() >= end:
+            return None
+
+
 def codex_run(pl, herdr, rename, log=print, of_bin=None, timeout=180, prepare=None, session=None):
     """Side effects of a Codex start: the door and the layer, the pane, the brief declared, the launch, Codex's session
     id from its hook, the agent's name, of apply. Returns the pane id."""
@@ -1177,7 +1299,7 @@ def codex_run(pl, herdr, rename, log=print, of_bin=None, timeout=180, prepare=No
     log(f"  pane {pane} in {pl['workspace']} / {pl['tab']}")
     declare_first_prompt(pane, pl["brief"], timeout + 60)
     herdr("pane", "run", pane, pl["command"])
-    sid = (session or codex_session)(pl["launch"], timeout)
+    sid = wait_codex_session(herdr, pane, pl, timeout, session=session, log=log)
     if not sid:
         raise SpawnError(f"Codex's session in pane {pane} did not report its id within {timeout}s (its SessionStart "
                          f"hook writes it; is the managed requirements file installed, `of codex requirements`?)")
