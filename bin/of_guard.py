@@ -306,11 +306,20 @@ def _secret_path(p):
             or _env_file(q) or _kube_config(q) or (n is not None and _secret_path(n)))
 
 
-def _opener_folder(opener):
-    """The folder a heredoc's opener runs in: the session's, moved by each `cd <folder>` before it on its line."""
+def _opener_folder(opener, cmd=None):
+    """The folder a heredoc's opener runs in: the session's, moved by each `cd <folder>` before it, on its own line or
+    on an earlier one of CMD (of_review on PR 629: `cd <checkout>` on its own line, then `python3 <<EOF`)."""
     here = _DENY_CWD[0]
+    text = opener
+    if cmd:
+        k = cmd.find(opener + "<<") if opener else -1
+        if k > 0:
+            try:
+                text = _cut_heredocs(cmd[:k]) + "\n" + opener
+            except Exception:  # noqa: BLE001 - what cannot be cut: the opener's own line
+                text = opener
     try:
-        segs = _segments(opener)
+        segs = _segments(text)
     except ValueError:
         return here
     for seg in segs[:-1]:
@@ -1024,7 +1033,7 @@ def connector_deny(tool, excluded):
 _CODE_REMOVES = re.compile(r"\bos\.(?:unlink|remove|removedirs|rmdir|rename|renames|replace|symlink|link)\s*\(|"
                            r"\bshutil\.(?:rmtree|move)\s*\(|\.(?:unlink|rmdir|symlink_to|hardlink_to)\s*\(|"
                            r"\bFile\.(?:delete|unlink|symlink|rename)|\bunlink\s*\(|\bFileUtils\.(?:rm|ln|mv)")
-_CODE_WRITE = re.compile(r"""\.open\s*\(\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|\bO_(?:WRONLY|RDWR|CREAT|TRUNC|APPEND)\b|"""
+_CODE_WRITE = re.compile(r"""\.open\s*\(\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|\bos\.open\s*\([^)]*\bO_(?:WRONLY|RDWR|CREAT|TRUNC|APPEND)\b|"""
                          r"""open\s*\(.*?,\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|open\s*\([^,]*,\s*['"]\s*\+?>|\bmode\s*=\s*['"][rbt]*[wax+]|write_text|"""
                          r"""write_bytes|(?<!sys\.stdout)(?<!sys\.stderr)\.write\s*\(|\bdump\s*\(|"""
                          r"""os\.(?:replace|rename|remove|unlink|truncate)|"""
@@ -1093,8 +1102,8 @@ def _code_deny(code, lang=None):
         return FORWARD_DENY, fwd
     gone = bool(_CODE_REMOVES.search(code))   # a removal or a link judges a name by itself (of_review on PR 629)
     live = next((l for l in lits if not re.search(r"\s", l.strip()) and l.strip().lstrip("<>+|& ")
-                 and (l.strip().lstrip("<>+|& ").startswith(("/", "~", "$")) or _DENY_CWD[0])
-                 and _in_live(l.strip().lstrip("<>+|& "), _live_box(), _DENY_CWD[0], gone)), None) \
+                 and (l.strip().lstrip("<>+|& ").startswith(("/", "~", "$")) or _rel_path_lit(l.strip().lstrip("<>+|& ")))
+                 and _in_live(l.strip().lstrip("<>+|& "), _live_box(), _DENY_CWD[0], gone, gone and _deep_lit(l.strip().lstrip("<>+|& ")))), None) \
         if _CODE_WRITE.search(code) else None   # G40 in code: a write into OF's live checkout (PR 629's review)
     if live:
         return LIVE_DENY, live
@@ -4687,10 +4696,12 @@ def _glob_match(path, pattern):
     return match(0, 0)
 
 
-def _in_folders(path, boxes, cwd=None, removal=False):
+def _in_folders(path, boxes, cwd=None, removal=False, above=None):
     """Does PATH lie in one of BOXES (real paths, case-folded)? By real path, compared without case (the Mac's volume
     ignores it), a relative path by CWD. A glob counts when its folder is a box or lies in one, or when it names a box
-    (with REMOVAL, or a recursive copy's destination, a folder above it too). G35's reading, shared with G34."""
+    (with REMOVAL, or a recursive copy's destination, a folder above it too). G35's reading, shared with G34. ABOVE
+    (REMOVAL's by default) says whether a folder above a box counts; with REMOVAL alone the name itself counts."""
+    above = removal if above is None else above
     p = str(path or "").strip("'\"")
     if not p:
         return False
@@ -4702,7 +4713,7 @@ def _in_folders(path, boxes, cwd=None, removal=False):
         d = os.path.dirname(rp)
         for box in boxes:
             chain = [box]
-            while removal and os.path.dirname(chain[-1]) != chain[-1]:
+            while above and os.path.dirname(chain[-1]) != chain[-1]:
                 chain.append(os.path.dirname(chain[-1]))
             if any(_glob_match(c, rp) for c in chain):
                 return True        # the pattern names the box, or a folder above it that is removed
@@ -4718,7 +4729,7 @@ def _in_folders(path, boxes, cwd=None, removal=False):
         for r in reals:
             if r == box or r.startswith(box + "/"):
                 return True
-        if removal and box.startswith(real.rstrip("/") + "/"):
+        if above and box.startswith(real.rstrip("/") + "/"):
             return True
     return False
 
@@ -4780,8 +4791,9 @@ def _ln_targets(args, cwd):
     ops = [a for a in args if not a.startswith("-")]
     if not ops:
         return []
-    if len(ops) == 1:
-        return [(os.path.join(cwd or ".", os.path.basename(ops[0].rstrip("/"))), False)]
+    if len(ops) == 1:   # a new name in the folder, replacing a link there by its own name
+        here = os.path.join(cwd or ".", os.path.basename(ops[0].rstrip("/")))
+        return [(here, os.path.islink(here))]
     dest = _expanduser(ops[-1].strip("'\""))
     d = dest if os.path.isabs(dest) else os.path.join(cwd or ".", dest)
     if os.path.islink(d) and (nofollow or not os.path.isdir(d)):
@@ -4811,7 +4823,25 @@ def _box_write(head, args, cwd, files, removal, shvars, inbox):
                                                               "--get-urlmatch") for a in rest)):
             hit = next((o for o in _git_outputs((sub or "").lower(), rest)
                         if o and inbox(_expanduser(o.strip("'\"")), where, False)), None)
+            if not hit and not _git_reads((sub or "").lower(), rest):   # a write in a repository there
+                dirs_at = [os.path.join(cwd or ".", _expanduser(w.strip("'\""))) if opt != "-C" else None
+                           for opt, w in dirs] + [where]
+                hit = next((d for d in dirs_at if d and inbox(d, cwd, False)), None)
     return hit
+
+
+def _git_reads(sub, rest):
+    """Is this git call a read (G40's list, a config read, a plain branch, worktree, remote, tag or notes list, a stash
+    list or show)? A bare `git stash` pushes (of_secrets-review)."""
+    if sub in _LIVE_GIT_READS:
+        return True
+    if sub == "config" and any(a in ("--get", "--get-all", "--get-regexp", "--list", "-l", "--get-urlmatch")
+                               for a in rest):
+        return True
+    if sub in ("branch", "worktree", "remote", "tag", "notes") and \
+            (not rest or rest[0] in ("list", "-v", "-vv", "-a", "-r", "--list", "show")):
+        return True
+    return sub == "stash" and bool(rest) and rest[0] in ("list", "show")
 
 
 def _live_agent(path, cwd=None):
@@ -4833,9 +4863,9 @@ def _live_agent(path, cwd=None):
     return False
 
 
-def _in_live(path, box, cwd=None, removal=False):
+def _in_live(path, box, cwd=None, removal=False, above=None):
     """G40's reading of one path: in its box, or an OF agent's plist."""
-    return _in_folders(path, box, cwd, removal) or _live_agent(path, cwd)
+    return _in_folders(path, box, cwd, removal, above) or _live_agent(path, cwd)
 
 
 def _live_box_real():
@@ -4854,6 +4884,27 @@ def _live_box_real():
         pass
     out.discard(os.path.realpath(_expanduser(DEV_CLONE)))
     return sorted(out)
+
+
+def _deep_lit(lit):
+    """May a removal in code with this literal count a folder above a kept one? Only a path two levels or more under the
+    home or the root: code that removes one file and names '/' or '~' for a join or a home lookup removes no folder
+    above the checkout (of_server, 2026-11-24: such lines were denied as G40)."""
+    p = os.path.realpath(_expanduser(str(lit).strip("'\"")))
+    home = os.path.realpath(_expanduser("~"))
+    if p in ("/", home) or not os.path.isabs(p):
+        return False
+    rel = p[len(home) + 1:] if p.startswith(home + "/") else p.lstrip("/")
+    return rel.count("/") >= 1
+
+
+def _rel_path_lit(lit):
+    """Is LIT, a relative literal in code, read as a path in the line's folder: one with a folder or a dot in it, or a
+    name that is there? A mode ('w'), an encoding or a word is none (of_review's note on PR 629)."""
+    here = _DENY_CWD[0]
+    if not here or not lit:
+        return False
+    return "/" in lit or "." in lit or os.path.lexists(os.path.join(here, lit))
 
 
 def _live_write(head, args, cwd, files, removal, env=None, shvars=None):
@@ -4917,17 +4968,7 @@ def _live_git(args, cwd, env, shvars):
     hit = next((c for c in cands if _in_folders(c, _live_box(), cwd)), None)
     if not hit:
         return None
-    if sub in _LIVE_GIT_READS:
-        return None
-    if sub == "config" and any(a in ("--get", "--get-all", "--get-regexp", "--list", "-l", "--get-urlmatch")
-                               for a in rest):
-        return None
-    if sub in ("branch", "worktree", "remote", "tag", "notes") and \
-            (not rest or rest[0] in ("list", "-v", "-vv", "-a", "-r", "--list", "show")):
-        return None
-    if sub == "stash" and rest and rest[0] in ("list", "show"):   # a bare `git stash` pushes (of_secrets-review)
-        return None
-    return hit
+    return None if _git_reads(sub, rest) else hit
 
 
 # G36: the guard's session index is the collector's (hand-over a18341af, of_server; of_secrets-review, msg
@@ -6157,12 +6198,14 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 lang = next(filter(None, (_lang(os.path.basename(w)) for w in ws[1:])), None)
             except (ValueError, IndexError):
                 remote = None
-        if head in _SHELLS or remote == "shell":
-            hit = _bash_deny(body, depth + 1)
+        if head in _SHELLS or remote == "shell":   # a local shell's body runs in its line's folder (of_review, PR 629)
+            hit = _bash_deny(body, depth + 1) if remote else \
+                _in_folder(_opener_folder(opener, cmd), _bash_deny, body, depth + 1)
             named = _code_runs_protected(body, _DENY_CWD[0]) if not hit and _ORG_PROTECTION["code"] else None
             hit = hit or ((PROTECTED_RUN_DENY, named) if named else None)
         elif head in _INTERPRETERS or remote == "code":
-            hit = _in_folder(_opener_folder(opener), _code_deny, body, lang)   # in its line's folder (G40)
+            hit = _code_deny(body, lang) if remote else \
+                _in_folder(_opener_folder(opener, cmd), _code_deny, body, lang)
         elif not quoted:  # an unquoted delimiter runs $( ) in the body, whatever reads it
             hit = next(filter(None, (_bash_deny(s, depth + 1) for s in _scan(body)[1])), None)
             if not hit and (head == "tee" or (head == "cat" and ">" not in opener)):  # printed to stdout

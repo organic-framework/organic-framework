@@ -1043,9 +1043,19 @@ class LiveCheckoutTest(unittest.TestCase):
         got = of_guard.critical_deny("Edit", {"file_path": f"{live}/docs/reference", "old_string": "a",
                                               "new_string": "b"}, "/tmp")   # Codex's Delete File reaches us so
         self.assertTrue(got and "live checkout" in got[0])
+        for cmd in (f"cd {live}\npython3 <<'EOF'\nopen('bin/x.py', 'w').write('')\nEOF",   # of_review, 12:03Z
+                    f"cd {live} && bash <<'EOF'\necho x > bin/x.py\nEOF",
+                    f"cd {live}/docs && ln -sf /tmp/reference"):
+            self.assertTrue(self.deny(cmd), cmd)
+        self.assertFalse(self.deny(f"cd {live} && ssh h bash <<'EOF'\necho x > bin/x.py\nEOF"))   # runs remotely
         for cmd in ("unzip -l /tmp/x.zip", "echo x > ~/Library/LaunchAgents/dev.organic-framework.a/b.plist",
-                    f"rm {outside}", "python3 -c \"s=open('docs/a.md').read(); open('docs/a.md','w').write(s.replace('x','y'))\""):
+                    f"rm {outside}", "python3 -c \"s=open('docs/a.md').read(); open('docs/a.md','w').write(s.replace('x','y'))\"",
+                    # a removal in code beside '/' or '~' for a join or a home lookup (of_server, 2026-11-24: denied)
+                    "python3 -c \"import os; os.remove('/tmp/x'); print('/'.join(['a', 'b']))\"",
+                    "python3 -c \"import os, shutil; shutil.rmtree('/tmp/y'); print(os.path.expanduser('~'))\""):
             self.assertFalse(self.deny(cmd), cmd)
+        above = os.path.dirname(live)   # a deep literal above the checkout still counts
+        self.assertTrue(self.deny(f"python3 -c \"import shutil; shutil.rmtree('{above}')\""))
 
     def test_the_forms_of_the_second_pass(self):
         """of_review, private, on PR 629: an attached unzip -d, a link inside removed by itself, a new OF plist, a
