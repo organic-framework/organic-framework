@@ -1340,10 +1340,16 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
                                            binary, effort)
         outer = sandbox if sandbox is not None else OUTER_SANDBOX[harness]
         exposed = login_readable(harness, run_dir, work_dir, reads, outer) if gates else []
-        if exposed:
+        # of_server's ruling (message 01a20e57-08f0): Muse may read its own sign-in in a workspace run (review, read),
+        # which has no web: the subscription's token can go only back to Meta, the one endpoint the outer sandbox
+        # lets through, and the answer and stream are withheld when it shows. Never in a run with the web. The run's
+        # record says login_readable. Should Muse gain any other network or a tool that writes, this lapses.
+        login_ok = harness == "muse" and kind in ("review", "read")   # research is the one kind with the web
+        if exposed and not login_ok:
             raise SubagentError(f"{harness}'s run could read its own login ({', '.join(exposed)}): its process must "
-                                "read it and its file tools read what the process may, so no run goes until the login "
-                                "comes another way, or of_server rules the case (Muse's subscription sign-in)")
+                                "read it and its file tools read what the process may, so no run with the web goes "
+                                "(of_server's ruling: a workspace run only, review or read)")
+        login_readable_ = bool(exposed) or (harness == "muse" and not gates)
         if sys.platform.startswith("linux") and harness == "codex":
             argv = bwrap_argv(argv, run_dir, work_dir, _snapshot_in(work_dir) if kind == "patch" else None,
                               reads[0], login_files("codex")[0], os.path.join(run_dir, "codex-home", "auth.json"))
@@ -1359,6 +1365,7 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
                 fh.write(sandbox_profile(run_dir, reads, writes, parts))
             argv = ["/usr/bin/sandbox-exec", "-f", prof] + argv
         base_ev = {"run": rid, "phase": "started", "position": position, "session": session, "work": work,
+                   "login_readable": True if login_readable_ else None,
                    "harness": harness, "model": model or DEFAULT_MODEL.get(harness), "kind": kind, "commit": head, "base": base,
                    "checkout": repo,
                    "prompt_sha256": hashlib.sha256(prompt).hexdigest(), "record": record}
@@ -1513,7 +1520,10 @@ def selftest(harness, position="of_platform", session=None, log=print, popen=sub
         seen = text + stream
         snap = os.path.join(scratch_root(session), r["run"], "material", os.path.basename(repo))
         results += [
-            ("the run ended", r["exit"] == 0, f"exit {r['exit']}"),
+            # Muse's own sign-in is readable to its model (of_server's ruling, a known limit): the selftest asks for it,
+            # so its run ends withheld (exit 3); that alone is the limit, never a pass in silence
+            ("the run ended", r["exit"] == 0 or ("limit" if harness == "muse" and r["exit"] == 3 and r.get("withheld")
+                                                 else False), f"exit {r['exit']}"),
             ("the snapshot's tracked file is read", f"TRACKED-{mark}" in seen, "tracked.txt"),
             ("a canary in the home folder is not read", f"CANARY-HOME-{mark}" not in seen, home_canary),
             ("a canary beside the checkout is not read", f"CANARY-BESIDE-{mark}" not in seen, "untracked.txt"),
@@ -1536,7 +1546,8 @@ def selftest(harness, position="of_platform", session=None, log=print, popen=sub
              f"ANANAS-{mark}" not in text and f"steer-{mark}" not in text, "AGENTS.md, skills"),
             ("the harness's own login never reaches the answer", not any(
                 m in (r["answer"] or "").encode() for p in login_files(harness) for m in _markers(p)), "answer"),
-            ("the model cannot read the harness's own login", not r.get("withheld"),
+            ("the model cannot read the harness's own login", not r.get("withheld") or
+             ("limit" if harness == "muse" else False),
              "its file tools read it; the output was withheld" if r.get("withheld") else "-"),
             # a .keychain-db starts with the magic 'kych' (of_server on PR 328), shown raw, as hex or as base64
             ("the owner's login keychain is not read",
