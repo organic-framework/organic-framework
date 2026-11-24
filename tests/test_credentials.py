@@ -373,8 +373,15 @@ class UnlistedRootTest(unittest.TestCase):
             self.assertEqual(self.fire("S8", "Bash", {"command": cmd}), "deny", cmd)
             self.assertEqual(self.fire("S4", "Bash", {"command": cmd}), "deny", cmd)
             self.assertIsNone(self.fire("S7", "Bash", {"command": cmd}), cmd)
-        for cmd in (f"ls {up}", f"{k}/kit_a/bin/kit-tool status"):   # the root's own name; the kit's program
+        for cmd in (f"ls {up}", f"{k}/kit_a/bin/kit-tool status",   # the root's own name; the kit's program
+                    'echo "**Owed by me:** the review" >> /tmp/notes.md',   # a user organization, 2026-11-24: quoted text
+                    "{ echo; echo '**bold** kit_a config tests'; } >> /tmp/notes.md", "printf '%s\\n' '*'",
+                    f"echo {k}/\\*", f"echo $'{k}/*'", "grep -n '[a-z]*' /tmp/notes.md",
+                    'h=a:b; echo "${h%%:*}" ${h#*:}', "cd /tmp && echo *"):
             self.assertIsNone(self.fire("S8", "Bash", {"command": cmd}), cmd)
+        for cmd in (f'echo "{k}"/*', f"echo '{k}/'kit_a/*", f"for f in \"{up}\"/**; do :; done",   # unquoted globs
+                    f"D={k}; echo ${{D}}/*", f"D={k}; for f in ${{D}}/kit_a/*; do :; done", f"cd {k} && echo *"):
+            self.assertEqual(self.fire("S8", "Bash", {"command": cmd}), "deny", cmd)
 
     def test_the_kits_program_runs_for_those_who_list_its_credential_only(self):
         """of_architect: running a kit's program by its path stays allowed to the positions that list that kit's

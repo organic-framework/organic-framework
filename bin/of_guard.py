@@ -8792,6 +8792,62 @@ def credential_lists(tool, tool_input, cwd=None, roots=(), depth=0):
     return [x for x in _cred_lists_bash(str(ti.get("command") or ""), cwd, dict(os.environ), near, depth)]
 
 
+def _glob_words(stext):
+    """The words of one stage's raw text that the shell expands as globs: (the word up to its first *, ? or [ outside
+    quotes, whether it holds ** there). Glob characters inside quotes, after a backslash or in $'…' are text, so a
+    quoted '**Owed by me:**' lists nothing (a user organization, 2026-11-24: a G43 false deny on an echo's markdown). Options and
+    assignments are left out, as before."""
+    out, cur, at, rec, quote, k, n = [], [], None, False, None, 0, len(stext)
+
+    def flush():
+        word = "".join(cur)
+        if at is not None and not word.startswith("-") and not re.match(r"[A-Za-z_]\w*=", word):
+            out.append((word[:at], rec))
+    while k < n:
+        ch = stext[k]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            else:
+                cur.append(ch)
+        elif quote == '"':
+            if ch == '"':
+                quote = None
+            elif ch == "\\" and k + 1 < n and stext[k + 1] in '$`"\\\n':
+                cur.append(stext[k + 1])
+                k += 1
+            else:
+                cur.append(ch)
+        elif ch == "\\" and k + 1 < n:
+            cur.append(stext[k + 1])
+            k += 1
+        elif ch == "$" and k + 1 < n and stext[k + 1] == "'":
+            quote = "'"   # an ANSI-C string: its characters are text, whatever they decode to
+            k += 1
+        elif ch == "$" and k + 1 < n and stext[k + 1] == "{":   # ${…}: part of the word, its * a pattern, no glob
+            j, depth = k + 2, 1
+            while j < n and depth:
+                depth += {"{": 1, "}": -1}.get(stext[j], 0)
+                j += 1
+            cur.extend(stext[k:j])   # one character a place: AT counts characters
+            k = j
+            continue
+        elif ch in "'\"":
+            quote = ch
+        elif ch.isspace() or ch in ";|&<>()":
+            flush()
+            cur, at, rec = [], None, False
+        else:
+            if ch in "*?[" and at is None:
+                at = len(cur)
+            if ch == "*" and k + 1 < n and stext[k + 1] == "*" and at is not None:
+                rec = True
+            cur.append(ch)
+        k += 1
+    flush()
+    return out
+
+
 def _cred_lists_bash(cmd, cwd, env, near, depth):
     if depth > DEPTH_CAP:
         _CAPPED[0] = _CAPPED[0] or "_cred_lists_bash"
@@ -8820,15 +8876,10 @@ def _cred_lists_bash(cmd, cwd, env, near, depth):
                 continue
             loop = re.match(r"\s*(?:for|select)\s+\w+\s+in\s+(.*)$", stext, re.S)
             if loop:   # `for f in <root>/*`: the loop's words are a glob the shell lists (of_secrets-review, PR 649)
-                try:
-                    words = _tokens(loop.group(1))
-                except ValueError:
-                    words = loop.group(1).split()
-                for a in words:
-                    if any(ch in a for ch in "*?["):
-                        fixed = _cred_expand(_cred_word(re.split(r"[*?\[]", a, 1)[0].rstrip("/") or "/"), env, cwd)
-                        if fixed and near(fixed, "**" in a):
-                            out.append((fixed, "glob", "**" in a))
+                for pre, rec in _glob_words(loop.group(1)):   # a bare * lists the folder it runs in
+                    fixed = _cred_expand(_cred_word(pre.rstrip("/") or ("/" if pre.startswith("/") else ".")), env, cwd)
+                    if fixed and near(fixed, rec):
+                        out.append((fixed, "glob", rec))
                 continue
             try:
                 assigns = _assignments(stext)
@@ -8863,11 +8914,10 @@ def _cred_lists_bash(cmd, cwd, env, near, depth):
             prog = _cred_expand(_cred_word(ws[0]), local, cwd) if ws and "/" in ws[0] else None
             if prog and near(prog, False):   # a program run by its path there: a use, the catalogue's to decide
                 out.append((prog, "run", False))
-            for a in args:   # a glob word lists the names it matches, whatever takes it (`echo <root>/*`, `for f in`)
-                if any(ch in a for ch in "*?[") and not a.startswith("-"):
-                    fixed = _cred_expand(_cred_word(re.split(r"[*?\[]", a, 1)[0].rstrip("/") or "/"), local, cwd)
-                    if fixed and near(fixed, "**" in a):
-                        out.append((fixed, "glob", "**" in a))
+            for pre, rec in _glob_words(stext):   # a glob word lists the names it matches, whatever takes it
+                fixed = _cred_expand(_cred_word(pre.rstrip("/") or ("/" if pre.startswith("/") else ".")), local, cwd)
+                if fixed and near(fixed, rec):
+                    out.append((fixed, "glob", rec))
             if head not in _LIST_HEADS:
                 continue
             recursive = head in _LIST_WALKERS or \
