@@ -1076,6 +1076,10 @@ class LiveCheckoutTest(unittest.TestCase):
         self.assertFalse(self.deny(f"cd {live}/bin && python3 -c \"import pathlib; pathlib.Path('/tmp/q').open('w')\""))
         self.assertFalse(self.deny(f"python3 -c \"import os; os.open('{live}/bin/of', os.O_RDONLY); print(os.O_CREAT)\""))
         self.assertFalse(self.deny(f"cd {live} && ssh h python3 <<'EOF'\nopen('bin/x.py', 'w').write('')\nEOF"))
+        for cmd in ("ln -s /tmp/mine ~/Library/LaunchAgents/dev.organic-framework.checkout-update.plist.new",
+                    "ln -s /tmp/mine ~/.local/bin/of.new"):   # a writer's temporary name (of_review on PR 628)
+            self.assertTrue(self.deny(cmd), cmd)
+        self.assertFalse(self.deny("echo x > ~/.local/bin/other-tool"))
         for top in ("~/.local", os.path.expanduser("~")):   # a removal's own argument at any depth (PR 629)
             self.assertTrue(self.deny(f"python3 -c \"import shutil, os; shutil.rmtree(os.path.expanduser('{top}'))\""), top)
 

@@ -4896,14 +4896,30 @@ def _live_agent(path, cwd=None):
     name = os.path.basename(LIVE_AGENTS).casefold()
     for q in (os.path.join(os.path.realpath(os.path.dirname(p)), os.path.basename(p)), os.path.realpath(p)):
         q = q.casefold()
-        if os.path.dirname(q) == agents and fnmatch.fnmatchcase(os.path.basename(q), name):
-            return True   # the name alone matched, so `*` never spans a folder (of_review on PR 629)
+        base = os.path.basename(q)
+        if os.path.dirname(q) == agents and (fnmatch.fnmatchcase(base, name) or fnmatch.fnmatchcase(base, name + ".*")):
+            return True   # the name alone matched, so `*` never spans a folder (of_review on PR 629); and a plist's
+            # temporary name (`….plist.new`), which a writer renames over it (of_review on PR 628's setup)
     return False
 
 
+def _live_link_temp(path, cwd=None):
+    """Does PATH name a temporary sibling of the `of` on PATH (`~/.local/bin/of.new`), which a writer renames over it
+    (of_review on PR 628's setup: a link planted there is followed or renamed into place)?"""
+    p = str(path or "").strip("'\"")
+    if not p:
+        return False
+    if not p.startswith(("/", "~", "$")) and cwd:
+        p = os.path.join(cwd, p)
+    p = _expanduser(p)
+    link = _expanduser("~/.local/bin/of")
+    q = os.path.join(os.path.realpath(os.path.dirname(p)), os.path.basename(p))
+    return os.path.dirname(q) == os.path.realpath(os.path.dirname(link)) and os.path.basename(q).startswith("of.")
+
+
 def _in_live(path, box, cwd=None, removal=False, above=None):
-    """G40's reading of one path: in its box, or an OF agent's plist."""
-    return _in_folders(path, box, cwd, removal, above) or _live_agent(path, cwd)
+    """G40's reading of one path: in its box, an OF agent's plist (or its temporary name), or the `of` link's."""
+    return _in_folders(path, box, cwd, removal, above) or _live_agent(path, cwd) or _live_link_temp(path, cwd)
 
 
 def _live_box_real():
