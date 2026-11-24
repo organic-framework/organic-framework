@@ -248,7 +248,7 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 - **Default remedy.** A verification step: a cross-model review before results go to the owner or to production. Or a verifier position for the class of result. For part `answers`: a check before an answer reaches the owner, in which a second model reads it against its sources and against where each reading in it was taken (AGENTS.md, a conclusion rests on readings taken where its event happens). Or a verifier position for the class of answers.
 - **ΔT basis:** rework avoided, plus decisions made on wrong facts avoided. *p* = 0.6. *m_decide* = 5 min.
 
-### 2.10 Chatty coordination — `ap.chatty@4`
+### 2.10 Chatty coordination — `ap.chatty@5`
 
 *v1 (2026-11-07), at the founder's request through `of_architect` and `of_lab`: the receiver's side. v0 saw chatter only as messages per merged PR, from the sender's side. v1 adds two parts: a position whose turns are mostly started by typed-in text, and a waiter whose wait is pushed again and again by nudges. Built by `of_studio` (2026-11-07). The pair and organization part keep their issue ids, so owner labels on @0 still apply to them.*
 *v2 (2026-11-10): decided by the structure keeper, not the owner, through `of_platform`'s daily keeper digest (`of_architect`'s decision). Its remedies, a published interface, a queue or a hand-over, are structure diffs the owner approves. With PRs attributed it raised 56 issues in the first user organization that would otherwise have reached its owner. Labels carry over: only the decider changed.*
@@ -778,7 +778,7 @@ This position's mandate 5 sets each rule's *p* and *m_decide* from its deciders'
 | Rule (2026-11-23) | Labelled issues | Counted | Distinct judgements (false positives) | *p* |
 |---|---|---|---|---|
 | cell-gap@1 | 47 | 47 | 14 (0) | system 0.6, nobody 0.6, no_decider 0.5 → 0.95 |
-| chatty@4 | 107 | 81 | 29 (3) | 0.91, unchanged: 0.90 from the judged labels, 0.91 with this organization's 3 true positives whose replay was blocked |
+| chatty@4 | 107 | 81 | 29 (3) | 0.91 → 0.90 (chatty@5, 2026-11-24); this organization's 3 true positives whose replay was blocked are not judged |
 | function-gap@2 | 9 | 9 | 5 (1) | 0.7 → 0.8 |
 | inbound-backlog@3 | 29 | 23 | 8 (0) | 0.95, unchanged |
 | off-map-work@2 | 16 | 15 | 13 (4) | 0.8 → 0.69 |

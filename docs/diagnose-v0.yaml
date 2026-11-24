@@ -140,10 +140,10 @@ rules:
       answers: ["a check before an answer reaches the owner: a second model reads it against its sources, and where each reading in it was taken", verifier position for the class of answers]
 
   chatty:
-    version: 4                   # v4 (2026-11-15): from labels: no pair of a unit owner and its own unit's position; no nudges from of pulse itself; a coordinator's pairs and waits get a booking remedy (diagnose.md 2.10); v3 (2026-11-14): the pair part needs pair_merged_prs_gte merged PRs; v2 (2026-11-10): decided by the structure keeper; v1 (2026-11-07): the receiver's side, parts receiver_flood and repeat_nudges (of_studio b8242dd); counts only ended days whose merged PRs are imported (as churn)
-    labels_carry_from: [0, 1, 2, 3] # v1 kept the organization and pair parts' issue ids; v2 changes only the decider; v3 and v4 only narrow what fires (v4 also changes a remedy)
+    version: 5                   # v5 (2026-11-24): p from the deciders' labels (diagnose.md §5.2); v4 (2026-11-15): from labels: no pair of a unit owner and its own unit's position; no nudges from of pulse itself; a coordinator's pairs and waits get a booking remedy (diagnose.md 2.10); v3 (2026-11-14): the pair part needs pair_merged_prs_gte merged PRs; v2 (2026-11-10): decided by the structure keeper; v1 (2026-11-07): the receiver's side, parts receiver_flood and repeat_nudges (of_studio b8242dd); counts only ended days whose merged PRs are imported (as churn)
+    labels_carry_from: [0, 1, 2, 3, 4] # v1 kept the organization and pair parts' issue ids; v2 changes only the decider; v3 and v4 only narrow what fires (v4 also changes a remedy); v5 only priors
     decider: structure_keeper    # of_architect, 2026-11-10: its remedies are structure diffs; through of_platform's daily keeper digest
-    p: 0.91   # 2026-11-15: 10 of 11 distinct labelled judgements true, after v4 (diagnose.md §5.2); was 0.6
+    p: 0.9    # 2026-11-23: 26 of 29 distinct labelled judgements true, across two organizations (diagnose.md §5.2); was 0.91
     m_decide: 5
     thresholds: {org_msgs_per_wr_rise_gte: 0.50, pair_msgs_per_wr_gte: 10, pair_merged_prs_gte: 3, exclude_unit_owner_with_own_unit: true, unused_after_hours: 24, observed_days_gte: 3,
                  injected_turns_per_hour_gte: 20, flood_hours_gte: 3, nudges_per_pair_gte: 10}
