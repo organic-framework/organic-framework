@@ -570,6 +570,28 @@ class ListenTest(unittest.TestCase):
         self.assertNotIn("matter", text.get(secret) or "")
         self.assertIn("Merge PR 2349", " ".join(t or "" for t in text.values()))     # the others as they were
 
+    def test_the_start_deletes_only_versions_in_this_users_own_folder(self):
+        """of_review on PR 635: a link at asks-snapshots pointed the start's deletion at any folder the user owns, and
+        any folder there that was no version was deleted too."""
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as t:
+            state, elsewhere = os.path.join(t, "state"), os.path.join(t, "elsewhere")
+            os.makedirs(os.path.join(elsewhere, "projects"))
+            open(os.path.join(elsewhere, "projects", "f"), "w").close()
+            os.makedirs(state)
+            os.symlink(elsewhere, os.path.join(state, "asks-snapshots"))
+            with mock.patch.object(of_events, "STATE_DIR", state):
+                p = of_listen.AsksProcessor()
+                p._load_snaps("2026-11-20T00:00:00.000Z")
+                self.assertTrue(os.path.exists(os.path.join(elsewhere, "projects", "f")))   # the link's target kept
+                os.unlink(os.path.join(state, "asks-snapshots"))
+                base = os.path.join(state, "asks-snapshots")
+                for v in ("28", "backup", p.version):
+                    os.makedirs(os.path.join(base, v))
+                p._load_snaps("2026-11-20T00:00:00.000Z")
+                self.assertEqual(sorted(os.listdir(base)), sorted(["backup", p.version]))   # only another version
+
     def test_another_versions_snapshots_are_deleted(self):
         """of_server on redaction 7da5d129 (msg 01a1fa0b-b0b3): the folders of versions 28 and 29 stayed, cut from
         events since rewritten, and no version deleted them."""
