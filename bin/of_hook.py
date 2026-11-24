@@ -1435,7 +1435,10 @@ def _guard_one(hook, sess):
     except Exception as e:  # noqa: BLE001 - no cache yet: the framework's rules still apply; the catalogue step rebuilds it
         if type(e).__name__ == "Unreadable":   # a registry never read whole: its protections are unknown, so _guard
             raise                              # denies the call until it reads (of_server, 2026-11-23)
-    hit = critical_deny(hook.get("tool_name"), hook.get("tool_input"), hook.get("cwd"))
+    sid = hook.get("session_id")
+    # the cache as it is: a deny never waits for the registry (a session the cache lacks names no position here)
+    me = ((_guard_index().get("sessions") or {}).get(sid) or [None])[0] if sid else None
+    hit = critical_deny(hook.get("tool_name"), hook.get("tool_input"), hook.get("cwd"), caller=(sid, me))
     if not hit and (_authority_guard(hook, sess) or _release_guard(hook, sess)):
         return
     if not hit and _scratch_guard(hook, sess):

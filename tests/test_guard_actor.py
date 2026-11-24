@@ -53,7 +53,6 @@ class ActorTest(unittest.TestCase):
         for cmd in ("of asks answered AS-1 --option 1", "of status working --done-task 0a1b",
                     "env -u HERDR_ENV -u HERDR_PANE_ID of asks", "unset FOO; of status working",
                     "env -u CLAUDE_CODE_SESSION_ID python3 -m unittest discover -s tests",
-                    "env -i PATH=/usr/bin:/bin OF_POSITION=of_x CLAUDE_CODE_SESSION_ID=s1 of status working",
                     "of send of_x \"env -u OF_POSITION of asks answered: a gap, written up\"",
                     "unset CLAUDE_CODE_SESSION_ID; echo done",
                     # after the replay: the cleared runs it found were labs and dry runs of acts that record no caller
@@ -62,6 +61,9 @@ class ActorTest(unittest.TestCase):
                     "env -u CLAUDE_CODE_SESSION_ID -u OF_POSITION of who",
                     "env -u OF_POSITION of status working --done-task 0a1b"):
             self.assertIsNone(deny(cmd), cmd)
+        own = "env -i PATH=/usr/bin:/bin OF_POSITION=of_x CLAUDE_CODE_SESSION_ID=s1 of status working"
+        self.assertIsNone(of_guard.critical_deny("Bash", {"command": own}, "/Users/alex/of", caller=("s1", "of_x")))
+        self.assertTrue(deny(own))   # with no caller known, or another one's values: of_secrets-review on PR 630
 
 
 class ActorLineTest(unittest.TestCase):
@@ -238,12 +240,11 @@ class ServerRouteAct(unittest.TestCase):
                     "CLAUDE_CODE_SESSION_ID=0b1c-other of asks answered XX-1",
                     "OF_POSITION=of_other of asks withdraw XX-1"):
             self.assertTrue(deny(cmd), cmd)
-        of_guard._WARNINGS.clear()
-        self.assertIsNone(deny("CLAUDE_CODE_SESSION_ID=0b1c-other of send of_x hello"))   # a warning, not a deny
-        self.assertTrue(any("names its caller set" in w[0] for w in of_guard._WARNINGS))
-        of_guard._WARNINGS.clear()
+        for cmd in ("CLAUDE_CODE_SESSION_ID=0b1c-other of send of_x hello",   # of_secrets-review on PR 630
+                    "OF_POSITION=of_other of status working", "env OF_POSITION=of_other of inbox --mine"):
+            self.assertTrue(deny(cmd), cmd)
         self.assertIsNone(deny("of send of_x 'my session id is in CLAUDE_CODE_SESSION_ID'"))   # prose
-        self.assertFalse(of_guard._WARNINGS)
+        self.assertIsNone(deny("of send of_x 'set CLAUDE_CODE_SESSION_ID=abc to test'"))        # quoted prose
 
 
 if __name__ == "__main__":
