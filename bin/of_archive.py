@@ -12,7 +12,8 @@ mtime>.zst: nothing is dropped. Files never copied go first. Runs at low CPU and
 IO priority, at most BUDGET seconds a run, one run at a time (raw/archive.lock): the listener runs it every hour (10
 minutes when the machine is idle, 1 minute otherwise) and the hook at SessionEnd for that session's file
 (of_architect, hand-over b097ba7c: from 2026-11-05 to 11-16 nothing was copied after the first run).
-Sources: every Claude config dir (~/.claude*/projects) and ~/.codex/sessions.
+Sources: every Claude config dir (~/.claude*/projects) and each Codex seat's sessions folder (~/.codex/sessions and
+every CODEX_HOME of_accounts lists inside the home).
 """
 
 import glob
@@ -41,8 +42,39 @@ def raw_root():
     return root
 
 
+def codex_roots(seats=None):
+    """Each Codex seat's sessions folder (its CODEX_HOME, of_accounts.codex_seats), ~/.codex's among them: a Codex
+    position runs in a seat of its own, whose rollouts ~/.codex/sessions alone never held (W6 of hand-over 9ee1db9f,
+    of_platform's check, 2026-11-24). Only a seat inside the home folder, since a copy is kept at its path there."""
+    out = [os.path.join(HOME, ".codex", "sessions")]
+    try:
+        if seats is None:
+            import of_accounts
+            seats = of_accounts.codex_seats()
+        for s in seats or []:
+            home = os.path.realpath(os.path.expanduser(str(s.get("home") or "")))
+            if home.startswith(os.path.realpath(HOME) + os.sep):
+                out.append(os.path.join(home, "sessions"))
+    except Exception:  # noqa: BLE001 - no seat list: ~/.codex alone, as before
+        pass
+    seen, roots = set(), []
+    for r in out:
+        if os.path.realpath(r) not in seen:
+            seen.add(os.path.realpath(r))
+            roots.append(r)
+    return roots
+
+
+ROLLOUT = re.compile(r"(?:^|/)rollout-[^/]*\.jsonl(?:\.zst)?$")
+
+
+def harness_of(path):
+    """codex for a Codex rollout (rollout-<time>-<thread id>.jsonl, in whichever seat it lies), else claude-code."""
+    return "codex" if ROLLOUT.search(str(path)) or "/.codex/" in str(path) else "claude-code"
+
+
 def sources():
-    roots = glob.glob(os.path.join(HOME, ".claude*", "projects")) + [os.path.join(HOME, ".codex", "sessions")]
+    roots = glob.glob(os.path.join(HOME, ".claude*", "projects")) + codex_roots()
     for root in roots:
         for dirpath, _, files in os.walk(root):
             for f in files:

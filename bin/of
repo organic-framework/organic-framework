@@ -4370,7 +4370,8 @@ def cmd_secrets(args):
 # ------------------------------------------------------------------ store
 
 def _harness_of(path):
-    return "codex" if "/.codex/" in path else "claude-code"
+    import of_archive
+    return of_archive.harness_of(path)   # by the rollout's name, in any Codex seat (W6)
 
 
 def cmd_ingest(args):
