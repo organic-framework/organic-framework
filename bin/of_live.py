@@ -155,7 +155,7 @@ def checkout_org(orgs_file, checkout=None):
     return None
 
 
-def setup(python=None, run=subprocess.run, live=LIVE, log=print, orgs_file=None, org=None):
+def setup(python=None, run=subprocess.run, live=LIVE, log=print, orgs_file=None, org=None, keep_registry_ff=False):
     """Clone public main into LIVE (when it is not there), list it as the owner's protected_code entry with ff in
     orgs.yaml (of protected ff moves only such an entry; of_review on PR 628), write and load the agent. The owner's,
     in a plain terminal."""
@@ -176,7 +176,19 @@ def setup(python=None, run=subprocess.run, live=LIVE, log=print, orgs_file=None,
         org = org or checkout_org(orgs_file)
         if not org:
             raise LiveError("no organization in orgs.yaml lists the checkout OF runs from; name one with --org")
-        add_ff_entry(orgs_file, org, live)
+        import of_protected
+        # orgs.yaml's first protected_code makes the owner's lists alone vouch here: every registry's ff entry stops
+        # (of_protected.entries; of_review on PR 628). Those are listed first, and moved over only on the owner's word
+        reg = {} if of_protected.owner_entries(orgs_file) else registry_ff_items(orgs_file)
+        if reg and not keep_registry_ff:
+            named = "; ".join(f"{o}: " + ", ".join(str(i.get("path")) for i in its) for o, its in reg.items())
+            raise LiveError("listing the live checkout in orgs.yaml would stop these registries' fast-forward entries "
+                            f"from vouching on this machine: {named}. Run `of live setup --keep-registry-ff` to list "
+                            "them in orgs.yaml as written, beside it")
+        add_ff_entry(orgs_file, org, live, extra=reg.pop(org, []))
+        for o, its in reg.items():
+            add_items(orgs_file, o, its)
+            log(f"  listed {o}'s registry fast-forward entries in its orgs.yaml entry, as written")
         log(f"  listed {live} in {org}'s protected_code in {orgs_file}, moved only by of protected ff")
     os.makedirs(os.path.dirname(REQUEST), exist_ok=True)
     os.makedirs(os.path.expanduser("~/.local/log/of"), exist_ok=True)
@@ -212,10 +224,37 @@ def ff_entry(orgs_file, live=LIVE):
     return None
 
 
-def add_ff_entry(orgs_file, org, live=LIVE):
-    """Add LIVE's protected_code entry with ff to ORG's entry in orgs.yaml, the owner's file (docs/guard.md G33): a
-    block appended to the entry, the rest of the file kept as written, and written only when the file then reads as it
-    did with that one key more. ORG's entry must have no protected_code yet; otherwise the owner adds the item."""
+def registry_ff_items(orgs_file):
+    """{org: [its registry's protected_code items with ff, as written]}: what vouches for a fast-forward on this machine
+    while orgs.yaml lists no protected_code, and stops vouching once it lists any (of_protected.entries)."""
+    import yaml
+    import of_credentials
+    out = {}
+    for org, reg in of_credentials._registries(orgs_file):
+        try:
+            with open(reg) as fh:
+                doc = yaml.safe_load(fh) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        items = [i for i in (doc.get("protected_code") or []) if isinstance(i, dict) and i.get("ff")]
+        if items:
+            out[org] = items
+    return out
+
+
+def add_ff_entry(orgs_file, org, live=LIVE, extra=()):
+    """Add LIVE's protected_code entry with ff, and the items EXTRA, to ORG's entry in orgs.yaml (add_items)."""
+    home = os.path.expanduser("~")
+    shown = "~" + live[len(home):] if live.startswith(home + "/") else live
+    item = {"path": shown, "ff": dict(FF)}
+    add_items(orgs_file, org, [item] + list(extra))
+    return item
+
+
+def add_items(orgs_file, org, items):
+    """Add protected_code ITEMS to ORG's entry in orgs.yaml, the owner's file (docs/guard.md G33): a block appended to
+    the entry, the rest of the file kept as written, and written only when the file then reads as it did with that one
+    key more. ORG's entry must have no protected_code yet; otherwise the owner adds the items."""
     import tempfile
     import yaml
     import of_init
@@ -228,9 +267,7 @@ def add_ff_entry(orgs_file, org, live=LIVE):
         raise LiveError(f"no single organization {org!r} in {orgs_file}")
     if "protected_code" in orgs[at[0]]:
         raise LiveError(f"{org}'s entry in {orgs_file} has protected_code already: add the live checkout's item to it")
-    home = os.path.expanduser("~")
-    shown = "~" + live[len(home):] if live.startswith(home + "/") else live
-    item = {"path": shown, "ff": dict(FF)}
+    items = [dict(i) for i in items]
     lines = text.splitlines(keepends=True)
     if lines and not lines[-1].endswith("\n"):
         lines[-1] += "\n"
@@ -245,21 +282,21 @@ def add_ff_entry(orgs_file, org, live=LIVE):
             break
     if dash_col is None:
         raise LiveError(f"{orgs_file}: its orgs: list is not in block style; add the entry by hand")
-    items = [i for i, ln in enumerate(lines) if re.match(r"^ {%d}- " % dash_col, ln)]
-    if len(items) != len(orgs):
+    dashes = [i for i, ln in enumerate(lines) if re.match(r"^ {%d}- " % dash_col, ln)]
+    if len(dashes) != len(orgs):
         raise LiveError(f"{orgs_file}: its orgs: list is not in plain block style; add the entry by hand")
-    b = items[at[0]]
-    e = next((i for i in items if i > b), None)
+    b = dashes[at[0]]
+    e = next((i for i in dashes if i > b), None)
     if e is None:
         e = next((i for i in range(b + 1, len(lines)) if lines[i].strip() and not lines[i].startswith(" ")), len(lines))
     while e > b + 1 and not lines[e - 1].strip():
         e -= 1
     col = dash_col + 2
-    block = yaml.safe_dump({"protected_code": [item]}, default_flow_style=None, sort_keys=False)
+    block = yaml.safe_dump({"protected_code": items}, default_flow_style=None, sort_keys=False)
     block = "".join(" " * col + ln + "\n" for ln in block.splitlines())
     new = "".join(lines[:e]) + block + "".join(lines[e:])
     want = dict(doc)
-    want["orgs"] = [dict(o, protected_code=[item]) if k == at[0] else o for k, o in enumerate(orgs)]
+    want["orgs"] = [dict(o, protected_code=items) if k == at[0] else o for k, o in enumerate(orgs)]
     if yaml.safe_load(new) != want:
         raise LiveError(f"{orgs_file} would read differently after the edit; add the entry by hand:\n{block}")
     real = os.path.realpath(orgs_file)
@@ -268,7 +305,7 @@ def add_ff_entry(orgs_file, org, live=LIVE):
         fh.write(new)
     os.chmod(tmp, os.stat(real).st_mode & 0o777)
     os.replace(tmp, real)
-    return item
+    return items
 
 
 def switch(python=None, run=subprocess.run, live=LIVE, accounts=None, log=print, units=None):
