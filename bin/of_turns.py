@@ -201,15 +201,13 @@ MARGIN_S = 2 * 86400   # records read before --since, so a turn open then keeps 
 
 
 def _sessions(conn, lo, hi):
-    """The sessions with a response between LO and HI (ISO dates): from the spend view's epoch index when the store
-    has it, else every session the transcript records name (an index-only read of transcript_session_ts)."""
-    import of_model
-    try:
-        return [r[0] for r in conn.execute(
-            "SELECT DISTINCT session_id FROM view_spend_month WHERE epoch >= ? AND epoch < ?",
-            (of_model.epoch(lo + "T00:00:00Z") if lo else 0, of_model.epoch(hi + "T00:00:00Z") if hi != "~" else 1e12))]
-    except Exception:   # a store without the spend view
-        return [r[0] for r in conn.execute("SELECT DISTINCT session_id FROM transcript_record")]
+    """The sessions with a transcript record between LO and HI (ISO dates, "" and "~" for open ends), from the records
+    themselves: an index-only scan of transcript_session_ts (15 s on the laptop's store, 0.2 s on the agent host's,
+    2026-11-24). Not the spend view: it keeps responses only from the previous month's start and only under the
+    configured accounts' folders, so a window before it or a transcript elsewhere would be left out with nothing said
+    (of_review and of_field-analyst on PR 653)."""
+    return [r[0] for r in conn.execute(
+        "SELECT DISTINCT session_id FROM transcript_record WHERE timestamp >= ? AND timestamp < ?", (lo, hi))]
 
 
 def store_records(conn, since=None, until=None):
