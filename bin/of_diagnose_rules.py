@@ -2068,9 +2068,10 @@ def rule_unacted_turns(model, rows, a, b, cat, spec, parts=("message", "wake")):
 def rule_review_rounds(model, rows, a, b, cat, spec):
     """Pull requests merged in [a, b) on which one reviewer gave `changes_rounds_gte` or more "Verdict: changes"
     (of_github.verdicts, a GitHub work record's `verdicts`), per author and reviewer: each round is a review read and
-    a fix pushed again. Fires for a pair with `long_reviews_gte` such pull requests. Blocked (`wr.verdicts`) when no
-    work record merged in the window carries verdicts: an organization whose reviews leave none, or a store with no
-    GitHub import."""
+    a fix pushed again. Fires for a pair with `long_reviews_gte` such pull requests. A verdict counts only when its
+    comment's Position line names a position of the organization's registry: on a public repository anyone may write
+    that line (of_review on PR 651). Blocked (`wr.verdicts`) when no work record merged in the window carries
+    verdicts: an organization whose reviews leave none, or a store with no GitHub import."""
     t = spec.get("thresholds") or {}
     need, prs = t.get("changes_rounds_gte", 3), collections.defaultdict(list)
     seen = set()
@@ -2087,7 +2088,8 @@ def rule_review_rounds(model, rows, a, b, cat, spec):
             continue
         with_verdicts += 1
         author = pl.get("position") or r.get("position")
-        rounds = collections.Counter(v.get("position") for v in vs if isinstance(v, dict) and v.get("verdict") == "changes")
+        rounds = collections.Counter(v.get("position") for v in vs if isinstance(v, dict) and v.get("verdict") == "changes"
+                                     and v.get("position") in model["positions"])
         for reviewer, n in rounds.items():
             if author and reviewer and reviewer != author and n >= need:
                 prs[(author, reviewer)].append({"pr": f'{pl.get("repo")}#{pl.get("number")}', "changes": n,
@@ -2129,8 +2131,9 @@ def rule_heavy_context(model, rows, a, b, cat, spec):
     same UTC day, and at `floor_tokens` or more, on `heavy_days_gte` or more days of the window (token plan T0 and T5).
     Read from of.spend_hours v2 rows (of_spend.emit_hours: cache_read, cache_write and max_context after v1's nine
     fields; of_capacity, message 01a20e41-f086), every machine's latest report of each hour. A day counts a position
-    with `min_responses` responses, and an organization with `min_positions` such positions. Blocked (spend_hours.v2)
-    with no v2 row in the window: a v1 row leaves its cache reads unknown, not zero."""
+    with `min_responses` responses, and an organization with `min_positions` such positions; on a day whose median is
+    0, a position at the floor is far above it (its ratio left out). Blocked (spend_hours.v2) with no v2 row in the
+    window: a v1 row leaves its cache reads unknown, not zero."""
     t = spec.get("thresholds") or {}
     positions = model["positions"]
     per = collections.defaultdict(lambda: [0, 0, 0])   # (position, day) -> cache reads, responses, largest context
@@ -2160,17 +2163,18 @@ def rule_heavy_context(model, rows, a, b, cat, spec):
             continue
         med = statistics.median(x[1] for x in ps)
         for pos, each, n, mx in ps:
-            if med and each >= t.get("ratio_gte", 2.0) * med and each >= t.get("floor_tokens", 300000):
+            if each >= t.get("ratio_gte", 2.0) * med and each >= t.get("floor_tokens", 300000):
                 heavy[pos].append({"day": day, "cache_read_per_response": round(each), "median": round(med),
-                                   "ratio": round(each / med, 1), "responses": n, "max_context": mx})
+                                   "ratio": round(each / med, 1) if med else None, "responses": n, "max_context": mx})
     out = []
     for pos, ds in sorted(heavy.items()):
         if len(ds) >= t.get("heavy_days_gte", 2):
-            top = max(ds, key=lambda d: d["ratio"])
+            top = max(ds, key=lambda d: (d["ratio"] is None, d["ratio"] or 0))
+            far = (f"{top['ratio']} times its organization's median that day" if top["ratio"] is not None
+                   else "where its organization's median that day was 0")
             out.append(issue(cat, "heavy-context", [pos], {"days": ds},
                              f"{pos}: each response read {top['cache_read_per_response'] // 1000}k tokens of cached context "
-                             f"on {top['day']}, {top['ratio']} times its organization's median that day; "
-                             f"{len(ds)} such days"))
+                             f"on {top['day']}, {far}; {len(ds)} such days"))
     return out
 
 
