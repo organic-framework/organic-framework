@@ -1649,14 +1649,14 @@ def _org_guard(hook, sess):
         if not quick and not any(isinstance(r.get("cli"), dict) for r in rules):
             return False
         hits = of_guard.org_rule_hits("Bash", hook.get("tool_input"), rules, name,
-                                      {"KUBECONFIG": os.environ.get("KUBECONFIG")})
+                                      {"KUBECONFIG": os.environ.get("KUBECONFIG")}, mask=mask)
     except Exception:
         return False
     if not hits:
         return False
-    # what matched is the command's own words, a token among them: masked before it is shown or recorded, as the
-    # subject is (of_server, 2026-11-24, from PR 475's review; a reason held `--token <the value>` as typed)
-    hits = [(r, mask(str(m))) for r, m in hits]
+    # what matched is the command's own words, a token among them: org_rule_hits masked it before its cut, so it is
+    # masked where it is shown or recorded, as the subject is (of_server, 2026-11-24, from PR 475's review; of_review
+    # on organic-framework PR 623: masked after the cut, a URL's password at its end lost its @ and stayed)
     subject = mask(str((hook.get("tool_input") or {}).get("command") or ""))[:300]
 
     def record(rule, said, verdict, decision):

@@ -50,27 +50,56 @@ class MaskTest(unittest.TestCase):
 
 
 class OrgRuleMaskTest(unittest.TestCase):
-    """An organization rule's deny names what matched, the command's own words: masked in the reason shown and in the
-    recorded mandate_check, as its subject is (of_server, 2026-11-24, from organic-framework PR 475's review)."""
+    """An organization rule's deny names what matched, the command's own words: masked in the reason shown, in the
+    recorded mandate_check and in a warning's context, as its subject is, and masked before its length is cut, so a
+    secret the cut would break stays masked (of_server, 2026-11-24, from organic-framework PR 475's review; of_review
+    on PR 623). Through the guard's real org_rule_hits."""
 
-    def test_the_matched_words_are_masked_where_they_are_shown_and_recorded(self):
-        from unittest import mock
+    TOK = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+
+    def run_rule(self, command, mode="deny"):
         import io
-        tok = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
-        rule = {"id": "g-demo", "mode": "deny", "reason": "demo login is not for agents.", "cli": {"names": ["demo"]}}
-        hook = {"tool_name": "Bash", "session_id": "S", "cwd": "/tmp",
-                "tool_input": {"command": f"demo login --token {tok}"}}
-        out = io.StringIO()
-        with mock.patch.object(of_hook, "_guard_index", return_value={"sessions": {"S": ["acme_ops", "acme"]}}), \
-                mock.patch("of_grants.guard_rules", return_value=([rule], None)), \
-                mock.patch.object(of_hook.of_guard, "org_rule_hits", return_value=[(rule, f"demo login --token {tok}")]), \
-                mock.patch.object(of_hook, "write") as write, mock.patch("sys.stdout", out):
-            self.assertTrue(of_hook._org_guard(hook, {}))
-        self.assertIn("Matched: demo login --token", out.getvalue())
-        self.assertNotIn(tok, out.getvalue())
-        recorded = write.call_args[0][1]
-        self.assertNotIn(tok, recorded["reason"])
-        self.assertNotIn(tok, recorded["subject"])
+        from unittest import mock
+        rule = {"id": "g-demo", "mode": mode, "reason": "demo is not for agents.", "subject": "*", "except": [],
+                "cli": {"names": ["demo"]}}
+        hook = {"tool_name": "Bash", "session_id": "S", "cwd": "/tmp", "tool_input": {"command": command}}
+        out, sess = io.StringIO(), {}
+        saved = of_hook.OUTPUT
+        try:
+            with mock.patch.object(of_hook, "_guard_index", return_value={"sessions": {"S": ["acme_ops", "acme"]}}), \
+                    mock.patch("of_grants.guard_rules", return_value=([rule], None)), \
+                    mock.patch.object(of_hook, "write") as write, mock.patch("sys.stdout", out), \
+                    mock.patch.object(of_hook, "save_session"):
+                denied = of_hook._org_guard(hook, sess)
+            return denied, out.getvalue() + json.dumps(of_hook.OUTPUT or {}), [c[0][1] for c in write.call_args_list]
+        finally:
+            of_hook.OUTPUT = saved
+
+    def test_a_token_is_masked_where_it_is_shown_and_recorded(self):
+        denied, shown, recs = self.run_rule(f"demo login --token {self.TOK}")
+        self.assertTrue(denied)
+        self.assertIn("Matched: demo login --token", shown)
+        self.assertNotIn(self.TOK, shown)
+        self.assertTrue(recs and all(self.TOK not in r["reason"] and self.TOK not in r["subject"] for r in recs))
+
+    def test_a_url_password_past_the_cut_stays_masked(self):
+        pw = "Zq8" + "secretpass"   # no shape the masker knows but the URL's own
+        # the matched phrase is `demo <filler> https://u:<pw>@…`: a cut at 200 falls between the password and its @
+        cmd = "demo " + "x" * (200 - len("demo ") - len(" https://u:") - len(pw)) + f" https://u:{pw}@example.com/a"
+        denied, shown, recs = self.run_rule(cmd)
+        self.assertTrue(denied)
+        self.assertIn("https://u:", shown)
+        self.assertNotIn(pw[:8], shown)
+        self.assertTrue(recs and all(pw[:8] not in r["reason"] for r in recs))
+
+    def test_a_warning_and_a_record_mask_it_too(self):
+        _, shown, recs = self.run_rule(f"demo login --token {self.TOK}", mode="warn")
+        self.assertIn("a warning now", shown)
+        self.assertNotIn(self.TOK, shown)
+        self.assertTrue(recs and all(self.TOK not in r["reason"] for r in recs))
+        _, shown, recs = self.run_rule(f"demo login --token {self.TOK}", mode="record")
+        self.assertNotIn(self.TOK, shown)
+        self.assertTrue(recs and all(self.TOK not in r["reason"] for r in recs))
 
 
 class ClassifierTest(unittest.TestCase):
