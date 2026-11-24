@@ -1526,3 +1526,40 @@ SCENARIOS += [
           [_rr_pr(11020, 3, 821, "bot_operator", _RR3), _rr_pr(11021, 5, 822, "bot_operator", _RR3)],
           (_RR, ["bot_operator"], "negative")),
 ]
+
+
+# ---- ap.heavy-context@0 (diagnose.md 2.32, token plan T0 lever T5), affected [position] ----
+# of.spend_hours v2 rows: [account, position, work, goal, fresh, cost_usd, responses, outside_fresh, outside_runs,
+# cache_read, cache_write, max_context] (of_spend.emit_hours; of_capacity, message 01a20e41-f086).
+def _hc_hours(i0, per_response, v=2, days=(3, 4)):
+    """One report per day at 10:00Z: 40 responses per position, PER_RESPONSE {position: cached tokens per response}."""
+    out = []
+    for k, d in enumerate(days):
+        hour = f"2026-11-0{d}T10:00:00Z"
+        rows = [["~/.claude", p, None, None, 1000, 4.0, 40, 0, 0] + ([n * 40, 1000, n + 5000] if v >= 2 else [])
+                for p, n in per_response.items()]
+        out.append(ev(i0 + k, f"2026-11-0{d}T10:15Z", "of.spend_hours", None,
+                      {"v": v, "hour": of_model_epoch(hour), "machine": "Mac", "rows": rows}, source="of"))
+    return out
+
+
+def of_model_epoch(iso):
+    import datetime
+    return datetime.datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
+
+
+_HC = "ap.heavy-context"
+SCENARIOS += [
+    # bot_search reads 700k cached tokens a response on two days, its organization's median 200k
+    _case("heavy-context/positive", _org_doc(),
+          _hc_hours(12000, {"bot_operator": 200000, "bot_search": 700000, "bot_nonce": 180000}),
+          (_HC, ["bot_search"], "positive")),
+    # 1.75 times the median: under twice
+    _case("heavy-context/negative-under-twice", _org_doc(),
+          _hc_hours(12010, {"bot_operator": 200000, "bot_search": 350000, "bot_nonce": 180000}),
+          (_HC, ["bot_search"], "negative")),
+    # v1 rows leave cache reads unknown: blocked, never quiet
+    _case("heavy-context/blocked-v1-rows", _org_doc(),
+          _hc_hours(12020, {"bot_operator": 200000, "bot_search": 700000, "bot_nonce": 180000}, v=1),
+          (_HC, ["bot_search"], "blocked")),
+]

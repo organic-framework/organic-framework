@@ -645,7 +645,7 @@ The first user organization's case (2026-11-10):
 
 ### 2.30–2.32 Spend without result (token plan T0)
 
-These rules come from the token plan's T0 (`of_architect`'s hand-over `b204d311`; the founder's prompt `01a20e2d-61a0` of 2026-11-24, on organic-framework-build `reports/token-efficiency-plan-2026-11-24.md`). Every response reads the session's whole context again, so work that ends with nothing done still costs those reads. Each rule names its reading, where it is taken, and its remedy's owner.
+These three rules come from the token plan's T0 (`of_architect`'s hand-over `b204d311`; the founder's prompt `01a20e2d-61a0` of 2026-11-24, on organic-framework-build `reports/token-efficiency-plan-2026-11-24.md`). Every response reads the session's whole context again, so work that ends with nothing done still costs those reads. Each rule names its reading, where it is taken, and its remedy's owner.
 
 #### 2.30 Unacted turns — `ap.unacted-turns@0`
 
@@ -689,14 +689,17 @@ These rules come from the token plan's T0 (`of_architect`'s hand-over `b204d311`
 
   Owners: the author and the reviewer, and `of_release` for the review rules.
 
-#### 2.32 Context far above its organization's — specified, waits on its input
+#### 2.32 Context far above its organization's — `ap.heavy-context@0`
 
-*Specified 2026-11-24, not built.*
+*v0 (2026-11-24), built: `bin/of_diagnose_rules.py` (`spend_reports`, `rule_heavy_context`). Its lever is the plan's T5.*
 
-- **What it finds:** positions whose cache reads per response stand far above their organization's on the same day.
-- **Fires** at `k` times the organization's median, above a floor of tokens.
-- **Input:** `of.spend_hours`, the one spend event that reaches every organization's store, carrying each row's cache reads and its largest context per response. It was asked of `of_capacity` (message `01a20e3b-8dca`) beside its T0 hand-over `f4fb0959`. Its rows carry fresh tokens, cost and responses today.
-- **Remedy:** the plan's T5, a fresh start at a natural end of the work (`of capacity move --restart`), chosen by the position or its keeper. Nothing is cut or forced (the founder's answer on card `OF-31`). Owner: `of_capacity`.
+- **What it reads:** `of.spend_hours`, the one spend event that reaches every organization's store, from its v2 on. Each v2 row adds three fields after v1's nine: `cache_read`, `cache_write` and `max_context`, the largest context one response read (`of_capacity`, message `01a20e41-f086`, under its T0 hand-over `f4fb0959`). For each machine and hour, the latest report holds.
+- **Fires** for a position whose cached tokens read per response stand at `ratio_gte` (2) times or more the organization's median of the same UTC day, and at `floor_tokens` (300,000) or more, on `heavy_days_gte` (2) or more days of the window.
+  - A day counts a position with `min_responses` (20) responses, and an organization with `min_positions` (3) such positions.
+  - One issue per position. The evidence gives each such day's cached tokens per response, the median, the ratio, the responses and the largest context.
+- **Blocked** (`spend_hours.v2`) with no v2 row in the window. A v1 row leaves its cache reads unknown, not zero.
+- **The reading and where it is taken:** each machine's own transcripts, summed by its spend view and reported as `of.spend_hours`. The thresholds are hypotheses from this agent host's transcripts, 2026-11-17 to 24: a day's median was 150k to 290k cached tokens per response, and its heaviest position 1.1 to 2.5 times that. They are to be set again from the laptop's v2 rows.
+- **Remedies:** a fresh start where the position's work ends naturally, such as a hand-over closed or a pull request merged, with its memory (`of capacity move --restart`). The position or its keeper chooses; nothing is cut or forced (the founder's answer on card `OF-31`). Or the detail the position rereads moves into files its brief names. Owner: `of_capacity`.
 
 ## 3. Ranking: expected ΔT per minute of the owner's time
 

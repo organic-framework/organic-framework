@@ -895,6 +895,33 @@ class ReviewRoundsTest(unittest.TestCase):
         self.assertEqual(R.rule_review_rounds(m, git_only, a, b, cat, spec), ([], ["wr.verdicts"]))
 
 
+class HeavyContextTest(unittest.TestCase):
+    """ap.heavy-context (diagnose.md 2.32): cached tokens read per response against the organization's median."""
+
+    def report(self, i, ts, hour, rows, v=2, machine="Mac"):
+        return ev(i, ts, "of.spend_hours", None, {"v": v, "hour": of_model.epoch(hour), "machine": machine, "rows": rows},
+                  source="of")
+
+    def test_latest_report_v2_rows_and_the_median(self):
+        m = of_model.build(DOC, [], at="2026-11-06T12:00Z")
+        a, b = of_model.epoch("2026-11-01T00:00Z"), of_model.epoch("2026-11-08T00:00Z")
+        row = lambda p, per, n=40: ["~/.claude", p, None, None, 1, 1.0, n, 0, 0, per * n, 0, per + 1000]
+        base = [row("bot_operator", 200000), row("k8s_keeper", 150000)]
+        rows = []
+        for k, d in enumerate(("03", "04")):
+            h = f"2026-11-{d}T10:00:00Z"
+            rows += [self.report(f"o{k}", f"2026-11-{d}T10:10:00Z", h, base + [row("bot_search", 100000)]),   # replaced
+                     self.report(f"n{k}", f"2026-11-{d}T10:20:00Z", h, base + [row("bot_search", 700000),
+                                                                             row("not_registered", 900000)])]
+        cat, spec = of_diagnose.catalogue(), R_spec("heavy-context")
+        got = R.rule_heavy_context(m, rows, a, b, cat, spec)
+        self.assertEqual([i["affected"] for i in got], [["bot_search"]])
+        self.assertEqual(got[0]["evidence"]["days"][0], {"day": "2026-11-03", "cache_read_per_response": 700000,
+                                                         "median": 200000, "ratio": 3.5, "responses": 40, "max_context": 701000})
+        v1 = [dict(r, payload=dict(r["payload"], v=1, rows=[x[:9] for x in r["payload"]["rows"]])) for r in rows]
+        self.assertEqual(R.rule_heavy_context(m, v1, a, b, cat, spec), ([], ["spend_hours.v2"]))
+
+
 class LoopRulesTest(unittest.TestCase):
     """The development-loop rules (diagnose.md 2.16-2.22, 2.28) through the projection of_model.build makes (of_loops)."""
     A, B = "2026-11-01T00:00Z", "2026-11-08T00:00Z"
