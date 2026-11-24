@@ -116,6 +116,14 @@ def labels(rows):
     return out
 
 
+def unlabelled(i):
+    """Issue I as a rule raised it, before any label: open, with no label, wrong remedy or uncounted label."""
+    for k in ("label", "wrong_remedy", "label_not_counted"):
+        i.pop(k, None)
+    i["state"] = "open"
+    return i
+
+
 def label_issue(i, history, keeper, now, carry=()):
     """Apply to issue I the latest label of HISTORY that counts (may_label); a newer one that does not is kept on the
     issue as `label_not_counted` {by, label, ts, why}, so the list shows it."""
@@ -134,7 +142,7 @@ def label_history(rows):
     for r in sorted(rows, key=lambda r: epoch(r.get("ts")) or 0):
         if r["name"] == "of.issue_labelled":
             pl = r.get("payload") or {}
-            if pl.get("issue_id"):
+            if isinstance(pl, dict) and isinstance(pl.get("issue_id"), str) and pl["issue_id"]:
                 out.setdefault(pl["issue_id"], []).append(dict(pl, ts=r["ts"], by=pl.get("by") or r.get("position") or "owner"))
     return out
 
