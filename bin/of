@@ -2123,7 +2123,12 @@ def plan_layout(positions, agents, tabs, workspaces, renamed=None, layouts=None,
                 members_here.remove(kp)
                 members_here.insert(0, kp)
             chunk = [(a["pane_id"], p["name"]) for p, a in members_here]
-            tab = next((t for t in tabs if base_label(t.get("label")) == lab and ws_label.get(t["workspace_id"]) == w), None)
+            # of the tabs with this label in this workspace, the one that holds most of the chunk's panes: an older
+            # tab of the same label can keep other panes (a parked position's), and taking it first made every
+            # apply build the tab again, moving running panes each time (of_architect, 2026-11-24)
+            here = [t for t in tabs if base_label(t.get("label")) == lab and ws_label.get(t["workspace_id"]) == w]
+            held = [a.get("tab_id") for _, a in members_here]
+            tab = max(here, key=lambda t: held.count(t["tab_id"]), default=None)
             lay = layouts.get(tab["tab_id"]) if tab else None
             ok = bool(tab) and balanced(lay, [c[0] for c in chunk], cfg.get("three"))
             if ok and kp and chunk[0][0] == kp[1]["pane_id"]:  # the keeper sits top-left, or the tab is rebuilt
@@ -2133,21 +2138,19 @@ def plan_layout(positions, agents, tabs, workspaces, renamed=None, layouts=None,
     return plan
 
 
-def build_tab(w, label, chunk, three="left+2"):
-    """Lay one tab out from scratch with herdr pane moves (no agent restarts): the first pane into a
-    new tab, then the others by balanced splits (ratio 0.5). Returns True if every move succeeded."""
-    workspaces = herdr_json("workspace", "list")["workspaces"]
-    ws = next((x for x in workspaces if x.get("label") == w), None)
+def build_steps(w, label, chunk, ws_id=None, tab="<the new tab>", three="left+2"):
+    """The herdr commands build_tab runs for one tab, in order: the first pane into a new tab (in workspace WS_ID, or
+    a new workspace), then the others by balanced splits. Pure; a dry run prints them (of_architect, 2026-11-24)."""
     first = chunk[0][0]
-    if ws:
-        ok = herdr_do(["pane", "move", first, "--new-tab", "--workspace", ws["workspace_id"], "--label", label,
-                       "--no-focus"], False)
+    if ws_id:
+        cmds = [["pane", "move", first, "--new-tab", "--workspace", ws_id, "--label", label, "--no-focus"]]
     else:
-        ok = herdr_do(["pane", "move", first, "--new-workspace", "--label", w, "--tab-label", label, "--no-focus"], False)
-    if not ok:
-        return False
-    tab = herdr_json("pane", "get", first)["pane"]["tab_id"]
-    ids = [c[0] for c in chunk]
+        cmds = [["pane", "move", first, "--new-workspace", "--label", w, "--tab-label", label, "--no-focus"]]
+    return cmds + [["pane", "move", pane, "--tab", tab, "--split", direction, "--target-pane", target, "--ratio", ratio,
+                    "--no-focus"] for pane, direction, target, ratio in _split_steps([c[0] for c in chunk], three)]
+
+
+def _split_steps(ids, three="left+2"):
     n = len(ids)
     steps = []
     if n >= 2:
@@ -2158,11 +2161,25 @@ def build_tab(w, label, chunk, three="left+2"):
         steps.append((ids[2], "down", ids[1]))
     elif n == 4:
         steps += [(ids[2], "down", ids[0]), (ids[3], "down", ids[1])]
-    for pane, direction, target in steps:
-        ratio = "0.5" if not (n == 3 and three == "columns") else ("0.333" if target == ids[0] else "0.5")
-        ok = herdr_do(["pane", "move", pane, "--tab", tab, "--split", direction, "--target-pane", target,
-                       "--ratio", ratio, "--no-focus"], False) and ok
+    return [(pane, d, target, "0.5" if not (n == 3 and three == "columns") else ("0.333" if target == ids[0] else "0.5"))
+            for pane, d, target in steps]
+
+
+def build_tab(w, label, chunk, three="left+2"):
+    """Lay one tab out from scratch with herdr pane moves (no agent restarts): the first pane into a
+    new tab, then the others by balanced splits (ratio 0.5). Returns True if every move succeeded."""
+    workspaces = herdr_json("workspace", "list")["workspaces"]
+    ws = next((x for x in workspaces if x.get("label") == w), None)
+    first_cmd = build_steps(w, label, chunk, ws["workspace_id"] if ws else None, three=three)[0]
+    first = chunk[0][0]
+    if not herdr_do(first_cmd, False):
+        return False
+    tab = herdr_json("pane", "get", first)["pane"]["tab_id"]
+    ok = True
+    for cmd in build_steps(w, label, chunk, ws["workspace_id"] if ws else None, tab, three)[1:]:
+        ok = herdr_do(cmd, False) and ok
     return ok
+
 
 
 def tab_layouts(tabs):
@@ -2195,8 +2212,11 @@ def cmd_apply(args):
     todo = [x for x in plan if not x[3]]
     for w, label, chunk, _ in todo:
         names = ", ".join(n for _, n in chunk)
-        if args.dry_run:
+        if args.dry_run:   # the summary, then each pane move it would run (of_architect, 2026-11-24)
             print(f"  lay out {w} / {label}: {names}")
+            ws = next((x for x in workspaces if renamed.get(x["workspace_id"], x.get("label")) == w), None)
+            for c in build_steps(w, label, chunk, ws["workspace_id"] if ws else None, three=cfg.get("three")):
+                print("    herdr " + " ".join(c))
             continue
         try:
             ok = build_tab(w, label, chunk, cfg.get("three")) and ok
