@@ -97,6 +97,9 @@ def _minus_s(ts, seconds):
 
 # ---------------------------------------------------------------------- asks
 
+SNAP_CAP = 1 << 30   # a snapshot is read whole: 10 MB for the laptop's 2026-11-24 asks; a file past 1 GiB is refused
+
+
 class AsksProcessor(Processor):
     """The asks view: every ask with its state (of_asks.project), and the owner's queue grouped as
     the popup shows it. Tables view_asks and view_ask_groups."""
@@ -352,9 +355,8 @@ class AsksProcessor(Processor):
             return False
         m, path = snap
         self._drop_snaps(lambda x: x <= m)  # cut from the history this row changes: gone before it is redone
-        try:
-            with open(path) as fh:
-                data = json.load(fh)
+        try:   # never through a link and never a wait on a FIFO: the listener reads it outside any sandbox
+            data = json.loads(of_events.read_own(path, cap=SNAP_CAP))   # (of_secrets-review on PR 635)
         except (OSError, ValueError):
             self._drop_snaps(lambda x: x < m)
             return False
