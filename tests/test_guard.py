@@ -1244,9 +1244,78 @@ class UserSiteTest(unittest.TestCase):
                          ("Bash", {"command": f"python3 -c \"open('{self.site}/zz.pth','w').write('import os')\""})):
             got = of_guard.critical_deny(tool, ti, "/tmp")
             self.assertTrue(got and "user site" in got[0], (tool, ti))
-        for cmd in (f"cat {self.site}/yaml/__init__.py", "pip install --user requests"):
+        for cmd in (f"cat {self.site}/yaml/__init__.py",):
             got = of_guard.critical_deny("Bash", {"command": cmd}, "/tmp")
             self.assertFalse(got and "user site" in got[0], cmd)
+
+    def deny(self, cmd):
+        got = of_guard.critical_deny("Bash", {"command": cmd}, "/tmp")
+        return bool(got and ("user site" in got[0] or "pip install" in got[0]))
+
+    def test_the_box_is_found_where_python_puts_it(self):
+        """The two ways it is found, each pinned (of_review on PR 631: the tests passed with either removed)."""
+        import site
+        box = of_guard._user_site_box()
+        self.assertIn(os.path.realpath(site.getusersitepackages()).casefold(), box)
+        self.assertIn(os.path.realpath(self.site).casefold(), box)           # by the pattern, under this home
+
+    def test_a_prefix_that_holds_the_home_keeps_its_python_only(self):
+        """of_review on PR 631: a user-owned ~/.local as the interpreter's prefix must not keep OF's state folder."""
+        import site
+        import sys as _sys
+        from unittest import mock
+        prefix = os.path.join(self.tmp.name, ".local")
+        os.makedirs(os.path.join(prefix, "lib/python3.15/site-packages"))
+        os.makedirs(os.path.join(prefix, "state/of"))
+        with mock.patch.object(_sys, "base_prefix", prefix), mock.patch.object(_sys, "prefix", prefix), \
+                mock.patch.object(site, "getsitepackages", lambda: []):
+            of_guard._USER_SITE_CACHE.clear()
+            box = of_guard._user_site_box()
+            of_guard._USER_SITE_CACHE.clear()
+        self.assertNotIn(os.path.realpath(prefix).casefold(), box)
+        self.assertIn(os.path.realpath(os.path.join(prefix, "lib/python3.15")).casefold(), box)
+
+    def test_the_forms_of_the_reviews(self):
+        """of_review and of_secrets-review on PR 631: a variable, a cd, a git output, pathlib and os.open writes, a
+        folder computed in code, a link above the box replaced."""
+        u = self.site
+        link = os.path.join(self.tmp.name, "optlink")
+        os.symlink(os.path.join(self.tmp.name, "Library/Python/3.15"), link)   # as Homebrew's opt link leads to it
+        for cmd in (f"D='{u}'; touch $D/x.pth", f"report={u}/zz.pth; touch \"$report\"",
+                    f"cd '{u}' && python3 -c \"open('x.pth','w').write('import os')\"",
+                    f"git -C /tmp/repo diff --output={u}/zz.pth",
+                    f"python3 -c \"import pathlib; pathlib.Path('{u}/zz.pth').open('w').close()\"",
+                    f"python3 -c \"import os; os.open('{u}/zz.pth', os.O_WRONLY|os.O_CREAT)\"",
+                    "python3 -c \"import site, shutil; shutil.copy('/tmp/x.pth', site.getusersitepackages())\"",
+                    f"ln -sfn /tmp/otherpy {link}"):
+            self.assertTrue(self.deny(cmd), cmd)
+        self.assertFalse(self.deny(f"ls '{u}'"))
+        doc = "p='a.md'; s=open(p).read(); open(p,'w').write(s.replace('x', 'site.getusersitepackages()'))"
+        self.assertFalse(self.deny(f'python3 -c "{doc}"'))   # the call named in a string is text (of_server's edit)
+
+    def test_pip_into_a_kept_folder_is_denied_and_into_a_venv_passes(self):
+        """of_secrets-review and of_review on PR 631: pip writes the box as pip (a package's .pth, an editable install)."""
+        import shlex
+        import sys as _sys
+        u = self.site
+        py = shlex.quote(_sys.executable)
+        venv = os.path.join(self.tmp.name, "v")
+        os.makedirs(os.path.join(venv, "bin"))
+        open(os.path.join(venv, "pyvenv.cfg"), "w").close()
+        os.symlink(_sys.executable, os.path.join(venv, "bin/python3"))
+        for cmd in (f"{py} -m pip install --target {u} /tmp/pkg", f"pip3 install --prefix={self.tmp.name}/Library x",
+                    f"PIP_TARGET={u} {venv}/bin/python3 -m pip install x", "uv pip install --system x",
+                    "V=/tmp/no-venv-yet; $V/bin/pip install --break-system-packages x"):
+            self.assertTrue(self.deny(cmd), cmd)
+        for cmd in (f"{venv}/bin/python3 -m pip install -e /tmp/pkg", "uv pip install x", "python3 -m pip list",
+                    f"{py} -m pip install --target /tmp/elsewhere x", "ssh h pip install --user x",
+                    f"{py} -m pip install --user --break-system-packages --dry-run x",
+                    "python3 -m venv /tmp/v2 && /tmp/v2/bin/pip install x"):
+            self.assertFalse(self.deny(cmd), cmd)
+        if of_guard._kept_interpreter(_sys.executable, of_guard._user_site_box()):
+            for cmd in (f"{py} -m pip install --user --break-system-packages /tmp/pkg",
+                        f"PIP_BREAK_SYSTEM_PACKAGES=1 {py} -m pip install /tmp/pkg", f"{py} -Im ensurepip --user"):
+                self.assertTrue(self.deny(cmd), cmd)
 
     def test_the_interpreters_own_folder_when_this_user_owns_it(self):
         """of_secrets-review, 2026-11-24: Homebrew's Python and its site-packages are this user's, the same class."""

@@ -1033,6 +1033,11 @@ def connector_deny(tool, excluded):
 _CODE_REMOVES = re.compile(r"\bos\.(?:unlink|remove|removedirs|rmdir|rename|renames|replace|symlink|link)\s*\(|"
                            r"\bshutil\.(?:rmtree|move)\s*\(|\.(?:unlink|rmdir|symlink_to|hardlink_to)\s*\(|"
                            r"\bFile\.(?:delete|unlink|symlink|rename)|\bunlink\s*\(|\bFileUtils\.(?:rm|ln|mv)")
+# a Python site folder computed in code, beside a write call: G42 (of_review on PR 631: `shutil.copy(x,
+# site.getusersitepackages())`); the literal reading never sees such a path
+_CODE_SITE = re.compile(r"\b(?:getusersitepackages|getsitepackages|getuserbase)\s*\(|\bsite\.USER_(?:SITE|BASE)\b|"
+                        r"\bget_paths?\s*\([^)]*\)\s*\[\s*['\"](?:purelib|platlib)|"
+                        r"\bget_path\s*\(\s*['\"](?:purelib|platlib)")
 _CODE_WRITE_RE = re.compile(r"""\.open\s*\(\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|"""
                          r"""open\s*\(.*?,\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|open\s*\([^,]*,\s*['"]\s*\+?>|\bmode\s*=\s*['"][rbt]*[wax+]|write_text|"""
                          r"""write_bytes|(?<!sys\.stdout)(?<!sys\.stderr)\.write\s*\(|\bdump\s*\(|"""
@@ -1341,10 +1346,13 @@ def _code_deny(code, lang=None):
         # where it writes, whatever call takes it; a file mode in its place excepted (of_review on PR 629)
     if live:
         return LIVE_DENY, live
-    usite = next((l for l in lits if not re.search(r"\s", l.strip())
-                  and l.strip().lstrip("<>+|& ").startswith(("/", "~", "$"))
-                  and _in_folders(l.strip().lstrip("<>+|& "), _user_site_box())), None) \
+    usite = next((l for l in lits if not re.search(r"\s", l.strip()) and l.strip().lstrip("<>+|& ")
+                  and (l.strip().lstrip("<>+|& ").startswith(("/", "~", "$")) or _DENY_CWD[0])
+                  and _in_folders(l.strip().lstrip("<>+|& "), _user_site_box(), _DENY_CWD[0], gone)), None) \
         if _CODE_WRITE.search(code) else None   # G42 in code
+    if not usite and _CODE_WRITE.search(code):   # the folder computed in code (of_review on PR 631), by its call
+        m = _CODE_SITE.search(bare)              # outside the strings: a document that names it is text
+        usite = m.group(0) if m else None
     if usite:
         return USER_SITE_DENY, usite
     idx = next((l for l in lits if not re.search(r"\s", l.strip())
@@ -5248,9 +5256,20 @@ USER_SITE_DENY = ("the Python user site, code every hook runs before the guard d
 USER_SITE_GLOBS = ("~/Library/Python/*/lib/python/site-packages", "~/.local/lib/python*/site-packages")
 
 
+_USER_SITE_CACHE = {}   # one finding per guard call (critical_deny clears it), keyed by the home it was found under
+
+
 def _user_site_box():
     """The real paths of the Python user sites here, case-folded: this interpreter's own (the hooks run it), and every
     one the two patterns find, for another version the hooks may start."""
+    home = os.environ.get("HOME", "")
+    if home not in _USER_SITE_CACHE:
+        _USER_SITE_CACHE.clear()
+        _USER_SITE_CACHE[home] = _user_site_find()
+    return _USER_SITE_CACHE[home]
+
+
+def _user_site_find():
     import glob as _glob
     import site
     import sys
@@ -5261,10 +5280,16 @@ def _user_site_box():
         pass
     # and the interpreter's own installation, its site-packages included, when this user owns it, as Homebrew's is:
     # the same code every hook runs (of_secrets-review, 2026-11-24)
+    wide = [os.path.realpath(_expanduser(x)) for x in ("~", "~/.local/state/of")]
     try:
         for d in [sys.base_prefix, sys.prefix] + list(site.getsitepackages()):
             real = os.path.realpath(d)
-            if os.path.isdir(real) and os.stat(real).st_uid == os.getuid():
+            if not (os.path.isdir(real) and os.stat(real).st_uid == os.getuid()):
+                continue
+            if any(w == real or w.startswith(real + "/") for w in wide):   # `~/.local` as a prefix: its Python only
+                out |= {os.path.realpath(p) for p in _glob.glob(os.path.join(real, "lib", "python3*"))
+                        + _glob.glob(os.path.join(real, "bin", "python3*"))}
+            else:
                 out.add(real)
     except Exception:  # noqa: BLE001 - what cannot be read here: the user sites alone
         pass
@@ -5273,16 +5298,207 @@ def _user_site_box():
     return {p.casefold() for p in out}
 
 
-def _user_site_write(head, args, cwd, files, removal):
+def _user_site_write(head, args, cwd, files, removal, shvars=None):
     """G42 on one simple command, read as G40 reads one."""
     if _REMOTE_BODY[0]:
         return None
     box = _user_site_box()
-    hit = next((t for t in _tree_targets(head, args, cwd) if _in_folders(t, box, cwd, removal=True)), None) or \
-        next((f for f in files if _in_folders(f, box, cwd, removal)), None)
-    if not hit and head in _LIVE_WRITE_HEADS:
-        hit = next((a for a in _live_operands(head, args) if _in_folders(a, box, cwd, removal=head == "rmdir")), None)
+    hit = _box_write(head, args, cwd, files, removal, shvars, lambda p, c, r: _in_folders(p, box, c, r))
     return (USER_SITE_DENY, hit) if hit else None
+
+
+# G42's pip forms (of_secrets-review and of_review on PR 631): pip writes the folders G42 keeps as pip, so a package's
+# .pth, a wheel with one at its root or an editable install (which writes one by design) runs in every hook. Denied: an
+# install or an uninstall that would write the hooks' own interpreter or its user site (it is not externally managed,
+# or the line, the environment or a pip config breaks that), one to a --target, --prefix or --root in or above a kept
+# folder, and uv pip --system. A warning: one that pip refuses by itself (the hooks' interpreter is externally managed)
+# and one into another interpreter's user site, which the hooks do not run. A venv, a dry run and an outside target
+# pass. The 21-day replay: 261 recorded pip commands, none in the denied forms but one dry run (docs/guard.md G42).
+PIP_DENY = ("a pip install or uninstall into the Python user site or the hooks' own interpreter, code every hook runs "
+            "(docs/guard.md G42): install into a venv (python3 -m venv DIR && DIR/bin/pip install ...), or run it in a "
+            "plain terminal")
+_PIP_HEAD = re.compile(r"pip(?:[0-9]+(?:\.[0-9]+)*)?$")
+_PIP_TARGETS = ("--target", "--prefix", "--root")
+_PIP_BREAKS = re.compile(r"(?im)^\s*break[-_]system[-_]packages\s*[=:]\s*(?:1|true|yes|on)\s*$")
+
+
+def _pip_call(head, args):
+    """(kind, the words after pip) for a pip, a python -m pip or -m ensurepip, a uv pip or an easy_install, else None."""
+    if _PIP_HEAD.match(head):
+        return "pip", list(args)
+    if head.startswith("easy_install"):
+        return "pip", ["install"] + list(args)
+    if head == "uv" and args[:1] == ["pip"]:
+        return "uv", list(args[1:])
+    if head.startswith("python"):
+        kind, val, rest = _py_walk(list(args))   # python's own reading: `-Im pip`, `-mpip`, `-I -m pip`
+        if kind == "module" and val == "pip":
+            return "pip", list(rest)
+        if kind == "module" and val == "ensurepip":   # its own pip run, never read as PEP 668 is: denied as pip's
+            return "ensurepip", ["install"] + list(rest)
+    return None
+
+
+def _found(prog, env):
+    """PROG as the shell finds it: a path made absolute, a bare name on the line's PATH; None when there is none."""
+    import shutil
+    p = _expanduser(str(prog))
+    if "/" not in p:
+        return shutil.which(p, path=(env or {}).get("PATH") or os.environ.get("PATH", ""))
+    return os.path.abspath(os.path.join(_DENY_CWD[0] or ".", p)) if not os.path.isabs(p) else p
+
+
+def _in_venv(path):
+    """Does PATH, a program as named (never resolved: a venv's python links to its base), lie in a venv's bin?"""
+    return bool(path) and os.path.isfile(os.path.join(os.path.dirname(os.path.dirname(path)), "pyvenv.cfg"))
+
+
+def _script_interpreter(path):
+    """The interpreter a script's first line names (`#!/x/python3`, `#!/usr/bin/env python3`), else None. Read as the
+    guard reads its own inputs: a regular file, never waiting on it."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return None
+            first = os.read(fd, 512).split(b"\n", 1)[0].decode("utf-8", "replace")
+        finally:
+            os.close(fd)
+    except OSError:
+        return None
+    if not first.startswith("#!"):
+        return None
+    words = first[2:].split()
+    if words and os.path.basename(words[0]) == "env":
+        words = [w for w in words[1:] if not w.startswith("-")]
+        return _found(words[0], None) if words else None
+    return words[0] if words else None
+
+
+def _read_small(path, limit=65536):
+    """PATH's text when it is a regular file, read without waiting on it; None otherwise."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+        try:
+            return os.read(fd, limit).decode("utf-8", "replace") if stat.S_ISREG(os.fstat(fd).st_mode) else None
+        finally:
+            os.close(fd)
+    except OSError:
+        return None
+
+
+def _externally_managed(interp):
+    """Does the interpreter INTERP carry PEP 668's EXTERNALLY-MANAGED marker, so pip refuses to install into it or its
+    user site unless told to break it?"""
+    import glob as _glob
+    real = os.path.realpath(interp)
+    base = os.path.dirname(os.path.dirname(real))
+    m = re.search(r"python(\d+\.\d+)", os.path.basename(real))
+    found = [os.path.join(base, "lib", f"python{m.group(1)}", "EXTERNALLY-MANAGED")] if m else \
+        _glob.glob(os.path.join(base, "lib", "python3*", "EXTERNALLY-MANAGED"))
+    return any(os.path.isfile(f) for f in found)
+
+
+def _pip_breaks(rest, env, interp):
+    """Is PEP 668's refusal broken for this run: on the line, in the environment or in a pip config file?"""
+    if "--break-system-packages" in rest:
+        return True
+    if str(env.get("PIP_BREAK_SYSTEM_PACKAGES") or os.environ.get("PIP_BREAK_SYSTEM_PACKAGES") or "").lower() in \
+            ("1", "true", "yes", "on"):
+        return True
+    base = os.path.dirname(os.path.dirname(os.path.realpath(interp))) if interp else ""
+    files = [env.get("PIP_CONFIG_FILE") or os.environ.get("PIP_CONFIG_FILE") or "",
+             "~/.config/pip/pip.conf", "~/.pip/pip.conf", "~/Library/Application Support/pip/pip.conf",
+             "/etc/pip.conf", "/etc/xdg/pip/pip.conf", "/Library/Application Support/pip/pip.conf",
+             os.path.join(base, "pip.conf") if base else ""]
+    return any(_PIP_BREAKS.search(_read_small(_expanduser(f)) or "") for f in files if f)
+
+
+def _kept_interpreter(interp, box):
+    """Is INTERP (its real path) the hooks' own interpreter or another in a folder G42 keeps?"""
+    real = os.path.realpath(interp).casefold()
+    return any(real == b or real.startswith(b + "/") for b in box)
+
+
+def _pip_target(head, args, stext, cwd, env, shvars=None):
+    """G42 on a pip run: (what it would write, whether that is denied or a warning), else None."""
+    if _REMOTE_BODY[0]:
+        return None
+    call = _pip_call(head, args)
+    if not call:
+        return None
+    kind, rest = call
+    sub = next((a for a in rest if not a.startswith("-")), None)
+    if sub not in ("install", "uninstall", "sync") or "--dry-run" in rest:
+        return None   # list, show, freeze, download, wheel, a dry run, ...: pip writes nothing the hooks run
+    box = _user_site_box()
+    env = dict(env or {})
+    for i, a in enumerate(rest):   # an explicit folder decides: in a kept one (or above one), or outside them all
+        for opt in _PIP_TARGETS + ("-t",):
+            val = rest[i + 1] if a == opt and i + 1 < len(rest) else \
+                a.split("=", 1)[1] if a.startswith(opt + "=") else \
+                a[2:] if opt == "-t" and a.startswith("-t") and len(a) > 2 and not a.startswith("--") else None
+            if val:
+                return (val, True) if _in_folders(_expand_vars(val, env), box, cwd, removal=True) else None
+    for var in ("PIP_TARGET", "PIP_PREFIX"):
+        val = env.get(var) or os.environ.get(var)
+        if val and _in_folders(val, box, cwd, removal=True):
+            return f"{var}={val}", True
+    user = "--user" in rest or str(env.get("PIP_USER") or os.environ.get("PIP_USER") or "").lower() in \
+        ("1", "true", "yes")
+    if kind == "uv":   # uv installs into a venv unless told the system's or another interpreter
+        if "--system" in rest:
+            return "uv pip --system", True
+        py = next((rest[i + 1] for i, a in enumerate(rest) if a in ("--python", "-p") and i + 1 < len(rest)), None) or \
+            next((a.split("=", 1)[1] for a in rest if a.startswith("--python=")), None)
+        if not py:
+            return None
+        prog, interp = py, _found(py, env)
+    else:
+        prog = head
+        try:
+            ws = _command_words(_segments(stext)[-1]) if stext else []
+            if ws and os.path.basename(ws[0]) == head:
+                prog = ws[0]
+        except (ValueError, IndexError):
+            pass
+        prog = _expand_vars(prog, {**env, **(shvars or {})})   # `$V/bin/pip`, the venv the line made
+        found = _found(prog, env)
+        if not found:
+            return None   # no such program here: the shell runs nothing
+        if _in_venv(found):
+            return None
+        interp = found if head.startswith("python") else _script_interpreter(found)
+    if not interp:
+        # one that does not exist yet, as a venv the line makes (`python3 -m venv $V && $V/bin/pip install …`), or
+        # whose first line names none: it counts when the line asks for what no venv needs
+        return (("--user" if user else prog), True) if user or _pip_breaks(rest, env, None) else None
+    if _in_venv(interp):
+        return None
+    if _kept_interpreter(interp, box):   # the hooks' own: denied when pip would write it
+        refuses = kind != "ensurepip" and _externally_managed(interp) and not _pip_breaks(rest, env, interp)
+        return ("--user" if user else prog), not refuses
+    try:
+        mine = os.stat(os.path.realpath(interp)).st_uid == os.getuid()
+    except OSError:
+        mine = False
+    if user or not mine:   # another Python's user site: kept, though the hooks do not run that interpreter
+        return ("--user" if user else prog), False
+    return None
+
+
+def _pip_hit(head, args, stext, cwd, env, shvars=None):
+    """G42's pip answer: the deny, or a warning and None."""
+    got = _pip_target(head, args, stext, cwd, env, shvars)
+    if not got:
+        return None
+    hit, deny = got
+    if deny:
+        return PIP_DENY, hit
+    note = (PIP_DENY, hit, "a warning: pip refuses it by itself, or it writes another Python's user site")
+    if note not in _WARNINGS:
+        _WARNINGS.append(note)
+    return None
 
 
 # G36: the guard's session index is the collector's (hand-over a18341af, of_server; of_secrets-review, msg
@@ -6163,7 +6379,8 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
                                                      _session_index_write(head, args, cwd, files, removal) or
                                                      _forward_write(head, args, cwd, files, removal) or
                                                      _live_write(head, args, cwd, files, removal, env, shvars) or
-                                                     _user_site_write(head, args, cwd, files, removal))
+                                                     _user_site_write(head, args, cwd, files, removal, shvars) or
+                                                     _pip_hit(head, args, stext, cwd, env, shvars))
     hit = _git_protected(args, cwd, env or {}, shvars) if head == "git" else None
     if hit:
         return PROTECTED_CODE_DENY, hit
@@ -6185,7 +6402,8 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
                                                  _session_index_write(head, args, cwd, files, removal) or
                                                  _forward_write(head, args, cwd, files, removal) or
                                                  _live_write(head, args, cwd, files, removal, env, shvars) or
-                                                 _user_site_write(head, args, cwd, files, removal))
+                                                 _user_site_write(head, args, cwd, files, removal, shvars) or
+                                                 _pip_hit(head, args, stext, cwd, env, shvars))
 
 
 def _owner_config_write(head, args, cwd, files, removal):
@@ -7335,6 +7553,7 @@ def critical_deny(tool, tool_input, cwd=None, caller=None):
     ti = tool_input or {}
     _CALLER[0], _CALLER[1] = tuple(caller or (None, None))[:2]
     _WARNINGS.clear()
+    _USER_SITE_CACHE.clear()
     _REMOTE_BODY[0] = 0
     _LOOPS[0] = {}
     _READINGS_SPENT[0] = 0
@@ -7401,7 +7620,7 @@ def critical_deny(tool, tool_input, cwd=None, caller=None):
             _in_live(str(path), _live_box(), cwd, linked):
         return LIVE_DENY, path   # G40
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and \
-            _in_folders(str(path), _user_site_box(), cwd):   # G42
+            _in_folders(str(path), _user_site_box(), cwd, linked):   # G42
         return USER_SITE_DENY, path
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _in_session_index(path, cwd):  # G36
         if SESSION_INDEX_MODE == "deny":
