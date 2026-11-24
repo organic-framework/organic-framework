@@ -1052,8 +1052,13 @@ class LiveCheckoutTest(unittest.TestCase):
                     f"rm {outside}", "python3 -c \"s=open('docs/a.md').read(); open('docs/a.md','w').write(s.replace('x','y'))\"",
                     # a removal in code beside '/' or '~' for a join or a home lookup (of_server, 2026-11-24: denied)
                     "python3 -c \"import os; os.remove('/tmp/x'); print('/'.join(['a', 'b']))\"",
-                    "python3 -c \"import os, shutil; shutil.rmtree('/tmp/y'); print(os.path.expanduser('~'))\""):
+                    ):
             self.assertFalse(self.deny(cmd), cmd)
+        for cmd in ("python3 -c \"import os, shutil; shutil.rmtree('/tmp/y'); print(os.path.expanduser('~'))\"",
+                    # the home or a folder up to the checkout, built a step away (of_secrets-review on PR 629)
+                    f"python3 -c \"import shutil; h = '{os.path.expanduser('~/.local')}'; shutil.rmtree(h)\"",
+                    "python3 -c \"import os, shutil; shutil.rmtree(os.path.join(os.path.expanduser('~'), '.local'))\""):
+            self.assertTrue(self.deny(cmd), cmd)
         above = os.path.dirname(live)   # a deep literal above the checkout still counts
         self.assertTrue(self.deny(f"python3 -c \"import shutil; shutil.rmtree('{above}')\""))
         for cmd in (f"python3 -c \"import os; os.open(str('{live}/bin/x.py'), os.O_WRONLY | os.O_CREAT)\"",
