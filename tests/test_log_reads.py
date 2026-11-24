@@ -41,7 +41,9 @@ PRIORS = ("the priors tally (bin/of_priors.py, docs/diagnose.md 5.2), an offline
 DOOR = ("the door's check that a record another wrote to a position cites a person's prompt: on demand, when a "
         "sandboxed position asks for one; one name by the name index (RFC 0008 par. 4.5, organic-framework PR 489)")
 PREFIX = "the prompts whose event id starts with a cited prefix: a range on the primary key"
+ROWIDS = "the rows one redaction names, by their rowids (of.redacted, table event), 500 at a time"
 ALLOWED = {
+    ('of_listen.py', '_redacted', 'SELECT event_id, ts, payload FROM event WHERE rowid IN ('): ROWIDS,
     ('of', 'prompt_cited', 'of_handover.load(conn)'): HANDOVER,
     ('of', 'prompt_cited', "SELECT payload FROM event WHERE name = 'of.agent_question_an"): DOOR,
     ('of', 'prompt_cited', "SELECT position, org FROM event WHERE name = 'of.human_promp"): PREFIX,
