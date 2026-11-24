@@ -10,6 +10,7 @@ the bare one, only for that exact form, in a herdr pane, without CLAUDE_CONFIG_D
 """
 
 import json
+import re
 import os
 import shlex
 
@@ -49,6 +50,41 @@ def planned(sid, root=None):
         if e:
             return e
     return {}
+
+
+def codex_home_of(sid, homes=None):
+    """The Codex seat (CODEX_HOME) whose sessions hold SID's rollout
+    ($CODEX_HOME/sessions/YYYY/MM/DD/rollout-<time>-<thread id>.jsonl, or .jsonl.zst), or None."""
+    import glob
+    if not sid or not re.fullmatch(r"[A-Za-z0-9-]{1,64}", str(sid)):
+        return None
+    if homes is None:
+        import of_accounts
+        homes = [s["home"] for s in of_accounts.codex_seats()]
+    for home in homes:
+        if glob.glob(os.path.join(os.path.expanduser(home), "sessions", "*", "*", "*", f"rollout-*-{sid}.jsonl*")):
+            return os.path.expanduser(home)
+    return None
+
+
+def codex_command(sid, position, cwd=None, homes=None, model=None, deny=None, prepare=None, launch=None):
+    """The line that resumes Codex session SID as a position's (hand-over 9ee1db9f, W4): its seat, a fresh layer and a
+    new launch's door, so it starts with what a start gives it now (its start context, its profile, its tools), in the
+    folder the line runs in; `codex resume <id> -C <folder> -p of-<launch>`. None when no seat holds the session."""
+    home = codex_home_of(sid, homes)
+    if not home:
+        return None
+    cwd = cwd or os.getcwd()
+    org = (position or {}).get("_org")
+    if org and of_spawn.in_position_folder(cwd, org):
+        if any(not of_spawn.clone_ready(c) for c in of_spawn.position_clones(cwd)):
+            return None   # as a Claude resume: a clone not ready gives no line
+        of_spawn.prepare_folder(cwd, org, of_spawn.repo_names(position or {}, _org_paths(org)))
+    import uuid
+    pl = {"harness": "codex", "position": (position or {}).get("name"), "org": org, "cwd": cwd, "config_dir": home,
+          "launch": launch or str(uuid.uuid4()), "model": model, "deny": list(deny or [])}
+    (prepare or of_spawn.codex_prepare)(pl, log=lambda m: None)
+    return of_spawn.codex_command(pl, resume=sid)
 
 
 def _org_paths(org):
