@@ -3152,6 +3152,52 @@ def cmd_org(args):
     return 0
 
 
+def _codex_selftest(args):
+    """`of codex selftest <position> [--relay]`: the canary checks of a running Codex position (bin/of_codex_selftest.py;
+    W3 of hand-over 9ee1db9f), run by the operator outside any sandbox, after a start and again after a resume."""
+    import of_codex_selftest as st
+    import of_relay_client
+    import of_spawn
+    import of_store
+    import of_subagent
+    if not args.position:
+        raise OfError("of codex selftest <position>")
+    door = st.live_door(args.position)
+    if not door:
+        raise OfError(f"no running Codex session of {args.position} with a door here (of spawn starts one)")
+    seat = st.seat_of(door["launch"])
+    if not seat:
+        raise OfError(f"no Codex seat holds the layer of launch {door['launch']}")
+    codex = of_subagent.codex_bin()
+    of_bin = os.path.expanduser("~/.local/bin/of")
+    results = [("requirements", *of_spawn.codex_requirements_ok())]
+    fs = st.layer_fs(seat, door["launch"])
+    results.append(("credentials", *st.check_credentials(codex, door, fs)))
+    results.append(("checkout", *st.check_checkout(codex, door, os.path.dirname(os.path.realpath(of_bin)))))
+    results.append(("door", *st.check_door(codex, door, of_bin)))
+    results.append(("guard", *st.check_guard(door, of_bin)))
+    conn = of_store.connect()
+    try:
+        results.append(("store", *st.check_store(conn, door)))
+        positions, _ = load_positions()
+        agents = live_agents_or_none(warn=False) or []
+        holders = of_relay_client.local_holders(positions, bind, agents)
+        results.append(("pane", *st.check_pane(door, who_rows(positions, agents), holders)))
+        h = holders.get(f"{door['org']}:{door['position']}") or {}
+        box = of_relay_client.pane_input(h["pane"]) if h.get("pane") else None
+        results.append(("start_screen", *st.check_start_screen(h.get("state"), box)))
+        if args.relay:
+            r = subprocess.run([sys.executable, os.path.abspath(__file__), "send", f"{door['org']}:{door['position']}",
+                                "of codex selftest: the relay's check; no reply needed."], capture_output=True,
+                               text=True, timeout=60)
+            m = re.search(r"\b([0-9a-f]{8}-[0-9a-f-]{27})\b", r.stdout or "")
+            results.append(("relay", *(st.check_relay(conn, door, m.group(1), timeout=args.timeout) if m else
+                                       (False, f"of send gave no message id ({(r.stderr or '').strip()[:120]})"))))
+    finally:
+        conn.close()
+    return st.report(results)
+
+
 def cmd_post(args):
     """`of post comment|review --pr N [--commit SHA] --body-file F`: through the posting unit (bin/of_post.py), which
     holds the token; the session never does."""
@@ -3230,8 +3276,10 @@ def cmd_codex(args):
     installs once with sudo (bin/of_codex.py; W3 of the Codex positions plan), and on stderr what it leaves to each
     position's own layer and why."""
     import of_codex
+    if args.action == "selftest":
+        return _codex_selftest(args)
     if args.action != "requirements":
-        raise OfError("of codex requirements [--of-bin PATH]")
+        raise OfError("of codex requirements [--of-bin PATH] | of codex selftest <position> [--relay]")
     try:
         text = of_codex.requirements_toml(args.of_bin)
     except ValueError as e:
@@ -9033,7 +9081,11 @@ def build_parser():
 
     cx = sub.add_parser("codex", help="Codex as a position's harness: requirements prints the managed requirements file "
                                       "the machine's owner installs once with sudo (/etc/codex/requirements.toml)")
-    cx.add_argument("action", choices=["requirements"])
+    cx.add_argument("action", choices=["requirements", "selftest"])
+    cx.add_argument("position", nargs="?", help="selftest: the running Codex position to check")
+    cx.add_argument("--relay", action="store_true", help="selftest: also send it one message and wait for the relay "
+                                                         "to type it into its pane")
+    cx.add_argument("--timeout", type=int, default=300, help="selftest: seconds to wait for the relay (default 300)")
     cx.add_argument("--of-bin", help="one program for every user's hooks, for a machine with one OF install (default: each "
                          "user's own ~/.local/bin/of)")
     cx.set_defaults(fn=cmd_codex)
