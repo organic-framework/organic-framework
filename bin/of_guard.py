@@ -1347,8 +1347,8 @@ def _code_deny(code, lang=None):
     if live:
         return LIVE_DENY, live
     usite = next((l for l in lits if not re.search(r"\s", l.strip()) and l.strip().lstrip("<>+|& ")
-                  and (l.strip().lstrip("<>+|& ").startswith(("/", "~", "$")) or _rel_path_lit(l.strip().lstrip("<>+|& ")))
-                  and _in_folders(l.strip().lstrip("<>+|& "), _user_site_box(), _DENY_CWD[0], gone, gone and _deep_lit(l.strip().lstrip("<>+|& ")))), None) \
+                  and (l.strip().lstrip("<>+|& ").startswith(("/", "~", "$")) or _rel_path_lit(l.strip().lstrip("<>+|& "), opened))
+                  and _in_folders(l.strip().lstrip("<>+|& "), _user_site_box(), _DENY_CWD[0], gone, gone and (l.strip().lstrip("<>+|& ") in gone_args or _deep_lit(l.strip().lstrip("<>+|& "))))), None) \
         if _CODE_WRITE.search(code) else None   # G42 in code
     if not usite and _CODE_WRITE.search(code):   # the folder computed in code (of_review on PR 631), by its call
         m = _CODE_SITE.search(bare)              # outside the strings: a document that names it is text

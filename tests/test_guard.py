@@ -1332,6 +1332,16 @@ class UserSiteTest(unittest.TestCase):
                         f"PIP_BREAK_SYSTEM_PACKAGES=1 {py} -m pip install /tmp/pkg", f"{py} -Im ensurepip --user"):
                 self.assertTrue(self.deny(cmd), cmd)
 
+    def test_prefix_into_a_linux_user_site(self):
+        """of_review on PR 631: on Linux, --prefix ~/.local puts purelib at the user site (posix_prefix)."""
+        from unittest import mock
+        linux = {os.path.join(os.path.realpath(os.path.expanduser("~")), ".local/lib/python3.12/site-packages").casefold()}
+        with mock.patch.object(of_guard, "_user_site_box", lambda: linux):
+            for cmd in ("pip3 install --prefix ~/.local --break-system-packages x",
+                        "pip3 install --prefix=$HOME/.local --break-system-packages x"):
+                self.assertTrue(self.deny(cmd), cmd)
+            self.assertFalse(self.deny("pip3 install --prefix /tmp/p x"))
+
     def test_the_interpreters_own_folder_when_this_user_owns_it(self):
         """of_secrets-review, 2026-11-24: Homebrew's Python and its site-packages are this user's, the same class."""
         import site
