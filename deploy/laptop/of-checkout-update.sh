@@ -17,7 +17,10 @@ NET=https
 LIVE=$HOME/.local/share/of/live
 PY=${OF_PYTHON:?the Python OF runs on, set by the agent}
 SITE=$LIVE/.git/of-site   # PyYAML, copied there by of live setup
-UNITS="dev.organic-framework.server dev.organic-framework.relay dev.organic-framework.listen"
+UNITS=""   # of server, relay and listener, those this machine runs (their launchd agent is there; of_review on PR 628)
+for u in dev.organic-framework.server dev.organic-framework.relay dev.organic-framework.listen; do
+  if [ -f "$HOME/Library/LaunchAgents/$u.plist" ]; then UNITS="$UNITS $u"; fi
+done
 
 g() {  # $1: the transports allowed, empty for none
   local allow=$1; shift
