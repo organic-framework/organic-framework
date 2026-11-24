@@ -731,6 +731,18 @@ def sandbox_settings(deny=None, platform=None, scratch=None, org=None, rules_dir
                         "allowedDomains": list(SANDBOX_DOMAINS), "deniedDomains": []}}
 
 
+def launch_folders(settings, state_dir=None):
+    """At a launch only (of spawn's run, a resume's line, a move that starts its session; never a plan or a dry run,
+    of_review on PR 642): the folders a Linux session's sandbox denies, made before it starts (make_denied_folders)."""
+    if '"sandbox"' not in (settings or ""):
+        return []
+    try:
+        doc = json.loads(settings)
+    except ValueError:
+        return []
+    return make_denied_folders(((doc.get("permissions") or {}).get("deny")), extra=(_muse_dir(),), base=state_dir)
+
+
 def make_denied_folders(deny, extra=(), base=None):
     """Make, inside OF's state folder (BASE), each folder the session's sandbox denies that is not there yet: those a
     deny rule names by their whole tree (`Read(//<path>/**)`) and EXTRA (Muse's login folder, which the sandbox block
@@ -837,7 +849,7 @@ def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=
     return json.dumps(s) if s else None
 
 
-def settings_file(settings, sid, state_dir=None):
+def settings_file(settings, sid, state_dir=None, launch=False):
     """Write the session's --settings JSON to a file and return its path (mode 600; paths and rules only, never a
     value). The command line then stays short: a fresh pane's shell is still in canonical mode, where the terminal
     takes at most 1,024 bytes a line, and 26 credential paths made a 4.9 KB line that herdr refused
@@ -852,12 +864,8 @@ def settings_file(settings, sid, state_dir=None):
     with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
         fh.write(settings)
     os.replace(tmp, path)
-    if '"sandbox"' in settings:   # a launch: a folder, not the sandbox's read-only placeholder file, at each denied tree
-        try:
-            doc = json.loads(settings)
-            make_denied_folders(((doc.get("permissions") or {}).get("deny")), extra=(_muse_dir(),), base=state_dir)
-        except (ValueError, AttributeError):
-            pass
+    if launch:
+        launch_folders(settings, state_dir)
     data = settings.encode()
     WRITTEN[os.path.realpath(path)] = (__import__("hashlib").sha256(data).hexdigest(), len(data))
     return path
@@ -1386,6 +1394,12 @@ def run(pl, herdr, deliver, rename, wait_session, log=print, of_bin=None, timeou
     made = prepare_folder(pl["cwd"], pl.get("org"), pl.get("repo_names") or ())   # a position's own folder
     if made:
         log(f"  wrote {made}")
+    try:   # the plan wrote the settings file; the folders its sandbox denies are made now, at the launch
+        import of_events
+        with open(os.path.join(of_events.STATE_DIR, "spawn", f"{pl['session']}.settings.json")) as fh:
+            launch_folders(fh.read())
+    except OSError:
+        pass
     ws = herdr("workspace", "list")["workspaces"]
     tabs = herdr("tab", "list")["tabs"]
     panes = herdr("pane", "list")["panes"]

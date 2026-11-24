@@ -521,7 +521,9 @@ class PositionFolderTest(unittest.TestCase):
                     mock.patch.object(of_spawn, "_muse_dir", return_value=None):
                 of_spawn.session_settings()                                      # building settings makes nothing
                 self.assertFalse(os.path.exists(os.path.join(state, "later")))
-                of_spawn.settings_file(settings, "s-1", state_dir=state)       # a launch's file does
+                of_spawn.settings_file(settings, "s-0", state_dir=state)       # a plan's file makes nothing
+                self.assertFalse(os.path.exists(os.path.join(state, "later")))
+                of_spawn.settings_file(settings, "s-1", state_dir=state, launch=True)   # a launch's does
             self.assertTrue(os.path.isdir(os.path.join(state, "later")))
 
     def test_the_top_and_the_clones_control_are_closed_in_the_sandbox(self):
