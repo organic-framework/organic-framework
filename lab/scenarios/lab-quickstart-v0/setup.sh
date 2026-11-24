@@ -24,7 +24,7 @@ chmod -R a+rX /srv/organic-framework.git
 
 # The outsider's existing setup: Claude Code (the stub) and three projects with agents.
 su - dev -c 'mkdir -p ~/.local/bin ~/code/api ~/code/web ~/code/infra ~/.claude && for p in api web infra; do git -C ~/code/$p init -q; done'
-install -m 755 /tmp/stub-claude /home/alex/.local/bin/claude
+install -m 755 /tmp/stub-claude /tmp/stub-claude.x && su - dev -c 'install -m 755 /tmp/stub-claude.x ~/.local/bin/claude'
 su - dev -c 'grep -q local/bin ~/.profile || echo "export PATH=\$HOME/.local/bin:\$PATH" >> ~/.profile'
 if [ "$ARM" = herdr ]; then
   curl -fsSL -o /usr/local/bin/herdr "https://github.com/herdrdev/herdr/releases/download/v0.9.5/herdr-linux-aarch64"
