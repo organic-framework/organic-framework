@@ -502,7 +502,7 @@ class RulesTest(unittest.TestCase):
         rows = act + msgs + [dict(pr, position="bot_search")] + prs
         d = of_diagnose.diagnose(of_model.build(doc, rows, at=self.B), rows, self.A, self.B)
         self.assertEqual([(i["affected"], i["rule_version"], i["evidence"]) for i in d["issues"] if i["rule"] == "ap.chatty"],
-                         [(["bot_nonce", "bot_search"], "ap.chatty@4", {"messages": 36, "merged_prs": 3, "msgs_per_wr": 12.0})])
+                         [(["bot_nonce", "bot_search"], "ap.chatty@5", {"messages": 36, "merged_prs": 3, "msgs_per_wr": 12.0})])
         # needs keyed by part: the per-PR part runs without the receiver parts' inputs, which report as blocked parts
         import copy
         cat = copy.deepcopy(of_diagnose.catalogue())
