@@ -1091,9 +1091,24 @@ class LiveCheckoutTest(unittest.TestCase):
                     f"cd {live}/bin && node -e \"require('fs').cpSync('/var/fixture/source', 'stamp')\"",
                     f"cd {live}/bin && node -e \"require('fs').linkSync('/var/fixture/source', 'stamp')\"",
                     f"cd {live}/bin && python3 -c \"import os; make_link = os.symlink; make_link('/var/fixture/source', 'stamp')\"",
-                    f"python3 <<'EOF'\nimport os\n'''it's'''\nos.open('{live}/bin/x', os.O_WRONLY | os.O_CREAT)\nEOF"):
+                    f"python3 <<'EOF'\nimport os\n'''it's'''\nos.open('{live}/bin/x', os.O_WRONLY | os.O_CREAT)\nEOF",
+                    # of_review on PR 629: an os.open in an f-string's field, also with the field's own quote (3.12)
+                    f"python3 <<'EOF'\nimport os\nf\"{{os.open('{live}/bin/of_guard.py', os.O_WRONLY | os.O_TRUNC)}}\"\nEOF",
+                    f"python3 <<'EOF'\nimport os\nf\"{{os.open(\"{live}/bin/x\", os.O_WRONLY | os.O_CREAT)}}\"\nEOF",
+                    f"cd {live}/bin && python3 <<'EOF'\nimport os\nf\"{{os.open('fresh', os.O_WRONLY | os.O_CREAT)}}\"\nEOF",
+                    # and a fresh name that reads as a file mode, through a saved name
+                    f"cd {live}/bin && python3 -c \"import os; mk = os.symlink; mk('/var/fixture/source', 'tab')\"",
+                    f"cd {live}/bin && python3 -c \"import os; mk = os.symlink; mk('/var/fixture/source', 'a')\""):
             self.assertTrue(self.deny(cmd), cmd)
         self.assertFalse(self.deny(f"cd {live}/bin && python3 -c \"import pathlib; pathlib.Path('/tmp/q').open('w')\""))
+        self.assertFalse(self.deny(f"cd {live}/bin && python3 -c \"open('/tmp/q', 'a').write('1')\""))
+        self.assertFalse(self.deny(f"cd {live}/bin && python3 -c \"print(open('of').read())  # copy(a, 'b')\""))
+        # the readers themselves (Codex on PR 629: the scanner's own behaviour, not only the verdict)
+        self.assertTrue(of_guard._os_open_writes("os.open('/x', '''it's )''' and os.O_WRONLY)"))
+        self.assertTrue(of_guard._os_open_writes("f\"{os.open('/x', os.O_WRONLY)}\""))
+        self.assertFalse(of_guard._os_open_writes("x = 'os.open(\"/x\", os.O_WRONLY)'"))
+        self.assertEqual(of_guard._dest_names("shutil.copyfile(os.path.join('/v', '''it's, x'''), 'stamp')"), {"stamp"})
+        self.assertEqual(of_guard._dest_names("print('copy(a, \"b\")')  # copy(c, 'd')"), set())
         self.assertFalse(self.deny(f"python3 -c \"import os; os.open('{live}/bin/of', os.O_RDONLY); print(os.O_CREAT)\""))
         self.assertFalse(self.deny(f"python3 <<'EOF'\nimport os\nos.open('{live}/bin/of',  # not O_CREAT\n        os.O_RDONLY)\nEOF"))
         self.assertFalse(self.deny(f"cd {live}/bin && python3 -c \"s = 'a'; print(s.replace('a', 'stamp'))\""))

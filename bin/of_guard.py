@@ -1050,15 +1050,66 @@ _DEST_CALL = re.compile(r"(?:\b(?:os|shutil)\.(?:replace)|"
                         r"\b(?:copy\w*|move\w*|rename\w*|symlink\w*|link\w*|cp|cpSync))\s*\(")   # never a str's replace()
 
 
+@functools.lru_cache(maxsize=4)   # one reading serves each reader of the same code
 def _code_masks(code):
     """CODE read once with python's quoting: (structure, text, string ends). STRUCTURE blanks every comment and every
     string's inside (its quotes kept), so a bracket, a comma, a flag or a call's name there is none; TEXT blanks the
     comments only. A triple quote opens a string only the same triple closes, a single quote's string ends at its
     line's end, and an escape takes its next character (of_review on PR 629: a triple-quoted note holding an
-    apostrophe before a copy, and a '#' inside a string). STRING ENDS maps each string's opening quote to the offset
-    past its closing one."""
-    st, tx, ends, k, n = list(code), list(code), {}, 0, len(code)
+    apostrophe before a copy, and a '#' inside a string). An f-string's replacement fields stay code, strings nested
+    in them included, as python 3.12 reads them (of_review on PR 629: an os.open inside one). STRING ENDS maps each
+    string's opening quote to the offset past its closing one."""
+    st, tx, ends, n = list(code), list(code), {}, len(code)
     triples = ("'" * 3, '"' * 3)
+
+    def prefix_f(k):
+        j = k
+        while j > 0 and k - j < 3 and code[j - 1] in "rRbBfFuU":
+            j -= 1
+        return "f" in code[j:k].lower() and (j == 0 or not (code[j - 1].isalnum() or code[j - 1] == "_"))
+
+    def string(k, depth):
+        """Read the string whose quote opens at K; return the offset past it."""
+        q = code[k:k + 3] if code[k:k + 3] in triples else code[k]
+        fmt = prefix_f(k) and depth < 32   # deeper nesting is read as plain text: the deny side
+        j, field = k + len(q), 0
+        while j < n:
+            c = code[j]
+            if field:   # a replacement field: code, with its own strings and brackets
+                if c in "'\"":
+                    j = string(j, depth + 1)
+                    continue
+                if c == "{":
+                    field += 1
+                elif c == "}":
+                    field -= 1
+                j += 1
+                continue
+            if c == "\\":
+                st[j] = "_"
+                if j + 1 < n and code[j + 1] != "\n":
+                    st[j + 1] = "_"
+                j += 2
+                continue
+            if code.startswith(q, j) or (len(q) == 1 and c == "\n"):
+                break
+            if fmt and c == "{":
+                if code.startswith("{{", j):
+                    st[j] = st[j + 1] = "_"
+                    j += 2
+                    continue
+                field = 1   # its '{' stays, to close with its '}'
+                j += 1
+                continue
+            if c != "\n":
+                st[j] = "_"
+            j += 1
+        j = min(j, n)
+        closed = j < n and code.startswith(q, j)
+        ends[k] = j + len(q) if closed else j
+        return max(ends[k], k + 1)
+
+    k = 0
     while k < n:
         ch = code[k]
         if ch == "#":
@@ -1068,25 +1119,64 @@ def _code_masks(code):
             k = e
             continue
         if ch in "'\"":
-            q = code[k:k + 3] if code[k:k + 3] in triples else ch
-            j = k + len(q)
-            while j < n:
-                if code[j] == "\\":
-                    j += 2
-                    continue
-                if code.startswith(q, j) or (len(q) == 1 and code[j] == "\n"):
-                    break
-                j += 1
-            j = min(j, n)
-            for i in range(k + len(q), j):
-                if code[i] != "\n":
-                    st[i] = "_"
-            closed = j < n and code.startswith(q, j)
-            ends[k] = j + len(q) if closed else j
-            k = max(ends[k], k + 1)
+            k = string(k, 0)
             continue
         k += 1
     return "".join(st), "".join(tx), ends
+
+
+_MODE_STR = re.compile(r"(?:[rwxa][bt]?\+?|[rwxa]\+[bt]|[bt][rwxa]\+?|[bt]\+[rwxa]|rU|Ur|U)")
+_OPEN_CALL = re.compile(r"(?<![\w.])open\s*\(|(?<!\bos)\.open\s*\(")
+_MODE_KW = re.compile(r"\bmode\s*=\s*(?=[rRbBuU]?['\"])")
+_PAYLOAD_CALL = re.compile(r"\.(?:write|write_text|write_bytes)\s*\(|(?<![\w.])print\s*\(")   # data, never a path
+
+
+def _code_relative_name(code):
+    """The first string literal of CODE that reads as a relative name, one in a file mode's place excepted (open's
+    second argument, a one-argument .open's first, mode=): the names code run inside a kept folder may write to,
+    whatever call takes them (of_review on PR 629: a destination through a saved name, and 'tab' or 'a' as a fresh
+    name, which a mode-shaped test had dropped)."""
+    st, tx, ends = _code_masks(code)
+    opens = list(_OPEN_CALL.finditer(st))
+    payloads = list(_PAYLOAD_CALL.finditer(st))
+    frames = _code_frames(st, {m.end() for m in opens + payloads})
+    data = set()   # a write's first argument and print's arguments: what is written, never where
+    for m in payloads:
+        commas, end = frames.get(m.end(), ((), m.end()))
+        bounds = [m.end()] + [c + 1 for c in commas]
+        spans = [(a, (commas[i] if i < len(commas) else end)) for i, a in enumerate(bounds)]
+        for a, b in (spans if m.group(0).lstrip(".").startswith("print") else spans[:1]):
+            p = _NONBLANK.search(tx, a, b)
+            if p:
+                data.add(p.start())
+    modes = set()
+    for m in opens:
+        commas, end = frames.get(m.end(), ((), m.end()))
+        bounds = [m.end()] + [c + 1 for c in commas]
+        spans = [(a, (commas[i] if i < len(commas) else end)) for i, a in enumerate(bounds)]
+        positional = [s for s in spans if not re.match(r"\s*\w+\s*=", tx[s[0]:s[1]][:64])]
+        if m.group(0).startswith("."):
+            pick = positional[0] if len(positional) == 1 else positional[1] if len(positional) > 1 else None
+        else:
+            pick = positional[1] if len(positional) > 1 else None
+        if pick:
+            p = _NONBLANK.search(tx, pick[0], pick[1])
+            if p:
+                modes.add(p.start())
+    for mm in _MODE_KW.finditer(st):
+        modes.add(mm.end())
+    for k in sorted(ends):
+        w = 3 if code.startswith(("'" * 3, '"' * 3), k) else 1
+        v = code[k + w:ends[k] - w] if ends[k] - k >= 2 * w else ""
+        if not v or re.search(r"\s", v) or v.startswith(("/", "~", "$")):
+            continue
+        q = k - 1 if k and code[k - 1] in "rRbBuUfF" else k
+        if (k in modes or q in modes) and _MODE_STR.fullmatch(v):
+            continue
+        if k in data or q in data:
+            continue
+        return v
+    return None
 
 
 def _code_frames(st, wanted):
@@ -1112,7 +1202,12 @@ def _code_frames(st, wanted):
     return frames
 
 
-_MODE_LIT = re.compile(r"[rwxabtU+]{1,4}")   # a file mode, never a name G40 reads
+def _code_writes(code):
+    """Does CODE write: _CODE_WRITE, or a copy, move, rename or link call outside its strings and comments (a
+    '# copy(' comment is none: Codex's pass on PR 629)?"""
+    return bool(_CODE_WRITE.search(code)) or bool(_DEST_CALL.search(code) and _DEST_CALL.search(_code_masks(code)[0]))
+
+
 _NONBLANK = re.compile(r"\S")
 _DEST_LIT = re.compile(r"(?:(?:dst|dest|target)\s*=\s*)?(?=['\"])")
 
@@ -1239,13 +1334,11 @@ def _code_deny(code, lang=None):
     live = next((l for l in lits if not re.search(r"\s", l.strip()) and l.strip().lstrip("<>+|& ")
                  and (l.strip().lstrip("<>+|& ").startswith(("/", "~", "$")) or _rel_path_lit(l.strip().lstrip("<>+|& "), opened))
                  and _in_live(l.strip().lstrip("<>+|& "), _live_box(), _DENY_CWD[0], gone, gone and (l.strip().lstrip("<>+|& ") in gone_args or _deep_lit(l.strip().lstrip("<>+|& "))))), None) \
-        if (_CODE_WRITE.search(code) or _DEST_CALL.search(code)) else None   # G40 in code (PR 629's review)
+        if _code_writes(code) else None   # G40 in code (PR 629's review)
     here = _DENY_CWD[0]
-    if not live and here and not _REMOTE_BODY[0] and (_CODE_WRITE.search(code) or _DEST_CALL.search(code)) and \
-            _in_live(here, _live_box(), here):   # code that writes, run inside the checkout: any relative name it
-        live = next((l.strip() for l in lits if l.strip() and not re.search(r"\s", l.strip())   # holds may be
-                     and not l.strip().startswith(("/", "~", "$"))                            # where it writes,
-                     and not _MODE_LIT.fullmatch(l.strip())), None)   # whatever call takes it (of_review on PR 629)
+    if not live and here and not _REMOTE_BODY[0] and _code_writes(code) and _in_live(here, _live_box(), here):
+        live = _code_relative_name(code)   # code that writes, run inside the checkout: a relative name it holds may be
+        # where it writes, whatever call takes it; a file mode in its place excepted (of_review on PR 629)
     if live:
         return LIVE_DENY, live
     idx = next((l for l in lits if not re.search(r"\s", l.strip())
