@@ -28,9 +28,6 @@ REVIEWED = {
     ("of_server.py", 'fh.write(secret_key(dict(cfg, secret_key_file=None, tenant_key_create=False)).hex() + "\\n")'):
         "export-secret-key: into a new mode-600 file, never printed",
     ("of_server.py", 'fh.write(secrets.token_hex(32) + "\\n")'): "a new tenant key into a mode-600 file",
-    ("of_subagent.py", 'fh.write(key + "\\n")'):
-        "of subagent muse-login --api-key-stdin: the owner's Muse key, read from stdin, into a new mode-600 file a run "
-        "gives to Muse on stdin; never printed",
     ("of_server.py", 'fh.write(secrets.token_urlsafe(32) + "\\n")'):
         "clickhouse-init: a new password into a new mode-600 file, never printed",
     ("of_server.py", 'fh.write(secrets.token_hex(16) + "\\n")  # not a secret: it tells one setting from the next'):
