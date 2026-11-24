@@ -324,6 +324,35 @@ class CommentTest(unittest.TestCase):
         self.assertEqual(of_guard._tokens("echo a#b c # d"), ["echo", "a#b", "c"])
 
 
+class HereWordTest(unittest.TestCase):
+    """One reader of a here-document's opening for _scan, _comment_spans and _cut_heredocs, as bash reads it."""
+
+    def test_the_delimiter_is_the_word_with_its_quotes_removed(self):
+        for text, want in (("cat <<EOF", (False, False, "EOF")), ("cat <<'EOF'", (False, True, "EOF")),
+                           ('cat << "EOF"', (False, True, "EOF")), ("cat <<-END", (True, False, "END")),
+                           ("cat <<1x", (False, False, "1x"))):
+            self.assertEqual(of_guard._here_word(text, 4)[:3], want, text)
+
+    def test_no_word_and_a_here_string_open_nothing(self):
+        for text in ("cat <<", "cat << ;", "cat <<<x", "cat <<'EOF"):
+            self.assertIsNone(of_guard._here_word(text, 4), text)
+
+    def test_a_shift_in_arithmetic_opens_no_heredoc(self):
+        for text in ("echo $((1<<2))\nrm a\n2", "((x<<y))\nrm a\ny", "echo \"$((1<<n))\"\nrm a\nn"):
+            self.assertEqual(of_guard._heredoc_opens(text), {}, text)
+            self.assertIn("rm a", of_guard._scan(text)[0], text)
+
+    def test_the_three_readers_cut_the_same_body(self):
+        text = "cat <<'EOF'\nrm a\nEOF\nls"
+        self.assertNotIn("rm a", of_guard._scan(text)[0])
+        self.assertNotIn("rm a", of_guard._cut_heredocs(text))
+        self.assertIn("ls", of_guard._cut_heredocs(text))
+
+    def test_a_heredoc_inside_a_substitution_is_read(self):
+        text = 'x="$(cat <<EOF\nrm a\nEOF\n)"'
+        self.assertEqual([h[2] for h in of_guard._heredoc_opens(text).values()], ["EOF"])
+
+
 class SplitCommentTest(unittest.TestCase):
     """G-parse (hand-over 6f336a7c; a user organization's structure keeper, message 01a20975-02e4): _split read an
     apostrophe in a comment as a quote's opening, so a later single-quoted text holding a pipe was one unclosed quote
