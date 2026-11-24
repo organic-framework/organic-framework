@@ -9,7 +9,7 @@ to public main's tip, through `of protected ff` (PR 511), a merged pull request'
 working-copy commit and no working tree ever runs live. deploy/laptop/of-checkout-update.sh is its macOS form, started
 by the launchd agent dev.organic-framework.checkout-update when ~/.local/state/of/checkout-update.request is written.
 
-  of live setup     the owner's, once: clone public main into LIVE, install the update script and its agent
+  of live setup     the owner's, once: clone public main into LIVE, write the update agent that runs its script
   of live switch    the owner's, once after setup: every account's hooks, the units and ~/.local/bin/of from LIVE
   of live request   anyone's: ask the agent to move LIVE to public main's tip (the request's content is never read)
   of live status    where LIVE is, and what runs from where
@@ -17,13 +17,13 @@ by the launchd agent dev.organic-framework.checkout-update when ~/.local/state/o
 
 import os
 import plistlib
-import shutil
 import subprocess
 import sys
 
 URL = "https://github.com/organic-framework/organic-framework.git"
-LIVE = os.path.expanduser("~/.local/share/of/live")
-LIBEXEC = os.path.expanduser("~/.local/libexec/of-checkout-update")
+LIVE_DIR = "~/.local/share/of/live"   # of_guard.LIVE_DIR, which G40 keeps
+LIVE = os.path.expanduser(LIVE_DIR)
+SCRIPT = os.path.join("deploy", "laptop", "of-checkout-update.sh")   # run where it lies, in the live checkout
 LABEL = "dev.organic-framework.checkout-update"
 AGENTS = os.path.expanduser("~/Library/LaunchAgents")
 REQUEST = os.path.expanduser("~/.local/state/of/checkout-update.request")
@@ -42,9 +42,10 @@ def git_env():
                 SSH_AUTH_SOCK="", OF_AUTOMATION="1")
 
 
-def agent_plist(python, script=LIBEXEC, request=REQUEST, live=LIVE):
+def agent_plist(python, script=None, request=REQUEST, live=LIVE):
     """The launchd agent that runs the update on a request: WatchPaths on the request file, the script and the Python
-    named absolutely, OF_AUTOMATION set, no shell."""
+    named absolutely, OF_AUTOMATION set, no shell. The script is the live checkout's own, which G40 keeps."""
+    script = script or os.path.join(live, SCRIPT)
     return plistlib.dumps({
         "Label": LABEL, "ProgramArguments": ["/bin/bash", script],
         "WatchPaths": [request], "RunAtLoad": False,
@@ -57,8 +58,9 @@ def agent_plist(python, script=LIBEXEC, request=REQUEST, live=LIVE):
 
 def hooked_accounts(dirs=None):
     """[(config dir, flags)] for each Claude Code account whose settings run OF's hooks today, with the flags they
-    were installed with (--guard where a PreToolUse guard runs, --deny-secrets where the prompt's mention guard does),
-    so a switch writes each one as it was, only the path changed."""
+    were installed with (--guard where a PreToolUse guard runs, --deny-secrets where the prompt's mention guard does)
+    and a `--replace <bin/of>` for each other checkout they run from, so a switch writes each one as it was, only the
+    path changed, and no hook of the working copy stays beside the live one (of_secrets-review on PR 629)."""
     import json
     if dirs is None:
         import of_accounts
@@ -75,6 +77,12 @@ def hooked_accounts(dirs=None):
         if not any("of-hook" in c or " hook " in c for c in cmds):
             continue
         flags = []
+        for c in cmds:   # the checkouts its hooks run from today: `<python> <checkout>/bin/of-hook <Event>`
+            for w in c.split():
+                if w.endswith("/bin/of-hook") or w.endswith("/bin/of"):
+                    old = os.path.join(os.path.dirname(w), "of")
+                    if old not in flags and os.path.realpath(old) != os.path.realpath(os.path.join(LIVE, "bin", "of")):
+                        flags += ["--replace", old]
         if any("PreToolUse" in c for c in cmds):
             flags.append("--guard")
         if any("--deny-secrets" in c for c in cmds):
@@ -113,18 +121,14 @@ def setup(python=None, run=subprocess.run, live=LIVE, log=print):
             raise LiveError(f"git clone {URL} failed")
         log(f"  cloned public main into {live}")
     check_live(live)
-    os.makedirs(os.path.dirname(LIBEXEC), mode=0o755, exist_ok=True)
-    src = os.path.join(live, "deploy", "laptop", "of-checkout-update.sh")
+    src = os.path.join(live, SCRIPT)
     if not os.path.isfile(src):
         raise LiveError(f"{src} is not in the live checkout yet: public main does not carry it")
-    shutil.copyfile(src, LIBEXEC + ".new")
-    os.chmod(LIBEXEC + ".new", 0o755)
-    os.replace(LIBEXEC + ".new", LIBEXEC)
     os.makedirs(os.path.dirname(REQUEST), exist_ok=True)
     os.makedirs(os.path.expanduser("~/.local/log/of"), exist_ok=True)
     path = os.path.join(AGENTS, LABEL + ".plist")
     with open(path + ".new", "wb") as fh:
-        fh.write(agent_plist(python))
+        fh.write(agent_plist(python, live=live))
     os.replace(path + ".new", path)
     dom = f"gui/{os.getuid()}"
     run(["launchctl", "bootout", f"{dom}/{LABEL}"], capture_output=True)
@@ -139,7 +143,9 @@ def switch(python=None, run=subprocess.run, live=LIVE, accounts=None, log=print)
     check_live(live)
     for cmd in switch_plan(python, hooked_accounts() if accounts is None else accounts, live):
         r = run(cmd)
-        log(f"  {' '.join(cmd[2:5])}: {'done' if getattr(r, 'returncode', 1) == 0 else 'FAILED'}")
+        if getattr(r, "returncode", 1) != 0:   # the first failure stops the switch: ~/.local/bin/of stays as it was
+            raise LiveError(f"{' '.join(cmd[2:])} failed; nothing after it ran. Fix it and run of live switch again")
+        log(f"  {' '.join(cmd[2:5])}: done")
     tmp = LINK + ".new"
     if os.path.lexists(tmp):
         os.unlink(tmp)
