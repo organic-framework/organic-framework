@@ -3265,7 +3265,9 @@ def cmd_subagent(args):
                 continue
             for check, ok, detail in got:
                 failed += not ok
-                print(f"  {'pass' if ok else 'FAIL'}  {check}" + ("" if ok else f" ({detail})"))
+                # a known limit, which of_server ruled acceptable: named, never a silent pass
+                word = "LIMIT" if ok == "limit" else "pass" if ok else "FAIL"
+                print(f"  {word}  {check}" + ("" if ok is True else f" ({detail})"))
         return 1 if failed else 0
     positions = _load_quiet()
     me = _me(positions, args.from_)
