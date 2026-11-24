@@ -3723,7 +3723,9 @@ def _actor_set_deny(cmd):
     flat = re.sub(r"(?m)(?:^|(?<=\s))#.*$", "", flat)   # a comment is no command (of_review's note on PR 648)
     runs_of = _command_word(flat, {"of"}) or bool(re.search(   # and through env (`env OF_POSITION=x of inbox`)
         r"(?:^|[;&|({`\n]|\$\()\s*(?:\S*/)?env\s+(?:-\S+\s+)*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?of\s", flat)) or \
-        bool(re.search(r"\b(?:python3?(?:\.\d+)?|pypy3?)\s+(?:-\S+\s+)*\S*\bof(?:\.py)?(?:\s|$)", flat))   # `python3 bin/of`
+        bool(re.search(r"\b(?:python3?(?:\.\d+)?|pypy3?)\s+(?:-\S+\s+)*\S*\bof(?:\.py)?(?:\s|$)", flat)) or \
+        bool(re.search(r"(?:^|[;&|({`\n])\s*(?:[A-Za-z_]\w*\+?=(?:\$\([^)]*\)|`[^`]*`|\S)*\s+)+(?:\S*/)?of\s", flat))
+    # (`python3 bin/of`; and of after an assignment whose value is a substitution: `OF_POSITION=$(echo x) of send`)
     own = {"CLAUDE_CODE_SESSION_ID": _CALLER[0], "OF_POSITION": _CALLER[1]}
     # either variable set on the line in any way the shell sets one (of_secrets-review on PR 648: NAME=, read,
     # printf -v, export, declare, typeset, local, readonly, an indirect `export $V=` whose V names it), but an
@@ -3733,7 +3735,7 @@ def _actor_set_deny(cmd):
     for v in ACTOR_VARS:
         if own[v]:
             left = re.sub(rf"\b{v}=(['\"]?){re.escape(own[v])}\1(?=[\s;&|)]|$)", " ", left)
-    sets = any(re.search(rf"(?:^|[;&|({{`\n]|\$\(|\benv\s+(?:-\S+\s+)*)\s*(?:[A-Za-z_]\w*=\S*\s+)*{v}=|"
+    sets = any(re.search(rf"(?:^|[;&|({{`\n]|\$\(|\benv\s+(?:-\S+\s+)*)\s*(?:[A-Za-z_]\w*\+?=\S*\s+)*{v}\+?=|"
                          rf"\bread\b[^;&|\n]*\b{v}\b|\bprintf\s+(?:-\S+\s+)*-v\s*{v}\b|"
                          rf"\b(?:export|declare|typeset|local|readonly)\b[^;&|\n]*(?<![$\w{{]){v}\b", left)
                for v in ACTOR_VARS) or (
@@ -3744,6 +3746,9 @@ def _actor_set_deny(cmd):
     # interpreter code that sets a caller variable and starts of: the reading the acts get (_actor_line_deny)
     if _command_word(flat, _INTERPRETER_WORDS, interpreters=True) and _LAUNCH_CODE.search(cmd) and \
             re.search(r"""environ\s*\[\s*['"](?:CLAUDE_CODE_SESSION_ID|OF_POSITION)['"]\s*\]\s*=|"""
+                      r"""process\.env(?:\.|\[\s*['"])(?:CLAUDE_CODE_SESSION_ID|OF_POSITION)|"""   # node
+                      r"""\bENV\s*\[\s*['"](?:CLAUDE_CODE_SESSION_ID|OF_POSITION)['"]\s*\]\s*=|"""   # ruby
+                      r"""\$ENV\s*\{\s*['"]?(?:CLAUDE_CODE_SESSION_ID|OF_POSITION)['"]?\s*\}\s*=|"""   # perl
                       r"""putenv\s*\(\s*['"](?:CLAUDE_CODE_SESSION_ID|OF_POSITION)|"""
                       r"""['"]?(?:CLAUDE_CODE_SESSION_ID|OF_POSITION)['"]?\s*[:=]\s*['"][^'"]+['"]\s*[,}\)]""", cmd) and \
             re.search(r"""['"]of['"]|['"](?:\S*/)?of\s|\bbin/of\b""", cmd):
