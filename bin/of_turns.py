@@ -6,7 +6,7 @@ label every turn by what started it, and count. A turn starts at a user record t
 attachment of the turn (an image, a skill's text), a person's shell input or an interrupt mark; every response after
 it, until the next start in the same transcript, is that turn's.
 
-    python3 bin/of_turns.py [--since ISO] [--until ISO] [--by day,position,starter] [--json] [TRANSCRIPT ...]
+    python3 bin/of_turns.py [--since ISO] [--until ISO] [--by week,position,cause] [--json] [TRANSCRIPT ...]
 
 With no transcript named it reads the transcript records this machine's store holds (`transcript_record`); with
 transcripts named, those files. A session's position is the one the store's spend view names for it
@@ -200,34 +200,56 @@ def with_causes(all_turns):
 MARGIN_S = 2 * 86400   # records read before --since, so a turn open then keeps its starter (`turns` counts by time)
 
 
+def _sessions(conn, lo, hi):
+    """The sessions with a response between LO and HI (ISO dates): from the spend view's epoch index when the store
+    has it, else every session the transcript records name (an index-only read of transcript_session_ts)."""
+    import of_model
+    try:
+        return [r[0] for r in conn.execute(
+            "SELECT DISTINCT session_id FROM view_spend_month WHERE epoch >= ? AND epoch < ?",
+            (of_model.epoch(lo + "T00:00:00Z") if lo else 0, of_model.epoch(hi + "T00:00:00Z") if hi != "~" else 1e12))]
+    except Exception:   # a store without the spend view
+        return [r[0] for r in conn.execute("SELECT DISTINCT session_id FROM transcript_record")]
+
+
 def store_records(conn, since=None, until=None):
-    """This machine's store's transcript records, one transcript after another, each record as `turns` reads it;
-    only user records' blobs are read. SINCE and UNTIL are epochs; the rows are read from MARGIN_S before SINCE and
-    up to a day after UNTIL, since the store's timestamps are text in more than one form, and `turns` cuts by time."""
+    """This machine's store's transcript records, one transcript after another, each record as `turns` reads it.
+    SINCE and UNTIL are epochs; the rows are read from MARGIN_S before SINCE and up to a day after UNTIL, since the
+    store's timestamps are text in more than one form, and `turns` cuts by time. The rows are read session by session
+    through the (session_id, timestamp) index, never the whole table sorted; a user record whose parent is a tool
+    call is a tool's result, which opens no turn, so its blob is not read (of_capacity, 2026-11-24: on the laptop's
+    store that left 112,405 of 686,221 user records since 11-02 to read; of_field-analyst on PR 647, this mode)."""
     import of_model
     import of_store
-    q = ("SELECT source_path, timestamp, session_id, type, blob_sha256, message_id, model, input_tokens, output_tokens,"
-         " cache_read_tokens, cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens FROM transcript_record"
-         " WHERE type IN ('user', 'assistant') AND timestamp >= ? AND timestamp < ? ORDER BY source_path, line_offset")
     lo = of_model.iso(since - MARGIN_S)[:10] if since else ""
     hi = of_model.iso(until + 86400)[:10] if until else "~"
-    src, buf = None, []
-    for (path, ts, sid, typ, sha, mid, model, i, o, cr, cw, cw5, cw1) in conn.execute(q, (lo, hi)):
-        sid = session_of(path, sid)
-        if path != src and buf:
+    q = ("SELECT source_path, line_offset, timestamp, session_id, type, blob_sha256, message_id, model, input_tokens,"
+         " output_tokens, cache_read_tokens, cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens,"
+         " record_uuid, parent_uuid, tool_names FROM transcript_record"
+         " WHERE session_id = ? AND timestamp >= ? AND timestamp < ? AND type IN ('user', 'assistant')")
+    for session in _sessions(conn, lo, hi):
+        rows = conn.execute(q, (session, lo, hi)).fetchall()
+        calls = {r[14] for r in rows if r[4] == "assistant" and r[16] not in (None, "", "[]")}
+        src, buf = None, []
+        for (path, _, ts, sid, typ, sha, mid, model, i, o, cr, cw, cw5, cw1, _, parent, _) in sorted(
+                rows, key=lambda r: (r[0] or "", r[1] or 0)):
+            sid = session_of(path, sid)
+            if path != src and buf:
+                yield buf
+                buf = []
+            src = path
+            if typ == "user":
+                if parent in calls:
+                    continue   # a tool's result: turn_starter would say None
+                try:
+                    rec = json.loads(of_store.get_blob(conn, sha))
+                except (TypeError, ValueError):
+                    continue
+                buf.append((ts, sid, rec, None))
+            elif mid:
+                buf.append((ts, sid, None, (mid, model, i, o, cr, cw, cw5, cw1)))
+        if buf:
             yield buf
-            buf = []
-        src = path
-        if typ == "user":
-            try:
-                rec = json.loads(of_store.get_blob(conn, sha))
-            except (TypeError, ValueError):
-                continue
-            buf.append((ts, sid, rec, None))
-        elif mid:
-            buf.append((ts, sid, None, (mid, model, i, o, cr, cw, cw5, cw1)))
-    if buf:
-        yield buf
 
 
 def file_records(path):
@@ -272,12 +294,22 @@ def positions(conn):
     return {sid: p for sid, (p, _) in best.items()}
 
 
+def _monday(day):
+    import datetime
+    try:
+        d = datetime.date.fromisoformat(day)
+    except ValueError:
+        return "?"
+    return (d - datetime.timedelta(days=d.weekday())).isoformat()
+
+
 def count(all_turns, by, pos_of):
-    """{key: {turns, responses, input, output, cache_read, cache_write, cost}} over the keys BY names (day, position,
-    starter, cause, sender)."""
+    """{key: {turns, responses, input, output, cache_read, cache_write, cost}} over the keys BY names (day, week,
+    position, starter, cause, sender). A week is named by its Monday (UTC), the plan's measure week on week."""
     out = collections.defaultdict(collections.Counter)
     for t in all_turns:
-        vals = {"day": str(t["ts"] or "")[:10], "position": pos_of.get(t["session"], "?"), "starter": t["starter"],
+        day = str(t["ts"] or "")[:10]
+        vals = {"day": day, "week": _monday(day), "position": pos_of.get(t["session"], "?"), "starter": t["starter"],
                 "cause": t.get("cause") or t["starter"], "sender": t.get("sender") or "-"}
         c = out[tuple(vals[k] for k in by)]
         c["turns"] += 1 if t.get("counted", True) else 0
@@ -305,13 +337,13 @@ def main(argv=None):
     ap.add_argument("transcripts", nargs="*", help="transcript files; none: this machine's store")
     ap.add_argument("--since", help="ISO time, inclusive")
     ap.add_argument("--until", help="ISO time, exclusive")
-    ap.add_argument("--by", default="starter", help="comma-separated: day, position, starter, cause, sender")
+    ap.add_argument("--by", default="starter", help="comma-separated: day, week, position, starter, cause, sender")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     by = tuple(x.strip() for x in a.by.split(",") if x.strip())
-    bad = [x for x in by if x not in ("day", "position", "starter", "cause", "sender")]
+    bad = [x for x in by if x not in ("day", "week", "position", "starter", "cause", "sender")]
     if bad:
-        ap.error(f"--by takes day, position, starter, cause, sender, not {', '.join(bad)}")
+        ap.error(f"--by takes day, week, position, starter, cause, sender, not {', '.join(bad)}")
     import of_spend
     import of_store
     conn = of_store.connect()

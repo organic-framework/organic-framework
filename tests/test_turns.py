@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "bin"))
 import of_turns  # noqa: E402
@@ -155,6 +156,54 @@ class TurnsTest(unittest.TestCase):
         self.assertNotIn("hello", text)
         self.assertIn("2 turns · 1 responses", text)
 
+
+    def test_a_week_is_named_by_its_monday(self):
+        ts = [{"ts": d, "session": "s1", "starter": "relay", "responses": 1, "input": 0, "output": 0, "cache_read": 0,
+               "cache_write": 0, "cost": 1.0} for d in ("2026-11-16T01:00:00Z", "2026-11-22T23:00:00Z",
+                                                        "2026-11-23T00:30:00Z")]
+        out = of_turns.count(ts, ("week",), {})
+        self.assertEqual({k: c["turns"] for k, c in out.items()}, {("2026-11-16",): 2, ("2026-11-23",): 1})
+
+    def test_the_store_is_read_session_by_session_and_a_tools_result_is_never_opened(self):
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.executescript("""
+            CREATE TABLE transcript_record (id INTEGER PRIMARY KEY, source_path TEXT, line_offset INTEGER,
+              blob_sha256 TEXT, session_id TEXT, record_uuid TEXT, parent_uuid TEXT, type TEXT, timestamp TEXT,
+              model TEXT, tool_names TEXT, input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,
+              cache_write_tokens INTEGER, harness TEXT, message_id TEXT, cache_write_5m_tokens INTEGER,
+              cache_write_1h_tokens INTEGER);
+            CREATE INDEX transcript_session_ts ON transcript_record (session_id, timestamp);
+            CREATE TABLE blob (sha256 TEXT PRIMARY KEY, codec TEXT, zdata BLOB);
+            CREATE TABLE view_spend_month (message_id TEXT PRIMARY KEY, session_id TEXT, epoch REAL, fresh INTEGER,
+              cost REAL, config_dir TEXT, model TEXT);""")
+        prompt = user("Message from x:of_a (via relay, authority: none)", timestamp="2026-11-20T10:00:00Z",
+                      sessionId="s1")
+        conn.execute("INSERT INTO blob VALUES ('p', 'raw', ?)", (json.dumps(prompt).encode(),))
+        rows = [("/h/.claude/projects/w/s1.jsonl", 1, "p", "s1", "u1", None, "user", "2026-11-20T10:00:00Z", None, None,
+                 None, None),
+                ("/h/.claude/projects/w/s1.jsonl", 2, "a", "s1", "a1", "u1", "assistant", "2026-11-20T10:00:05Z",
+                 "claude-opus-5-5", '["Bash"]', "m1", 4),
+                ("/h/.claude/projects/w/s1.jsonl", 3, "tr", "s1", "u2", "a1", "user", "2026-11-20T10:00:09Z", None, None,
+                 None, None),
+                ("/h/.claude/projects/w/s1.jsonl", 4, "b", "s1", "a2", "u2", "assistant", "2026-11-20T10:00:12Z",
+                 "claude-opus-5-5", None, "m2", 6)]
+        for path, off, sha, sid, uuid, parent, typ, ts, model, tools, mid, out_tokens in rows:
+            conn.execute("INSERT INTO transcript_record (source_path, line_offset, blob_sha256, session_id, record_uuid,"
+                         " parent_uuid, type, timestamp, model, tool_names, input_tokens, output_tokens, message_id)"
+                         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (path, off, sha, sid, uuid, parent, typ, ts, model, tools, 1 if mid else None, out_tokens, mid))
+        conn.execute("INSERT INTO view_spend_month VALUES ('m1', 's1', ?, 0, 0, '/h/.claude', 'claude-opus-5-5')",
+                     (of_turns._t("2026-11-20T10:00:05Z"),))
+        import of_store
+        read = []
+        real = of_store.get_blob
+        with mock.patch.object(of_store, "get_blob", side_effect=lambda c, sha: read.append(sha) or real(c, sha)):
+            bufs = list(of_turns.store_records(conn, since=of_turns._t("2026-11-20T00:00:00Z")))
+        self.assertEqual(read, ["p"])                       # the tool's result (blob "tr") is never opened
+        self.assertEqual(len(bufs), 1)
+        got = list(of_turns.turns(bufs[0]))
+        self.assertEqual([(x["starter"], x["responses"]) for x in got], [("relay", 2)])
 
 if __name__ == "__main__":
     unittest.main()
