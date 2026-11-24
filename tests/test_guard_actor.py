@@ -219,5 +219,15 @@ class ServerRouteAct(unittest.TestCase):
             self.assertTrue(deny(cmd), cmd)
         self.assertIsNone(deny("of server route https://h:1 --via direct"))   # the session as it is: of refuses it
 
+    def test_of_issues_label_keeps_its_caller(self):
+        """of_review on organic-framework PR 630: with no caller named it records the owner's label, for good."""
+        for cmd in ("env -u CLAUDE_CODE_SESSION_ID of issues label OF-1 false_positive",
+                    "unset CLAUDE_CODE_SESSION_ID; of issues label OF-1 false_positive",
+                    "env -i PATH=/usr/bin:/bin HOME=/tmp of issues label OF-1 false_positive"):
+            self.assertTrue(deny(cmd), cmd)
+        self.assertIsNone(deny("of issues label OF-1 false_positive"))   # a session's own label
+        self.assertIsNone(deny("of issues list"))
+
+
 if __name__ == "__main__":
     unittest.main()
