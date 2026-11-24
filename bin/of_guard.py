@@ -4898,15 +4898,12 @@ _REMOVAL_ARG = re.compile(r"\b(?:rmtree|remove|removedirs|rmdir|unlink|rename|re
 
 
 def _deep_lit(lit):
-    """May a removal in code with this literal count a folder above a kept one? Only a path two levels or more under the
-    home or the root: code that removes one file and names '/' or '~' for a join or a home lookup removes no folder
-    above the checkout (of_server, 2026-11-24: such lines were denied as G40)."""
+    """May a removal in code with this literal count a folder above a kept one? Any absolute path but the root: the
+    home and every folder between it and a kept one count, at any depth, since the path may be built a step away
+    (h = '<home>/.local'; rmtree(h); join(expanduser('~'), '.local'): of_secrets-review on PR 629). '/' alone counts
+    only as a removal call's own argument (_REMOVAL_ARG), since a join names it in many a harmless line."""
     p = os.path.realpath(_expanduser(str(lit).strip("'\"")))
-    home = os.path.realpath(_expanduser("~"))
-    if p in ("/", home) or not os.path.isabs(p):
-        return False
-    rel = p[len(home) + 1:] if p.startswith(home + "/") else p.lstrip("/")
-    return rel.count("/") >= 1
+    return os.path.isabs(p) and p != "/"
 
 
 def _rel_path_lit(lit, opened=()):
