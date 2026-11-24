@@ -232,11 +232,20 @@ def deciders(i):
     return [x for x in str(i.get("decider_position") or "").split(", ") if x]
 
 
+OWNER_ONLY_WAY_OUT = ("its decider brings the remedy as a diff, or, if the rule misfired, tells the rule's keeper "
+                      "(of_field-analyst, docs/diagnose.md; from another organization through OF's support channel, "
+                      "docs/support.md), so a fixed rule stops raising it; the owner's label stays the owner's own "
+                      "choice, never asked for")
+
+
 def owner_only(i):
-    """Why only the owner can label issue I though it routes to a position (the issue names its decider), or None.
-    Its routing stays: the decider still brings the remedy as a diff, which reaches the owner anyway."""
+    """Why only the owner can label issue I though it routes to a position (the issue names its decider), with the
+    decider's ways out, or None. Its routing stays (of_architect, 2026-11-24, message 01a20d5c-f970): the decider
+    brings the remedy as a diff, or tells the rule's keeper that the rule misfired, so a false positive about the
+    keeper does not wait on the founder; it never asks the owner for the label."""
     named = [x for x in deciders(i) if x in (i.get("affected") or [])]
-    return f"it names {', '.join(named)}, the position it routes to" if named and i.get("decider") != "owner" else None
+    return (f"it names {', '.join(named)}, the position it routes to; {OWNER_ONLY_WAY_OUT}"
+            if named and i.get("decider") != "owner" else None)
 
 
 def _keeper_of(keeper, x):
