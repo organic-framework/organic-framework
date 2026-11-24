@@ -130,22 +130,14 @@ class SubagentTest(unittest.TestCase):
 
     def test_a_harness_whose_run_could_read_its_login_is_refused(self):
         """of_secrets-review on PR 328: a selftest whose model declines to read its login passes; the read rules decide.
-        Muse's sign-in lies where its process, so its tools, read: of_server's ruling (message 01a20e57-08f0) lets a
-        workspace run go, recorded login_readable, and refuses any run with the web."""
+        Muse's sign-in lies where its process, so its tools, read: refused (of_server, message 01a20e67-96ff)."""
         login = of_subagent.login_files("muse")[0]
         os.makedirs(os.path.dirname(login), exist_ok=True)
         with open(login, "w") as fh:
             fh.write("{}")
         fake = Fake("muse")
-        self.assertEqual(self.go("muse", fake=fake, real_login_gate=True)[0]["exit"], 0)
-        started = [p for k, p in self.events if k == "subagent_run" and p.get("phase") == "started"][-1]
-        self.assertIs(started.get("login_readable"), True)
-        fake = Fake("muse")
-        research = {"subagent_harnesses": dict(REG["subagent_harnesses"],
-                                               muse=dict(REG["subagent_harnesses"]["muse"], kinds=["review", "read",
-                                                                                                  "research"]))}
         with self.assertRaises(of_subagent.SubagentError) as e:
-            self.go("muse", kind="research", fake=fake, real_login_gate=True, registry=research)
+            self.go("muse", fake=fake, real_login_gate=True)
         self.assertIn("could read its own login (auth.json)", str(e.exception))
         self.assertEqual(fake.calls, [])
         with mock.patch.object(of_subagent, "login_files", lambda h: [os.path.expanduser("~/.codex/auth.json")]):
