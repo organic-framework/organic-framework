@@ -995,6 +995,269 @@ class GuardBashTest(unittest.TestCase):
 
 
 
+class MuseLoginTest(unittest.TestCase):
+    """G44 (of_review, private, on PR 652): Muse's login is the owner's; a session never writes it or signs in."""
+
+    def setUp(self):
+        import tempfile
+        from unittest import mock
+        self.tmp = tempfile.TemporaryDirectory()
+        self.patch = mock.patch.dict(os.environ, {"HOME": self.tmp.name})
+        self.patch.start()
+        self.dir = os.path.join(self.tmp.name, ".local/state/of/subagent/muse-login")
+        os.makedirs(self.dir)
+
+    def tearDown(self):
+        self.patch.stop()
+        self.tmp.cleanup()
+
+    def deny(self, cmd):
+        return bool(of_guard.critical_deny("Bash", {"command": cmd}, "/tmp"))
+
+    def test_writes_and_a_cleared_sign_in_are_denied(self):
+        f = os.path.join(self.dir, "login-probe.txt")
+        for cmd in (f"cat > {f}", f"cp /tmp/x {f}", f"rm -rf {self.dir}",
+                    "printf %s k | env -u CLAUDE_CODE_SESSION_ID of subagent muse-login --stdin"):
+            self.assertTrue(self.deny(cmd), cmd)
+        got = of_guard.critical_deny("Write", {"file_path": f, "content": "x"}, "/tmp")
+        self.assertTrue(got and "Muse's login" in got[0])
+        for cmd in (f"ls {self.dir}", "of subagent run --harness muse --kind read",
+                    "of send of_x 'run of subagent muse-login in your terminal'"):
+            self.assertFalse(self.deny(cmd), cmd)
+        for cmd in ("of subagent muse-login", "python3 bin/of subagent muse-login",   # of_review on PR 655
+                    f"python3 -c \"open('{f}', 'w').write('x')\""):
+            self.assertTrue(self.deny(cmd), cmd)
+        from unittest import mock
+        other = os.path.join(self.tmp.name, "state2")   # with OF_STATE elsewhere, an interpreter's write too
+        os.makedirs(os.path.join(other, "subagent/muse-login"))
+        with mock.patch.dict(os.environ, {"OF_STATE": other}):
+            self.assertTrue(self.deny(f"python3 -c \"open('{other}/subagent/muse-login/a', 'w').write('x')\""))
+
+
+class LiveCheckoutTest(unittest.TestCase):
+    """G40 (2026-11-24, of_platform's hand-over cb134c52 after the laptop's guard outage): OF's live checkout, which the
+    hooks, the units and `of` run from, takes no agent's write, move, link or removal; the working copy keeps its."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        home = self.tmp.name
+        self.live = os.path.join(home, ".local/share/of/live")
+        self.dev = os.path.join(home, "organic-framework")
+        for d in (os.path.join(self.live, "bin"), os.path.join(self.dev, "bin"), os.path.join(home, ".local/bin")):
+            os.makedirs(d)
+        from unittest import mock
+        self.patch = mock.patch.dict(os.environ, {"HOME": home})
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+        self.tmp.cleanup()
+
+    def deny(self, cmd, cwd="/tmp"):
+        got = of_guard.critical_deny("Bash", {"command": cmd}, cwd)
+        return bool(got and "live checkout" in got[0])
+
+    def test_the_constant_is_of_lives(self):
+        import of_live   # compared unexpanded: no test's home changes them (of_secrets-review on PR 629, point 9)
+        self.assertEqual(of_guard.LIVE_DIR, "~/.local/share/of/live")
+        self.assertEqual(of_guard.LIVE_DIR, getattr(of_live, "LIVE_DIR", "~" + of_live.LIVE[len(os.path.expanduser("~")):]
+                                                    if of_live.LIVE.startswith(os.path.expanduser("~")) else of_live.LIVE))
+
+    def test_the_forms_of_the_third_pass(self):
+        """of_review on PR 629 at ee37724 (Codex's pass): a heredoc and a group after a cd, a grouped -qd, a -d through a
+        variable, a link inside replaced or removed from code, a new plist named by a git output."""
+        live = self.live
+        outside = os.path.join(self.tmp.name, "outside.txt")
+        open(outside, "w").close()
+        os.makedirs(os.path.join(live, "docs"))
+        os.symlink(outside, os.path.join(live, "docs/reference"))
+        for cmd in (f"cd {live} && python3 <<'EOF'\nopen('bin/x.py', 'w').write('')\nEOF",
+                    f"cd {live} && (python3 -c \"open('bin/x.py','w').write('')\")",
+                    f"unzip -o /tmp/x.zip -qd{live}", f"dest={live}; unzip -o /tmp/x.zip -d\"$dest\"",
+                    f"ln -sf /tmp/evil.py {live}/docs/reference",
+                    f"python3 -c \"import os; os.unlink('{live}/docs/reference')\"",
+                    "git -C /tmp/repo diff --output=~/Library/LaunchAgents/dev.organic-framework.new.plist"):
+            self.assertTrue(self.deny(cmd), cmd)
+        got = of_guard.critical_deny("Edit", {"file_path": f"{live}/docs/reference", "old_string": "a",
+                                              "new_string": "b"}, "/tmp")   # Codex's Delete File reaches us so
+        self.assertTrue(got and "live checkout" in got[0])
+        for cmd in (f"cd {live}\npython3 <<'EOF'\nopen('bin/x.py', 'w').write('')\nEOF",   # of_review, 12:03Z
+                    f"cd {live} && bash <<'EOF'\necho x > bin/x.py\nEOF",
+                    f"cd {live}/docs && ln -sf /tmp/reference"):
+            self.assertTrue(self.deny(cmd), cmd)
+        self.assertFalse(self.deny(f"cd {live} && ssh h bash <<'EOF'\necho x > bin/x.py\nEOF"))   # runs remotely
+        for cmd in ("unzip -l /tmp/x.zip", "echo x > ~/Library/LaunchAgents/dev.organic-framework.a/b.plist",
+                    f"rm {outside}", "python3 -c \"s=open('docs/a.md').read(); open('docs/a.md','w').write(s.replace('x','y'))\"",
+                    # a removal in code beside '/' or '~' for a join or a home lookup (of_server, 2026-11-24: denied)
+                    "python3 -c \"import os; os.remove('/tmp/x'); print('/'.join(['a', 'b']))\"",
+                    ):
+            self.assertFalse(self.deny(cmd), cmd)
+        for cmd in ("python3 -c \"import os, shutil; shutil.rmtree('/tmp/y'); print(os.path.expanduser('~'))\"",
+                    # the home or a folder up to the checkout, built a step away (of_secrets-review on PR 629)
+                    f"python3 -c \"import shutil; h = '{os.path.expanduser('~/.local')}'; shutil.rmtree(h)\"",
+                    "python3 -c \"import os, shutil; shutil.rmtree(os.path.join(os.path.expanduser('~'), '.local'))\""):
+            self.assertTrue(self.deny(cmd), cmd)
+        above = os.path.dirname(live)   # a deep literal above the checkout still counts
+        self.assertTrue(self.deny(f"python3 -c \"import shutil; shutil.rmtree('{above}')\""))
+        for cmd in (f"python3 -c \"import os; os.open(str('{live}/bin/x.py'), os.O_WRONLY | os.O_CREAT)\"",
+                    f"cd {live}/bin && python3 -c \"open('stamp', 'x').write('1')\"",   # of_review on PR 629
+                    f"cd {live}/bin && python3 -c \"open('of_guard', 'w').write('1')\"",
+                    f"python3 -c \"import os; os.open('{live}/bin/stamp', (os.O_WRONLY | os.O_CREAT))\"",
+                    f"cd {live}/bin && python3 -c \"open(file='stamp', mode='x').write('1')\"",   # of_review, PR 629
+                    f"cd {live}/bin && python3 -c \"import pathlib; pathlib.Path('stamp').write_text('1')\"",
+                    f"cd {live}/bin && python3 -c \"import pathlib; pathlib.Path('stamp').touch()\"",
+                    f"cd {live}/bin && python3 -c \"import shutil; shutil.copy('/tmp/x', 'stamp')\"",
+                    f"cd {live}/bin && python3 -c \"import os; os.open('stamp', os.O_WRONLY | os.O_CREAT)\"",
+                    f"python3 <<'EOF'\nimport os\nos.open(\n    '{live}/bin/stamp',\n    os.O_WRONLY | os.O_CREAT)\nEOF",
+                    f"cd {live}/bin && python3 -c \"open(mode='x', file='stamp').close()\"",   # of_review on PR 629
+                    f"python3 <<'EOF'\nimport os\nos.open('{live}/bin/x.py',  # )\n        os.O_WRONLY | os.O_CREAT)\nEOF",
+                    f"cd {live}/bin && python3 -c \"import os; os.symlink('/tmp/source', 'stamp')\"",
+                    f"cd {live}/bin && python3 -c \"import os; os.link('/tmp/source', 'stamp')\"",
+                    f"cd {live}/bin && python3 -c \"import os, shutil; shutil.copyfile(os.path.join('/tmp', 'source'), 'stamp')\"",
+                    f"cd {live}/bin && python3 <<'EOF'\nimport os, shutil\nshutil.copyfile(os.path.join('/tmp', 'source'), \"team's\")\nEOF",
+                    f"cd {live}/bin && python3 <<'EOF'\nimport os, shutil\nshutil.copyfile(os.path.join('/tmp', 'source\\\\'), 'stamp')\nEOF",
+                    f"python3 -c \"import os; os.open('{live}/bin/x#1', os.O_WRONLY | os.O_CREAT)\"",   # of_secrets-review
+                    f"cd {live}/bin && python3 <<'EOF'\nimport os, shutil\nshutil.copyfile(os.path.join('/tmp', 'x'),  # "
+                    + "y" * 4050 + "\n    'stamp')\nEOF",   # of_review on PR 629: a long comment before the destination
+                    f"python3 -c \"import os; make_link = os.symlink; make_link('/tmp/source', '{live}/bin/x.py')\"",
+                    f"cd {live}/bin && node -e \"const fs = require('fs'), path = require('path'); "
+                    "fs.copyFileSync(path.join('/tmp', 'source'), 'stamp')\"",
+                    f"python3 -c \"import os; os.renames('{live}/bin/a.py', '{live}/bin/b.py')\"",   # of_review, 629
+                    f"python3 -c \"import os; os.removedirs('{live}/bin/emptydir')\"",
+                    f"cd {live}/bin && python3 <<'EOF'\nimport os, shutil\n'''It's a note.'''\n"
+                    "shutil.copyfile(os.path.join('/var/fixture', 'source'), 'stamp')\nEOF",
+                    f"cd {live}/bin && node -e \"require('fs').cpSync('/var/fixture/source', 'stamp')\"",
+                    f"cd {live}/bin && node -e \"require('fs').linkSync('/var/fixture/source', 'stamp')\"",
+                    f"cd {live}/bin && python3 -c \"import os; make_link = os.symlink; make_link('/var/fixture/source', 'stamp')\"",
+                    f"python3 <<'EOF'\nimport os\n'''it's'''\nos.open('{live}/bin/x', os.O_WRONLY | os.O_CREAT)\nEOF",
+                    # of_review on PR 629: an os.open in an f-string's field, also with the field's own quote (3.12)
+                    f"python3 <<'EOF'\nimport os\nf\"{{os.open('{live}/bin/of_guard.py', os.O_WRONLY | os.O_TRUNC)}}\"\nEOF",
+                    f"python3 <<'EOF'\nimport os\nf\"{{os.open(\"{live}/bin/x\", os.O_WRONLY | os.O_CREAT)}}\"\nEOF",
+                    f"cd {live}/bin && python3 <<'EOF'\nimport os\nf\"{{os.open('fresh', os.O_WRONLY | os.O_CREAT)}}\"\nEOF",
+                    # and a fresh name that reads as a file mode, through a saved name
+                    f"cd {live}/bin && python3 -c \"import os; mk = os.symlink; mk('/var/fixture/source', 'tab')\"",
+                    f"cd {live}/bin && python3 -c \"import os; mk = os.symlink; mk('/var/fixture/source', 'a')\""):
+            self.assertTrue(self.deny(cmd), cmd)
+        self.assertFalse(self.deny(f"cd {live}/bin && python3 -c \"import pathlib; pathlib.Path('/tmp/q').open('w')\""))
+        self.assertFalse(self.deny(f"cd {live}/bin && python3 -c \"open('/tmp/q', 'a').write('1')\""))
+        self.assertFalse(self.deny(f"cd {live}/bin && python3 -c \"print(open('of').read())  # copy(a, 'b')\""))
+        # the readers themselves (Codex on PR 629: the scanner's own behaviour, not only the verdict)
+        self.assertTrue(of_guard._os_open_writes("os.open('/x', '''it's )''' and os.O_WRONLY)"))
+        self.assertTrue(of_guard._os_open_writes("f\"{os.open('/x', os.O_WRONLY)}\""))
+        self.assertFalse(of_guard._os_open_writes("x = 'os.open(\"/x\", os.O_WRONLY)'"))
+        self.assertEqual(of_guard._dest_names("shutil.copyfile(os.path.join('/v', '''it's, x'''), 'stamp')"), {"stamp"})
+        self.assertEqual(of_guard._dest_names("print('copy(a, \"b\")')  # copy(c, 'd')"), set())
+        self.assertFalse(self.deny(f"python3 -c \"import os; os.open('{live}/bin/of', os.O_RDONLY); print(os.O_CREAT)\""))
+        self.assertFalse(self.deny(f"python3 <<'EOF'\nimport os\nos.open('{live}/bin/of',  # not O_CREAT\n        os.O_RDONLY)\nEOF"))
+        self.assertFalse(self.deny(f"cd {live}/bin && python3 -c \"s = 'a'; print(s.replace('a', 'stamp'))\""))
+        self.assertFalse(self.deny(f"cd {live} && ssh h python3 <<'EOF'\nopen('bin/x.py', 'w').write('')\nEOF"))
+        for cmd in ("ln -s /tmp/mine ~/Library/LaunchAgents/dev.organic-framework.checkout-update.plist.new",
+                    "ln -s /tmp/mine ~/.local/bin/of.new"):   # a writer's temporary name (of_review on PR 628)
+            self.assertTrue(self.deny(cmd), cmd)
+        self.assertFalse(self.deny("echo x > ~/.local/bin/other-tool"))
+        for top in ("~/.local", os.path.expanduser("~")):   # a removal's own argument at any depth (PR 629)
+            self.assertTrue(self.deny(f"python3 -c \"import shutil, os; shutil.rmtree(os.path.expanduser('{top}'))\""), top)
+
+    def test_the_forms_of_the_second_pass(self):
+        """of_review, private, on PR 629: an attached unzip -d, a link inside removed by itself, a new OF plist, a
+        wrapper's folder never the box, and a relative path in code after a cd there."""
+        live = self.live
+        outside = os.path.join(self.tmp.name, "outside.txt")
+        open(outside, "w").close()
+        os.makedirs(os.path.join(live, "docs"))
+        os.symlink(outside, os.path.join(live, "docs/reference"))
+        agents = os.path.expanduser("~/Library/LaunchAgents")
+        os.makedirs(agents, exist_ok=True)
+        for cmd in (f"unzip -o /tmp/x.zip -d{live}", f"rm {live}/docs/reference",
+                    "echo x > ~/Library/LaunchAgents/dev.organic-framework.relay.plist",
+                    "echo x > ~/Library/LaunchAgents/dev.organic-framework.new.plist",
+                    f"cd {live} && python3 -c \"open('bin/x.py','w').write('x')\""):
+            self.assertTrue(self.deny(cmd), cmd)
+        got = of_guard.critical_deny("Write", {"file_path": os.path.join(agents, "dev.organic-framework.new.plist"),
+                                               "content": "x"}, "/tmp")
+        self.assertTrue(got and "live checkout" in got[0])
+        self.assertFalse(self.deny(f"rm {outside}"))                     # the link's target outside stays the session's
+        self.assertFalse(self.deny("echo x > ~/Library/LaunchAgents/com.other.app.plist"))
+        wrapper = os.path.join(self.tmp.name, ".local/libexec/of-wrapper/of")   # a wrapper, no checkout: ~/.local stays
+        os.makedirs(os.path.dirname(wrapper))
+        open(wrapper, "w").close()
+        link = os.path.expanduser("~/.local/bin/of")
+        os.symlink(wrapper, link)
+        self.assertFalse(self.deny("echo x > ~/.local/state/of/notes.txt"))
+
+    def test_interpreter_code_the_runners_git_and_small_writes(self):
+        """of_secrets-review on PR 629, points 3 to 6."""
+        live = self.live
+        agents = os.path.expanduser("~/Library/LaunchAgents")
+        os.makedirs(agents)
+        open(os.path.join(agents, "dev.organic-framework.listen.plist"), "w").close()
+        for cmd in (f"python3 -c \"open('{live}/bin/of_hook.py','w').write('x')\"",
+                    f"perl -e 'open(F, \">{live}/bin/x\")'",
+                    "echo x > ~/.local/libexec/of-checkout-update",
+                    "echo x > ~/Library/LaunchAgents/dev.organic-framework.checkout-update.plist",
+                    "echo x > ~/Library/LaunchAgents/dev.organic-framework.listen.plist",
+                    "git -C ~/.LOCAL/share/of/live checkout -- bin",
+                    "GIT_WORK_TREE=~/.local/share/of/live git --git-dir=/tmp/g checkout -f main",
+                    "W=~/.local/share/of/live; git --work-tree=$W --git-dir=/tmp/g checkout -f main",
+                    "git -C ~/.local/share/of/live config core.fsmonitor /tmp/x",
+                    "git -C ~/.local/share/of/live config --add remote.origin.fetch x",
+                    "git -C ~/.local/share/of/live update-ref HEAD 0123abcd",
+                    "git -C ~/.local/share/of/live fetch origin",
+                    "git -C ~/.local/share/of/live stash",
+                    "git -C ~/.local/share/of/live diff --output=bin/x",
+                    f"git -C /tmp log --output={live}/bin/x -1",
+                    f"git -C /tmp diff --output {live}/bin/x",
+                    f"tar -cf {live}/bin/x.tar /tmp/a",
+                    f"touch {live}/bin/x.py",
+                    f"chmod +x {live}/bin/x"):
+            self.assertTrue(self.deny(cmd), cmd)
+        got = of_guard.critical_deny("Edit", {"file_path": os.path.expanduser("~/.local/libexec/of-checkout-update"),
+                                              "old_string": "a", "new_string": "b"}, "/tmp")
+        self.assertTrue(got and "live checkout" in got[0])
+        self.assertTrue(self.deny(f"git config --file {live}/.git/config core.fsmonitor /tmp/x"))
+        for cmd in ("git -C ~/.local/share/of/live status", "git -C ~/.local/share/of/live config --get core.bare",
+                    f"git config --file {live}/.git/config --get core.bare",   # a read (of_review on PR 629)
+                    "git -C ~/.local/share/of/live branch", "git -C ~/.local/share/of/live stash list",
+                    "git -C /tmp diff --output=/tmp/x.diff", f"tar -tf {live}/x.tar",
+                    f"python3 -c \"print(open('{live}/bin/of_hook.py').read()[:10])\""):
+            self.assertFalse(self.deny(cmd), cmd)
+
+    def test_writes_moves_links_and_removals_are_denied(self):
+        for cmd in ("echo x > ~/.local/share/of/live/bin/of_hook.py",
+                    "cp /tmp/a ~/.local/share/of/live/bin/of_hook.py",
+                    "mv /tmp/a ~/.local/share/of/live/bin/x",
+                    "ln -sf /tmp/a ~/.local/share/of/live/bin/of",
+                    "rm -rf ~/.local/share/of/live",
+                    "rm -rf ~/.local/share/of",
+                    "cp -R /tmp/tree ~/.local/share/of",
+                    "git -C ~/.local/share/of/live checkout -- bin/of_hook.py",
+                    "sed -i '' s/a/b/ ~/.local/share/of/live/bin/of_guard.py"):
+            self.assertTrue(self.deny(cmd), cmd)
+        got = of_guard.critical_deny("Write", {"file_path": os.path.join(self.live, "bin/of_hook.py"), "content": "x"},
+                                     "/tmp")
+        self.assertTrue(got and "live checkout" in got[0])
+
+    def test_reads_and_the_working_copy_pass(self):
+        for cmd in ("cat ~/.local/share/of/live/bin/of_hook.py", "git -C ~/.local/share/of/live log -1",
+                    "echo x > ~/organic-framework/bin/x", "git -C ~/organic-framework checkout -- bin/x"):
+            self.assertFalse(self.deny(cmd), cmd)
+        self.assertIsNone(of_guard.critical_deny("Write", {"file_path": os.path.join(self.dev, "bin/x"),
+                                                           "content": "x"}, "/tmp"))
+
+    def test_the_checkout_the_of_link_leads_to_counts_unless_it_is_the_working_copy(self):
+        link = os.path.expanduser("~/.local/bin/of")
+        os.symlink(os.path.join(self.dev, "bin/of"), link)         # before `of live switch`: the working copy
+        self.assertFalse(self.deny("echo x > ~/organic-framework/bin/x"))
+        os.unlink(link)
+        other = os.path.join(self.tmp.name, "of-other")
+        os.makedirs(os.path.join(other, "bin"))
+        os.makedirs(os.path.join(other, ".git"))
+        open(os.path.join(other, "bin/of"), "w").close()           # a checkout: bin/of and .git, as of_checkouts tells one
+        os.symlink(os.path.join(other, "bin/of"), link)            # another checkout the units run from
+        self.assertTrue(self.deny(f"echo x > {other}/bin/x"))
+
+
 class NoWaitTest(unittest.TestCase):
     """of_server, 2026-11-23: the files the guard reads for a command are read only when regular, without waiting."""
 

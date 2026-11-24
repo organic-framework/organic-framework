@@ -79,6 +79,7 @@ PAGES = [
         ("docs/server-several-machines.md", "server-several-machines", "Several machines"),
         ("docs/storage.md", "storage", "Storage"),
         ("docs/health.md", "health", "OF's own health"),
+        ("docs/live.md", "live", "The laptop's live checkout"),
         ("docs/capacity.md", "capacity", "Capacity"),
         ("docs/accounts.md", "accounts", "Accounts and the capacity package"),
         ("docs/access.md", "access", "Access through keepers"),

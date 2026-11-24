@@ -437,9 +437,12 @@ class HarnessLoginTest(unittest.TestCase):
                 c = cmd.format(p) if "{}" in cmd else cmd + p
                 self.assertTrue(of_guard.critical_deny("Bash", {"command": c}), c)
             self.assertTrue(of_guard.critical_deny("Read", {"file_path": p.replace("~", "/Users/alex")}), p)
-        for cmd in ("ls ~/.codex", "cat ~/.codex/config.toml", "ls ~/.local/state/of/subagent", "of subagent muse-login",
+        for cmd in ("ls ~/.codex", "cat ~/.codex/config.toml", "ls ~/.local/state/of/subagent",
                     "of capacity status"):
             self.assertIsNone(of_guard.critical_deny("Bash", {"command": cmd}), cmd)
+        # the sign-in itself is the owner's, from a plain terminal, so any agent's call is G44's (of_review on PR 655)
+        got = of_guard.critical_deny("Bash", {"command": "of subagent muse-login"})
+        self.assertTrue(got and "Muse's login" in got[0])
 
     def test_each_part_of_a_path_is_read_without_its_padding(self):
         """of_review on organic-framework PR 387: a nested name that starts with a space or a quote was missed."""
