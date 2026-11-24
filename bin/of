@@ -7749,6 +7749,31 @@ def cmd_protected(args):
           "changed, none that reaches the secret)")
 
 
+def cmd_live(args):
+    """`of live setup|switch|request|status`: the laptop's live checkout, apart from the shared working copy
+    (bin/of_live.py; hand-over cb134c52)."""
+    import of_live
+    if args.action in ("setup", "switch"):
+        import of_asks_answer
+        if of_asks_answer.not_the_owner():   # it writes every account's hooks and OF's units: the owner's alone
+            raise OfError(f"of live {args.action} is the owner's: it rewrites every account's hooks and OF's services. "
+                          f"The owner runs `of live {args.action}` in a plain terminal")
+    try:
+        if args.action == "setup":
+            of_live.setup()
+            print("of live setup: done. Next, once: of live switch")
+        elif args.action == "switch":
+            of_live.switch()
+            print("of live switch: done; every hooked account, the units and the of on PATH run from " + of_live.LIVE)
+        elif args.action == "request":
+            print("of live request: asked the update agent (" + of_live.request() + ")")
+        else:
+            st = of_live.status()
+            print(f"live checkout {st['live']} at {(st['head'] or 'none')[:12]}; of on PATH runs {st['link']}")
+    except of_live.LiveError as e:
+        raise OfError(f"of live {args.action}: refused: {e}")
+
+
 def cmd_access(args):
     """`of access map|request|grant|revoke` (docs/access.md; bin/of_access.py): the map of who reaches what, a
     position's request to its structure keeper, and the structure keeper's one-line grant and revoke."""
@@ -9200,6 +9225,9 @@ def build_parser():
     gr.add_argument("--source", default="founder")
     gr.add_argument("--note")
     gr.set_defaults(fn=cmd_grant)
+    lv = sub.add_parser("live", help="the laptop's live checkout the hooks and units run from (bin/of_live.py)")
+    lv.add_argument("action", choices=["setup", "switch", "request", "status"])
+    lv.set_defaults(fn=cmd_live)
     hk = sub.add_parser("hooks", help="install or remove the recorder hooks in a Claude Code config dir")
     hk.add_argument("action", choices=["install", "uninstall"])
     hk.add_argument("--config-dir", help="default: $CLAUDE_CONFIG_DIR or ~/.claude")
