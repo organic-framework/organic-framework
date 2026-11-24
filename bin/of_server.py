@@ -3170,7 +3170,8 @@ def load_launchd(plists, uninstall=False, run=subprocess.run):
     out = []
     for label, text in plists.items():
         path = os.path.expanduser(f"~/Library/LaunchAgents/{label}.plist")
-        if os.path.islink(path):   # a link at the plist's own name: launchd would load whatever it leads to
+        linked = os.path.islink(path)   # a link at the plist's own name: launchd would load whatever it leads to
+        if linked and not uninstall:
             out.append(f"{label}: refused, a link at {path}")
             continue
         try:
@@ -3178,13 +3179,13 @@ def load_launchd(plists, uninstall=False, run=subprocess.run):
                 same = fh.read() == text
         except OSError:
             same = False
-        if same and not uninstall and run(["launchctl", "print", f"{domain}/{label}"],
+        if same and not uninstall and not linked and run(["launchctl", "print", f"{domain}/{label}"],
                                           capture_output=True).returncode == 0:
             out.append(f"{label}: unchanged")  # `of init` run again does not restart a server it already set up
             continue
         run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True)
-        if uninstall:
-            if os.path.exists(path):
+        if uninstall:   # booted out and removed even when a link stands at its name: os.remove takes the link itself
+            if os.path.lexists(path):
                 os.remove(path)
             out.append(f"removed {label}")
             continue
