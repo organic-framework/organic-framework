@@ -116,6 +116,57 @@ def labels(rows):
     return out
 
 
+def label_issue(i, history, keeper, now, carry=()):
+    """Apply to issue I the latest label of HISTORY that counts (may_label); a newer one that does not is kept on the
+    issue as `label_not_counted` {by, label, ts, why}, so the list shows it."""
+    lab, skipped = counted_label(history, i, keeper)
+    apply_label(i, lab, now, carry)
+    if skipped:
+        i["label_not_counted"] = {"by": skipped.get("by"), "label": skipped.get("label"), "ts": skipped.get("ts"),
+                                  "why": may_label(skipped.get("by"), i, keeper)}
+    return i
+
+
+def label_history(rows):
+    """{issue_id: [of.issue_labelled payload with its ts and `by`, oldest first]}: `by` is the writer the payload names,
+    else the event's position, else the owner (a shell that is no agent's session records none)."""
+    out = {}
+    for r in sorted(rows, key=lambda r: epoch(r.get("ts")) or 0):
+        if r["name"] == "of.issue_labelled":
+            pl = r.get("payload") or {}
+            if pl.get("issue_id"):
+                out.setdefault(pl["issue_id"], []).append(dict(pl, ts=r["ts"], by=pl.get("by") or r.get("position") or "owner"))
+    return out
+
+
+def may_label(by, i, keeper):
+    """None when BY's label counts on issue I, else why it does not. The owner labels any issue; the organization's
+    structure keeper (KEEPER), the analyst the owner delegates labelling to, and the position the issue routes to
+    (`decider_position`: the keeper or a unit owner) label it unless the issue names them in `affected`, where only
+    the owner does. Since a label holds over all time, one from any other session, the issue's own subject included,
+    would take an issue out of the inbox, the keeper digest and the escalations for good (of_review on organic-framework
+    PR 630)."""
+    if by == "owner":
+        return None
+    if by in (i.get("affected") or []):
+        return f"the issue names {by}, so only the owner labels it"
+    if by in (keeper, i.get("decider_position")):
+        return None
+    return (f"{by} is neither the owner, the structure keeper ({keeper or 'none'}) nor the position the issue routes to"
+            f" ({i.get('decider_position') or 'none'})")
+
+
+def counted_label(history, i, keeper):
+    """(the latest label in HISTORY that counts on issue I, or None; the latest that does not, when newer than it)."""
+    lab = skipped = None
+    for x in history or ():
+        if may_label(x.get("by"), i, keeper) is None:
+            lab, skipped = x, None
+        else:
+            skipped = x
+    return lab, skipped
+
+
 def apply_label(i, lab, now, carry=()):
     """carry: earlier versions whose labels still apply (the rule's labels_carry_from: detection unchanged)."""
     if not lab:
@@ -211,7 +262,7 @@ def diagnose(model, rows, a, b, cat=None, context=None, label_rows=None):
     except OSError as exc:
         return {"issues": [], "rules": [], "error": f"no catalogue: {exc}"}
     have = present(model, rows, a, b, cat)
-    labs = labels(rows if label_rows is None else [r for r in label_rows if (epoch(r.get("ts")) or 0) <= b])
+    labs = label_history(rows if label_rows is None else [r for r in label_rows if (epoch(r.get("ts")) or 0) <= b])
     issues, status = [], []
     keeper = structure_keeper(model)
     for name, spec in (cat.get("rules") or {}).items():
@@ -249,11 +300,12 @@ def diagnose(model, rows, a, b, cat=None, context=None, label_rows=None):
                 extra = []
             row["notes"] = notes
             carry = spec.get("labels_carry_from") or []
-            found = [apply_label(i, labs.get(i["issue_id"]), b, carry) for i in res]
+            found = res
             for i in found:
                 i["decider_position"] = decider_position(model, i, keeper)
                 route_to_unit(model, i, keeper)
                 mark_unconfirmed(model, i)
+                label_issue(i, labs.get(i["issue_id"]), keeper, b, carry)   # after routing: who decides it may label
             row["issues"] = sum(i["state"] == "open" for i in found)
             row["status"] = "fired" if row["issues"] else ("blocked" if extra else "quiet")
             row["missing"] = extra

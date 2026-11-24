@@ -203,9 +203,12 @@ def _print_flow(fl):
 def issues_for_label(org=None, ids=(), log=None, run=True, fresh=False):
     """(open issues, source) that `of issues label` matches ids against: the render's (of_studio.read_issues) when
     every organization's is the render's latest and holds each of IDS, else one diagnose run per organization here
-    (source "run"). ORG: one organization, or None or "all" for every one in orgs.yaml. FRESH: the run, always."""
+    (source "run"). ORG: one organization, or None or "all" for every one in orgs.yaml. FRESH: the run, always.
+    Each issue carries its organization's `structure_keeper`, for the label's writer check (of_diagnose.may_label)."""
     names = _issue_orgs(org)
-    cached = None if fresh else of_studio.read_issues(names)
+    docs = None if fresh else of_studio.read_issue_files(names)
+    cached = None if docs is None else [dict(i, structure_keeper=docs[n].get("structure_keeper"))
+                                        for n in names for i in docs[n].get("issues") or []]
     if cached is not None and all(any(_names(i, x) for i in cached) for x in ids):
         return cached, "render"
     if not run:   # every id names its issue in full: what the render holds, if anything
@@ -216,7 +219,8 @@ def issues_for_label(org=None, ids=(), log=None, run=True, fresh=False):
     b = time.time()
     rows = _rows(of_model.iso(b - 16 * 86400))
     keep = argparse.Namespace(decider=None, for_=None)
-    return [i for n in names for i in _open_issues(keep, n, rows, b)[1]], "run"
+    return [dict(i, structure_keeper=d.get("structure_keeper")) for n, iss, d in (_open_issues(keep, n, rows, b) for n in names)
+            for i in iss], "run"
 
 
 def _issue_orgs(org):
@@ -284,9 +288,10 @@ def _rendered_issues(args, names, ids, b):
     for n in names:
         doc = docs[n]
         since = of_model.iso(float(doc.get("computed_at") or 0) - 300)   # re-applying one the render had changes nothing
-        labels = of_diagnose.labels(_labels_of(cfgs[n], since) if n in cfgs else
-                                    [r for r in _rows(since, names=("of.issue_labelled",)) if r.get("org") == n])
-        issues = [i for i in (of_diagnose.apply_label(dict(i, org=n), labels.get(i.get("issue_id")), b)
+        hist = of_diagnose.label_history(_labels_of(cfgs[n], since) if n in cfgs else
+                                         [r for r in _rows(since, names=("of.issue_labelled",)) if r.get("org") == n])
+        keeper = doc.get("structure_keeper")
+        issues = [i for i in (of_diagnose.label_issue(dict(i, org=n), hist.get(i.get("issue_id")), keeper, b)
                               for i in doc.get("issues") or []) if i.get("state") == "open" and _decided_by(args, i)]
         out.append((n, issues, {"rules": doc["rules"], "structure_keeper": doc.get("structure_keeper"),
                                 "computed_at": float(doc.get("computed_at") or 0)}))
@@ -303,6 +308,9 @@ def _print_issue(i):
         print(f"  affected: {', '.join(map(str, i['affected']))}")
     for r in i.get("remedies") or []:
         print(f"  remedy: {r if isinstance(r, str) else json.dumps(r, ensure_ascii=False)}")
+    if i.get("label_not_counted"):
+        x = i["label_not_counted"]
+        print(f"  label not counted: {x.get('label')} by {x.get('by')} at {str(x.get('ts'))[:16]}Z: {x.get('why')}")
     if i.get("evidence"):
         print(f"  evidence: {json.dumps(i['evidence'], ensure_ascii=False, default=str)}")
 

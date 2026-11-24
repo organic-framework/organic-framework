@@ -6263,6 +6263,7 @@ def cmd_issues(args):
         import of_studio_cli
         return of_studio_cli.main(["model", "issues", "--org", args.org or "all"] + (["--id", args.id] if args.id else [])
                                   + (["--fresh"] if args.fresh else []) + (["--json"] if args.json else []))
+    import of_diagnose
     import of_studio_cli
     entries = _label_entries(args)
     # every organization's issues: an id from one organization's keeper digest labels without --org (2026-11-11); an
@@ -6281,6 +6282,10 @@ def cmd_issues(args):
     for iid, label, note, rv in entries:
         try:
             i = _label_target(issues, iid, rv, args.org)
+            # who may label it (of_diagnose.may_label): a label the run would not count is refused here, not written
+            why = of_diagnose.may_label(by, i, i.get("structure_keeper")) if "affected" in i else None
+            if why:
+                raise OfError(f"{why}: the label would not count (docs/studio.md, Labels over all time)")
         except OfError as exc:
             if len(entries) == 1:
                 raise

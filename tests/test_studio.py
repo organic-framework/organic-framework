@@ -670,6 +670,35 @@ class DiagnoseTest(unittest.TestCase):
         self.assertEqual(state(rows + [lab("false_positive", "ap.orphan-work@0")]), "dismissed")  # labels_carry_from: [0]
         self.assertEqual(state(rows + [lab("true_but_not_now")]), "snoozed")
 
+    def test_a_label_counts_only_from_the_owner_the_keeper_or_the_decider(self):
+        """of_review on organic-framework PR 630: a label holds over all time, so one from any session, the issue's
+        own subject included, would have taken an issue out of the inbox, the digest and the escalations for good."""
+        rows = [self.wr(i, []) for i in range(5)]
+        iid = of_diagnose.issue_id("orphan-work", ["(unmapped)"])
+        ver = next(r["version"] for r in self.diag(rows)["rules"] if r["rule"] == "ap.orphan-work")
+        m = of_model.build(self.DOC2, rows, at=self.B)
+        lab = lambda n, by, label="false_positive", position=None: dict(
+            ev(f"l{n}", f"2026-11-0{n}T10:00Z", "of.issue_labelled", None,
+               dict({"issue_id": iid, "rule_version": ver, "label": label}, **({"by": by} if by else {}))), position=position)
+        get = lambda labels: next(i for i in of_diagnose.diagnose(m, rows, self.A, self.B, label_rows=labels)["issues"]
+                                  if i["issue_id"] == iid)
+        self.assertEqual(get([lab(1, "owner")])["state"], "dismissed")
+        self.assertEqual(get([lab(1, None)])["state"], "dismissed")                  # no writer recorded: the owner's shell
+        i = get([lab(1, "bot_operator")])                                             # neither keeper nor decider
+        self.assertEqual(i["state"], "open")
+        self.assertEqual((i["label_not_counted"]["by"], i["label_not_counted"]["label"]), ("bot_operator", "false_positive"))
+        self.assertIn("neither the owner", i["label_not_counted"]["why"])
+        self.assertEqual(get([lab(1, None, position="bot_operator")])["state"], "open")   # the event's position writes it
+        i = get([lab(1, "owner"), lab(2, "bot_operator", "true_positive")])           # a later one that does not count
+        self.assertEqual((i["state"], i["label_not_counted"]["label"]), ("dismissed", "true_positive"))
+        self.assertNotIn("label_not_counted", get([lab(1, "bot_operator"), lab(2, "owner")]))
+        issue = {"affected": ["ops_a", "ops_b"], "decider_position": "unit_lead"}
+        self.assertIsNone(of_diagnose.may_label("keeper_k", issue, "keeper_k"))
+        self.assertIsNone(of_diagnose.may_label("unit_lead", issue, "keeper_k"))      # the unit owner it routes to
+        self.assertIn("only the owner", of_diagnose.may_label("ops_a", issue, "keeper_k"))
+        self.assertIn("only the owner", of_diagnose.may_label("keeper_k", dict(issue, affected=["keeper_k"]), "keeper_k"))
+        self.assertIsNone(of_diagnose.may_label("owner", dict(issue, affected=["keeper_k"]), "keeper_k"))
+
     def test_a_label_older_than_the_rows_still_holds(self):
         """A label is the one stored part: read over all time, never only the window's rows (2026-11-24: the render
         read 9 days, and an issue of_architect dismissed on 2026-11-14 was open again in the inbox)."""
@@ -4063,6 +4092,28 @@ class IssuesAcrossOrgsTest(unittest.TestCase):
                                                       "rule_version": "ap.coordination-gap@1", "label": "false_positive",
                                                       "by": "owner"})
 
+    def test_a_label_that_would_not_count_is_refused(self):
+        from unittest import mock
+        import of_events
+        import of_studio_cli
+        of = self._of()
+        listed = [dict(self.issue("43b590d385f6", "team"), affected=["ops_a"], decider_position="team_org",
+                       structure_keeper="team_org")]
+        lookup = lambda org, ids=(), log=None, run=True, fresh=False: (listed, "render")
+        for by, ok in (("ops_a", False), ("ops_b", False), ("team_org", True)):
+            with mock.patch.object(of_studio_cli, "issues_for_label", lookup), mock.patch.object(of_events, "emit") as emit, \
+                    mock.patch.object(of, "_me", lambda positions, explicit=None, by=by: {"name": by}), \
+                    mock.patch.object(of, "_load_quiet", lambda: []), \
+                    mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "s1"}), mock.patch("builtins.print"):
+                if ok:
+                    of.cmd_issues(self.label_args("43b590"))
+                    self.assertEqual(emit.call_args.args[1]["by"], "team_org")
+                else:
+                    with self.assertRaises(of.OfError) as e:
+                        of.cmd_issues(self.label_args("43b590"))
+                    self.assertIn("would not count", str(e.exception))
+                    emit.assert_not_called()
+
     def test_label_a_batch_from_a_file(self):
         import tempfile
         from unittest import mock
@@ -4138,11 +4189,14 @@ class IssuesAcrossOrgsTest(unittest.TestCase):
                          "rules": [rule], "structure_keeper": "team_org"}
         label = {"event_id": "l1", "ts": of_model.iso(now - 60), "name": "of.issue_labelled", "org": "team",
                  "payload": {"issue_id": "43b590d385f6", "rule_version": "ap.r@0", "label": "false_positive"}}
+        other = {"event_id": "l2", "ts": of_model.iso(now - 30), "name": "of.issue_labelled", "org": "team",
+                 "position": "ops_z", "payload": {"issue_id": "77aa00000000", "rule_version": "ap.r@0",
+                                                  "label": "false_positive", "by": "ops_z"}}
         ran, read = [], []
 
         def rows(since, names=None):
             read.append((since, names))
-            return [label] if names else []
+            return [label, other] if names else []
 
         def run(cmd):
             out, err = io.StringIO(), io.StringIO()
@@ -4164,6 +4218,7 @@ class IssuesAcrossOrgsTest(unittest.TestCase):
             got = json.loads(out)
             self.assertEqual((rc, ran, got["source"], got["rules"], got["structure_keeper"]), (0, [], "render", [rule], "team_org"))
             self.assertEqual([i["issue_id"] for i in got["issues"]], ["77aa00000000"])   # labelled false_positive since
+            self.assertEqual(got["issues"][0]["label_not_counted"]["by"], "ops_z")    # ops_z may not label it: still open
             self.assertEqual(read[-1][1], ("of.issue_labelled",))              # only the labels, never the window
             rc, out, err = run(["--org", "team"])
             self.assertTrue(out.startswith("RULE"))
@@ -4175,6 +4230,7 @@ class IssuesAcrossOrgsTest(unittest.TestCase):
             self.assertEqual((rc, ran), (0, []))
             self.assertTrue(out.startswith("77aa00000000  ap.r@0  team  decider team_org"))
             self.assertIn("x" * 120, out)
+            self.assertIn("label not counted: false_positive by ops_z", out)
             self.assertNotIn("RULE", out)
             rc, out, err = run(["--org", "team", "--id", "43b5"])              # held, but labelled since: no run, said
             self.assertEqual((rc, ran), (1, []))

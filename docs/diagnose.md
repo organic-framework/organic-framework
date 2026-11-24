@@ -28,7 +28,7 @@ The catalogue turns measures into **issues, not alerts** (RFC §5.4).
 | `severity` | `low`, `medium`, `high` or `critical`, per rule or part ([`diagnose-v0.yaml`](diagnose-v0.yaml); default `medium`). Escalations take `high` and above; `critical` also bypasses the ranking. Chronic organization-wide conditions stay `medium` and are ranked, not pushed |
 | `state` | open → acknowledged → remedied (a change with a review date, RFC §5.6) or dismissed (with an owner label). An issue that stops firing for two windows closes as `resolved` |
 
-**Owner labels.** The owner, or an analyst the owner delegates, labels issues. A label is one event, `of.issue_labelled`, with:
+**Owner labels.** The owner, or an analyst the owner delegates, labels issues. The run counts a label only from the owner, the organization's structure keeper or the position the issue routes to, never from a position the issue names (docs/studio.md, Labels over all time). A label is one event, `of.issue_labelled`, with:
 - `issue_id`, `rule_version`;
 - `label`: `true_positive`, `false_positive`, `true_but_not_now` or `wrong_remedy`;
 - an optional note.
