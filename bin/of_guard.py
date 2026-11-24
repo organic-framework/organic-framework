@@ -1069,6 +1069,12 @@ def _code_deny(code, lang=None):
         if _CODE_WRITE.search(code) else None   # G34 in code: a write into the forward's folder (of_review on PR 397)
     if fwd:
         return FORWARD_DENY, fwd
+    live = next((l for l in lits if not re.search(r"\s", l.strip())
+                 and l.strip().lstrip("<>+|& ").startswith(("/", "~", "$"))
+                 and _in_folders(l.strip().lstrip("<>+|& "), _live_box())), None) \
+        if _CODE_WRITE.search(code) else None   # G40 in code: a write into OF's live checkout (PR 629's review)
+    if live:
+        return LIVE_DENY, live
     idx = next((l for l in lits if not re.search(r"\s", l.strip())
                 and l.strip().lstrip("<>+|& ").startswith(("/", "~", "$"))
                 and (_in_session_index(l.strip().lstrip("<>+|& "))
@@ -4704,6 +4710,21 @@ def _forward_write(head, args, cwd, files, removal):
 # checkout the hooks, the units and `of` run from, so the guard denies a write, move, link or removal into it.
 LIVE_DIR = "~/.local/share/of/live"   # of_live.LIVE (a test holds the two the same)
 DEV_CLONE = "~/organic-framework"     # the working copy, where positions commit (release/commit.sh): never a target
+# what runs the live checkout outside any session: the updater launchd starts, its agent's plist, and every OF agent's
+# plist (its program, its environment): rewritten, it runs a session's code there (of_secrets-review on PR 629)
+LIVE_RUNNERS = ("~/.local/libexec/of-checkout-update",
+                "~/Library/LaunchAgents/dev.organic-framework.checkout-update.plist")
+LIVE_AGENTS = "~/Library/LaunchAgents/dev.organic-framework.*.plist"
+# programs that change a file they are given (G40 reads every operand of theirs; of_secrets-review on PR 629: touch,
+# tar -cf); cp, mv, ln, rm, tee, sed -i and redirections are read as G34 reads them
+_LIVE_WRITE_HEADS = {"touch", "mkdir", "rmdir", "chmod", "chown", "chgrp", "chflags", "truncate", "install", "patch",
+                     "zip", "unzip", "cpio", "ditto", "rsync", "xattr", "setfacl", "chattr", "mkfifo", "mknod",
+                     "shred", "tar", "bsdtar", "gtar", "dd"}
+# git subcommands that only read: any other one there, a config write and update-ref among them, is denied
+_LIVE_GIT_READS = {"status", "log", "show", "diff", "rev-parse", "ls-files", "ls-tree", "cat-file", "describe", "blame",
+                   "grep", "shortlog", "rev-list", "show-ref", "for-each-ref", "name-rev", "whatchanged", "merge-base",
+                   "cherry", "count-objects", "help", "version", "check-ignore", "check-attr", "var", "annotate",
+                   "range-diff"}
 LIVE_DENY = ("OF's live checkout, where the hooks, the units and `of` run outside any sandbox (docs/guard.md G40): it "
              "moves only by `of live`'s update to a merged commit; change the code in the working copy and commit it")
 
@@ -4716,7 +4737,9 @@ def _live_box():
 def _live_box_real():
     """The folders G40 keeps, as real paths: LIVE_DIR, and the checkout ~/.local/bin/of links into when that is not
     the working copy (before `of live switch` it is). The agent host's checkouts are its sandbox's (of_spawn)."""
-    out = {os.path.realpath(_expanduser(LIVE_DIR))}
+    out = {os.path.realpath(_expanduser(p)) for p in (LIVE_DIR,) + LIVE_RUNNERS}
+    import glob as _glob
+    out |= {os.path.realpath(p) for p in _glob.glob(_expanduser(LIVE_AGENTS))}   # every OF launchd agent there is
     link = _expanduser("~/.local/bin/of")
     try:
         if os.path.islink(link):
@@ -4727,22 +4750,71 @@ def _live_box_real():
     return sorted(out)
 
 
-def _live_write(head, args, cwd, files, removal):
+def _live_write(head, args, cwd, files, removal, env=None, shvars=None):
     """G40 on one simple command, read as G34 reads a write: a redirection, cp, mv, ln or install into OF's live
-    checkout, or a recursive copy, an extraction or a removal over it."""
+    checkout or what runs it, a recursive copy, an extraction or a removal over it; every operand of a program that
+    changes the files it is given (touch, tar, chmod, …); and any git call there but a read."""
     if _REMOTE_BODY[0]:
         return None
     box = _live_box()
     hit = next((t for t in _tree_targets(head, args, cwd) if _in_folders(t, box, cwd, removal=True)), None) or \
         next((f for f in files if _in_folders(f, box, cwd, removal)), None)
-    if not hit and head == "git":   # a checkout, reset, pull or merge there rewrites its tree, as G21 reads one
-        saved = _ORG_PROTECTION["code"]
-        _ORG_PROTECTION["code"] = tuple(_live_box_real())
-        try:
-            hit = _git_protected(args, cwd, {})
-        finally:
-            _ORG_PROTECTION["code"] = saved
+    if not hit and head in _LIVE_WRITE_HEADS:
+        hit = next((a for a in _live_operands(head, [_expand_vars(a, shvars) for a in args])
+                    if _in_folders(a, box, cwd, removal=head in ("rmdir", "shred"))), None)
+    if not hit and head == "git":
+        hit = _live_git(args, cwd, env or {}, shvars)
     return (LIVE_DENY, hit) if hit else None
+
+
+def _live_operands(head, args):
+    """The words of a write head that name what it changes: every operand, a tar's every word unless it only lists,
+    dd's of=, xattr's only when it writes."""
+    if head in ("tar", "bsdtar", "gtar"):
+        modes = "".join(a.lstrip("-") for a in args[:1]) + "".join(a[1:] for a in args[1:] if a.startswith("-")
+                                                                  and not a.startswith("--"))
+        if "t" in modes and not set("cxruA") & set(modes) and not any(a in ("--create", "--extract", "--append",
+                                                                            "--update") for a in args):
+            return []
+        return [a.split("=", 1)[-1] for a in args]
+    if head == "dd":
+        return [a[3:] for a in args if a.startswith("of=")]
+    if head == "xattr" and not any(a in ("-w", "-d", "-c") for a in args):
+        return []
+    return [a.split("=", 1)[-1] if a.startswith("--") else a for a in args if not a.startswith("-") or "=" in a]
+
+
+def _live_git(args, cwd, env, shvars):
+    """The folder a git call works on when that lies in G40's box and the call is no read (_LIVE_GIT_READS, a config
+    read, a plain branch or stash list), else None: its -C chain, --git-dir, --work-tree, GIT_DIR and GIT_WORK_TREE
+    from the line's environment or its variables, compared by real path without case (of_secrets-review on PR 629)."""
+    args = [_expand_vars(a, shvars) for a in args]
+    dirs, sub, rest = _git_targets(args)
+    where, cands = cwd or ".", []
+    for opt, w in dirs:
+        w = _expanduser(w.strip("'\""))
+        if opt == "-C":
+            where = os.path.join(where, w)
+        else:
+            cands.append(os.path.join(where, w))
+    cands.append(where)
+    for k in ("GIT_WORK_TREE", "GIT_DIR"):
+        v = env.get(k) or (shvars or {}).get(k)
+        if v:
+            cands.append(os.path.join(where, _expanduser(str(v).strip("'\""))))
+    hit = next((c for c in cands if _in_folders(c, _live_box(), cwd)), None)
+    if not hit:
+        return None
+    sub = (sub or "").lower()
+    if sub in _LIVE_GIT_READS:
+        return None
+    if sub == "config" and any(a in ("--get", "--get-all", "--get-regexp", "--list", "-l", "--get-urlmatch")
+                               for a in rest):
+        return None
+    if sub in ("branch", "stash", "worktree", "remote", "tag", "notes") and \
+            (not rest or rest[0] in ("list", "-v", "-vv", "-a", "-r", "--list", "show")):
+        return None
+    return hit
 
 
 # G36: the guard's session index is the collector's (hand-over a18341af, of_server; of_secrets-review, msg
@@ -5616,7 +5688,7 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
                                                      _asks_outbox_write(head, args, cwd, files, removal) or
                                                      _session_index_write(head, args, cwd, files, removal) or
                                                      _forward_write(head, args, cwd, files, removal) or
-                                                     _live_write(head, args, cwd, files, removal))
+                                                     _live_write(head, args, cwd, files, removal, env, shvars))
     hit = _git_protected(args, cwd, env or {}, shvars) if head == "git" else None
     if hit:
         return PROTECTED_CODE_DENY, hit
@@ -5637,7 +5709,7 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
                                                  _asks_outbox_write(head, args, cwd, files, removal) or
                                                  _session_index_write(head, args, cwd, files, removal) or
                                                  _forward_write(head, args, cwd, files, removal) or
-                                                 _live_write(head, args, cwd, files, removal))
+                                                 _live_write(head, args, cwd, files, removal, env, shvars))
 
 
 def _owner_config_write(head, args, cwd, files, removal):

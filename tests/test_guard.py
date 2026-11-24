@@ -1020,10 +1020,39 @@ class LiveCheckoutTest(unittest.TestCase):
         return bool(got and "live checkout" in got[0])
 
     def test_the_constant_is_of_lives(self):
-        import of_live
-        self.assertEqual(of_guard.LIVE_DIR, "~/.local/share/of/live")
-        self.assertEqual(os.path.expanduser(of_guard.LIVE_DIR), of_live.LIVE if os.path.isabs(of_live.LIVE)
-                         else os.path.expanduser(of_live.LIVE))
+        import of_live   # compared unexpanded: of_live.LIVE is expanded at its import, under whatever home was then
+        self.assertEqual(of_guard.LIVE_DIR, "~/.local/share/of/live")   # (of_secrets-review on PR 629, point 9)
+        self.assertTrue(of_live.LIVE.endswith(of_guard.LIVE_DIR[1:]), of_live.LIVE)
+
+    def test_interpreter_code_the_runners_git_and_small_writes(self):
+        """of_secrets-review on PR 629, points 3 to 6."""
+        live = self.live
+        agents = os.path.expanduser("~/Library/LaunchAgents")
+        os.makedirs(agents)
+        open(os.path.join(agents, "dev.organic-framework.listen.plist"), "w").close()
+        for cmd in (f"python3 -c \"open('{live}/bin/of_hook.py','w').write('x')\"",
+                    f"perl -e 'open(F, \">{live}/bin/x\")'",
+                    "echo x > ~/.local/libexec/of-checkout-update",
+                    "echo x > ~/Library/LaunchAgents/dev.organic-framework.checkout-update.plist",
+                    "echo x > ~/Library/LaunchAgents/dev.organic-framework.listen.plist",
+                    "git -C ~/.LOCAL/share/of/live checkout -- bin",
+                    "GIT_WORK_TREE=~/.local/share/of/live git --git-dir=/tmp/g checkout -f main",
+                    "W=~/.local/share/of/live; git --work-tree=$W --git-dir=/tmp/g checkout -f main",
+                    "git -C ~/.local/share/of/live config core.fsmonitor /tmp/x",
+                    "git -C ~/.local/share/of/live config --add remote.origin.fetch x",
+                    "git -C ~/.local/share/of/live update-ref HEAD 0123abcd",
+                    "git -C ~/.local/share/of/live fetch origin",
+                    f"tar -cf {live}/bin/x.tar /tmp/a",
+                    f"touch {live}/bin/x.py",
+                    f"chmod +x {live}/bin/x"):
+            self.assertTrue(self.deny(cmd), cmd)
+        got = of_guard.critical_deny("Edit", {"file_path": os.path.expanduser("~/.local/libexec/of-checkout-update"),
+                                              "old_string": "a", "new_string": "b"}, "/tmp")
+        self.assertTrue(got and "live checkout" in got[0])
+        for cmd in ("git -C ~/.local/share/of/live status", "git -C ~/.local/share/of/live config --get core.bare",
+                    "git -C ~/.local/share/of/live branch", f"tar -tf {live}/x.tar",
+                    f"python3 -c \"print(open('{live}/bin/of_hook.py').read()[:10])\""):
+            self.assertFalse(self.deny(cmd), cmd)
 
     def test_writes_moves_links_and_removals_are_denied(self):
         for cmd in ("echo x > ~/.local/share/of/live/bin/of_hook.py",
