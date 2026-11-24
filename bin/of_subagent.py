@@ -685,7 +685,8 @@ def login_files(harness):
         return [os.path.join(os.environ.get("CODEX_HOME") or os.path.join(home, ".codex"), "auth.json")]
     own = muse_login_dir()
     kc = os.path.join(own, "home", "Library", "Keychains")
-    out = [os.path.join(own, "xdg-config", "muse", "auth.json"), muse_key_file()]
+    out = [os.path.join(own, "xdg-config", "muse", "auth.json")] + \
+        ([muse_key_file()] if os.path.exists(muse_key_file()) else [])   # a key, when one was given
     for d, _, fs in os.walk(kc) if os.path.isdir(kc) else ():
         out += [os.path.join(d, f) for f in fs]
     return out
@@ -1098,11 +1099,16 @@ def command(harness, kind, run_dir, work_dir, prompt_file, answer_file, schema=N
     if harness == "muse":
         cfg, data = os.path.join(run_dir, "xdg-config"), os.path.join(run_dir, "xdg-data")
         own = muse_login_dir()
+        # the subscription's sign-in, Muse's own keychain and auth.json (`of subagent muse-login`), unless a key was
+        # given (`--api-key-stdin`): an API key bills apart and cannot run the subscription's model (of_capacity's
+        # reading of Meta's pages, through of_architect, message 01a20e41-f764)
         keyed = os.path.isfile(muse_key_file())
+        if not keyed and not os.path.isdir(os.path.join(own, "home", "Library", "Keychains")):
+            raise SubagentError("Muse has no login of its own yet: its login lives in a keychain, and a run never gets "
+                                "the owner's login keychain (RFC 0008 §3.1, \"No owner's keychain\"); the owner runs "
+                                "of subagent muse-login once, in a plain terminal")
         if not keyed:
-            raise SubagentError("Muse has no API key of its own yet: a run takes its login only on stdin, so no file in "
-                                "its sandbox holds it (RFC 0008 §3.1, Muse's --api-key-stdin); the owner runs `of "
-                                "subagent muse-login --api-key-stdin` once, in a plain terminal")
+            _link_login(os.path.join(own, "xdg-config", "muse", "auth.json"), os.path.join(cfg, "muse", "auth.json"))
         exe = binary or muse_binary()
         argv = [exe, "exec", "--json", "--prompt-file", prompt_file, "--contributor-mode", "off",
                 "--disable-write", "--disable-shell", "--approval-mode", "never", "--no-session-log",
@@ -1111,14 +1117,19 @@ def command(harness, kind, run_dir, work_dir, prompt_file, answer_file, schema=N
             argv.append("--disable-web-tools")
         if schema:
             argv += ["--output-schema", schema]
-        argv += ["--model", model or DEFAULT_MODEL["muse"], "--api-key-stdin"]   # the key on stdin (run feeds it)
-        fresh = _private_dir(os.path.join(run_dir, "home"))   # a fresh home: no keychain, no login, the owner's none
+        argv += ["--model", model or DEFAULT_MODEL["muse"]] + (["--api-key-stdin"] if keyed else [])
+        fresh = _private_dir(os.path.join(run_dir, "home"))   # a fresh home, never the owner's
+        keychains = os.path.join(own, "home", "Library", "Keychains")
+        if not keyed and os.path.isdir(keychains):   # whose keychains are Muse's own (without one it finds no login)
+            _private_dir(os.path.join(fresh, "Library"))
+            if not os.path.lexists(os.path.join(fresh, "Library", "Keychains")):
+                os.symlink(keychains, os.path.join(fresh, "Library", "Keychains"))
         for d in (cfg, data, os.path.join(run_dir, "xdg-state"), os.path.join(run_dir, "xdg-cache")):
             _private_dir(d)
         env = clean_env(run_dir, {"HOME": fresh, "XDG_CONFIG_HOME": cfg, "XDG_DATA_HOME": data,
                                   "XDG_STATE_HOME": os.path.join(run_dir, "xdg-state"),
                                   "XDG_CACHE_HOME": os.path.join(run_dir, "xdg-cache"), "MUSE_NO_AUTO_UPDATE": "1"})
-        return argv, env, [exe], []
+        return argv, env, ([exe] if keyed else [exe, own]), ([] if keyed else [own])
     raise SubagentError(f"--harness {harness!r}: one of {', '.join(HARNESSES)}")
 
 
