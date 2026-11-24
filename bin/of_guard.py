@@ -7552,14 +7552,15 @@ def _ssh_rule_hit(match, call, resolve=None):
     return None
 
 
-def org_rule_hits(tool, tool_input, rules, position=None, env=None, resolver=None):
+def org_rule_hits(tool, tool_input, rules, position=None, env=None, resolver=None, mask=None):
     """[(rule, matched phrase)] for the rules of the caller's organization that apply to this tool call. A rule is
     {id, mode: warn|deny, reason, subject?, except: [positions], kubectl: {matcher}, ssh: {hosts} or cli:
     {names, env, code, allow}} (of_grants.org_rule makes one from a deny grant); a position in `except` is out of it,
     and a rule whose subject names one position applies to that position only. Only Bash; the kubectl (O1), ssh (O3)
     and cli (O4) matchers. An O4 match that only warns (a command word held in a variable) comes back with the
     rule in warn mode, whatever the grant says. RESOLVER (tests): config -> the alias resolver, ssh_resolver by
-    default."""
+    default. MASK: applied to each matched phrase before it is cut to its length, so a secret the cut would break
+    (a URL's password losing its @) is still masked (of_review on organic-framework PR 623)."""
     if tool != "Bash" or not rules:
         return []
     cmd = (tool_input or {}).get("command") or ""
@@ -7609,6 +7610,7 @@ def org_rule_hits(tool, tool_input, rules, position=None, env=None, resolver=Non
         except Exception as e:  # noqa: BLE001
             m = f"a call the guard could not read ({type(e).__name__}), counted as a match"
         if m:
+            m = mask(m) if mask else m
             hits.append((r, m if len(m) <= 300 else m[:297] + "..."))  # a long word never fills the record
     return hits
 
@@ -8085,18 +8087,18 @@ def commands_rule_match(scope, findings, position, line=""):
                 m = _cmd_matched(scope, target, args, line)
                 if m and not _cmd_allowed(scope, target, args, position):
                     if m == "hard":
-                        return f"{target} {' '.join(args)}".strip()[:200], False
-                    soft = soft or (f"{target} {' '.join(args)}".strip()[:200], True)
+                        return f"{target} {' '.join(args)}".strip(), False
+                    soft = soft or (f"{target} {' '.join(args)}".strip(), True)
                 continue
             if not known and _cmd_matched(scope, "", args, line):  # the line does not say what runs: a warning, never a
-                soft = soft or (f"a command word held in a variable ({word[:60]})", True)  # deny (condition 1)
+                soft = soft or (f"a command word held in a variable ({word})", True)  # deny (condition 1)
             continue
         name = os.path.basename(word).casefold()
         m = _cmd_matched(scope, name, args, line) if name in names else None
         if m and not _cmd_allowed(scope, name, args, position):
             if m == "hard":
-                return f"{name} {' '.join(args)}".strip()[:200], False
-            soft = soft or (f"{name} {' '.join(args)}".strip()[:200], True)
+                return f"{name} {' '.join(args)}".strip(), False
+            soft = soft or (f"{name} {' '.join(args)}".strip(), True)
     return soft
 
 
