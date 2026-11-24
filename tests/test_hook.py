@@ -1097,6 +1097,46 @@ class NoWriteThroughALinkTest(unittest.TestCase):
                 of_hook.STATE, of_events.STATE_DIR = saved
 
 
+class HolderCheckTest(unittest.TestCase):
+    """of_capacity's reading on the agent host (2026-11-24): Claude Code forked the pane's session under its own
+    daemon, and an empty bg session of the same daemon was taken for the holder."""
+
+    def run_check(self, source, daemon, transcript):
+        from unittest import mock
+        written = []
+        hook = {"session_id": "new-1", "source": source, "transcript_path": transcript}
+        index = {"labels": {"pos_a": ["old-1"]}}
+        with mock.patch.dict(os.environ, {"HERDR_PANE_ID": "w6:p1"}), \
+                mock.patch.object(of_hook, "herdr_call", return_value={"result": {"pane": {"label": "■ pos_a ■"}}}), \
+                mock.patch.object(of_hook, "_under_claude_daemon", return_value=daemon), \
+                mock.patch.object(of_hook, "write", side_effect=lambda k, p, *a: written.append((k, p))):
+            of_hook._holder_check(hook, index, {})
+        return written
+
+    def test_a_fork_carrying_the_conversation_changes_the_holder(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".jsonl") as t:
+            got = self.run_check("fork", True, t.name)
+        self.assertEqual([(k, p["new_session"]) for k, p in got], [("holder_changed", "new-1")])
+
+    def test_a_daemons_session_with_no_transcript_is_not_the_panes(self):
+        self.assertEqual(self.run_check("startup", True, "/nonexistent/x.jsonl"), [])
+
+    def test_a_plain_start_and_a_compaction(self):
+        self.assertEqual(len(self.run_check("startup", False, "/nonexistent/x.jsonl")), 1)   # as before
+        self.assertEqual(self.run_check("compact", False, "/nonexistent/x.jsonl"), [])
+
+    def test_the_daemon_is_found_in_the_ancestry(self):
+        import subprocess
+        rows = {"10": "20 node /usr/bin/claude --session-id x", "20": "30 /usr/lib/claude/bg-pty-host --sock y",
+                "30": "1 claude daemon run --origin transient"}
+        run = lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout=rows.get(argv[-1], ""))   # noqa: E731
+        self.assertTrue(of_hook._under_claude_daemon(pid=10, run=run))
+        rows2 = {"10": "20 node /usr/bin/claude --resume x", "20": "1 -zsh"}
+        run2 = lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout=rows2.get(argv[-1], ""))   # noqa: E731
+        self.assertFalse(of_hook._under_claude_daemon(pid=10, run=run2))
+
+
 if __name__ == "__main__":
     unittest.main()
 

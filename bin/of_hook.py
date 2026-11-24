@@ -2098,10 +2098,43 @@ def _runs_on_own_memory():
     return False
 
 
+def _under_claude_daemon(pid=None, depth=8, run=None):
+    """Does the Claude Code process above this hook run under Claude Code's own background daemon (`claude daemon
+    run`, its bg-pty-host)? Its sessions inherit the pane's HERDR_PANE_ID from the process that started the daemon:
+    the fork that continues the pane's conversation, and others that are not the pane's (of_capacity's reading on the
+    agent host, 2026-11-24)."""
+    import subprocess
+    run = run or subprocess.run
+    pid = pid or os.getppid()
+    for _ in range(depth):
+        try:
+            out = run(["ps", "-o", "ppid=,args=", "-p", str(pid)], capture_output=True, text=True, timeout=2).stdout.strip()
+        except Exception:  # noqa: BLE001
+            return False
+        if not out:
+            return False
+        ppid, _, cmd = out.partition(" ")
+        if "bg-pty-host" in cmd or re.search(r"(?:^|/)claude(?:\.exe)?\s+daemon\s+run\b", cmd.strip()):
+            return True
+        try:
+            pid = int(ppid)
+        except ValueError:
+            return False
+        if pid <= 1:
+            return False
+    return False
+
+
 def _holder_check(hook, index, sess):
-    """A new session in a pane whose label names a position held by another session."""
+    """A new session in a pane whose label names a position held by another session: started, resumed, or forked by
+    Claude Code itself (`continued-in`, source fork; of_capacity's reading, 2026-11-24). Under Claude Code's
+    background daemon, only a session whose transcript is already there, the fork that carries the conversation on:
+    the daemon's empty sessions inherit the pane's HERDR_PANE_ID too, and one was taken for the holder 182 ms before
+    the real fork started."""
     pane = os.environ.get("HERDR_PANE_ID")
     if not pane:
+        return
+    if hook.get("source") not in ("startup", "resume", "fork"):
         return
     reply = herdr_call("pane.get", {"pane_id": pane}) or {}
     label = (((reply.get("result") or {}).get("pane") or {}).get("label") or "").strip().strip("■").strip()
@@ -2109,7 +2142,8 @@ def _holder_check(hook, index, sess):
         return
     info = (index.get("labels") or {}).get(label)
     sid = hook.get("session_id")
-    if info and info[0] and info[0] != sid and hook.get("source") in ("startup", "resume"):
+    if info and info[0] and info[0] != sid and \
+            not (_under_claude_daemon() and not os.path.isfile(str(hook.get("transcript_path") or ""))):
         write("holder_changed", {"position": label, "previous_session": info[0], "new_session": sid,
                                  "evidence": f"herdr pane {pane} is labelled {label}"}, hook, sess, index)
 
