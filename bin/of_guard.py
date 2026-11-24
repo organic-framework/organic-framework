@@ -4699,6 +4699,52 @@ def _forward_write(head, args, cwd, files, removal):
     return (FORWARD_DENY, hit) if hit else None
 
 
+# G40: OF's live checkout (2026-11-24, of_platform's hand-over cb134c52 after the laptop's guard outage, when a patch
+# half-applied to the working copy's bin/ broke every hook at once): on macOS no sandbox keeps a session from the
+# checkout the hooks, the units and `of` run from, so the guard denies a write, move, link or removal into it.
+LIVE_DIR = "~/.local/share/of/live"   # of_live.LIVE (a test holds the two the same)
+DEV_CLONE = "~/organic-framework"     # the working copy, where positions commit (release/commit.sh): never a target
+LIVE_DENY = ("OF's live checkout, where the hooks, the units and `of` run outside any sandbox (docs/guard.md G40): it "
+             "moves only by `of live`'s update to a merged commit; change the code in the working copy and commit it")
+
+
+def _live_box():
+    """The folders G40 keeps, as real paths case-folded (G34's reading)."""
+    return {p.casefold() for p in _live_box_real()}
+
+
+def _live_box_real():
+    """The folders G40 keeps, as real paths: LIVE_DIR, and the checkout ~/.local/bin/of links into when that is not
+    the working copy (before `of live switch` it is). The agent host's checkouts are its sandbox's (of_spawn)."""
+    out = {os.path.realpath(_expanduser(LIVE_DIR))}
+    link = _expanduser("~/.local/bin/of")
+    try:
+        if os.path.islink(link):
+            out.add(os.path.dirname(os.path.dirname(os.path.realpath(link))))
+    except OSError:
+        pass
+    out.discard(os.path.realpath(_expanduser(DEV_CLONE)))
+    return sorted(out)
+
+
+def _live_write(head, args, cwd, files, removal):
+    """G40 on one simple command, read as G34 reads a write: a redirection, cp, mv, ln or install into OF's live
+    checkout, or a recursive copy, an extraction or a removal over it."""
+    if _REMOTE_BODY[0]:
+        return None
+    box = _live_box()
+    hit = next((t for t in _tree_targets(head, args, cwd) if _in_folders(t, box, cwd, removal=True)), None) or \
+        next((f for f in files if _in_folders(f, box, cwd, removal)), None)
+    if not hit and head == "git":   # a checkout, reset, pull or merge there rewrites its tree, as G21 reads one
+        saved = _ORG_PROTECTION["code"]
+        _ORG_PROTECTION["code"] = tuple(_live_box_real())
+        try:
+            hit = _git_protected(args, cwd, {})
+        finally:
+            _ORG_PROTECTION["code"] = saved
+    return (LIVE_DENY, hit) if hit else None
+
+
 # G36: the guard's session index is the collector's (hand-over a18341af, of_server; of_secrets-review, msg
 # 01a1f9a7-b29c): _guard_index reads ~/.local/state/of/index.json for a session's position, and with it that
 # position's credential rules, so a session that rewrites its entry takes another position's rules. Only the hook
@@ -5569,7 +5615,8 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
         return (LAUNCH_DENY, launch) if launch else (_owner_config_write(head, args, cwd, files, removal) or
                                                      _asks_outbox_write(head, args, cwd, files, removal) or
                                                      _session_index_write(head, args, cwd, files, removal) or
-                                                     _forward_write(head, args, cwd, files, removal))
+                                                     _forward_write(head, args, cwd, files, removal) or
+                                                     _live_write(head, args, cwd, files, removal))
     hit = _git_protected(args, cwd, env or {}, shvars) if head == "git" else None
     if hit:
         return PROTECTED_CODE_DENY, hit
@@ -5589,7 +5636,8 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
     return (LAUNCH_DENY, launch) if launch else (_owner_config_write(head, args, cwd, files, removal) or
                                                  _asks_outbox_write(head, args, cwd, files, removal) or
                                                  _session_index_write(head, args, cwd, files, removal) or
-                                                 _forward_write(head, args, cwd, files, removal))
+                                                 _forward_write(head, args, cwd, files, removal) or
+                                                 _live_write(head, args, cwd, files, removal))
 
 
 def _owner_config_write(head, args, cwd, files, removal):
@@ -6790,6 +6838,8 @@ def critical_deny(tool, tool_input, cwd=None, caller=None):
         return FORWARD_DENY, str(ti["pattern"])
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and _launch_file(path, cwd):
         return LAUNCH_DENY, path
+    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _in_folders(str(path), _live_box(), cwd):
+        return LIVE_DENY, path   # G40
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _in_session_index(path, cwd):  # G36
         if SESSION_INDEX_MODE == "deny":
             return SESSION_INDEX_DENY, path
