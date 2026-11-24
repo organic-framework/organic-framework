@@ -23,7 +23,12 @@ limactl delete --force "$VM" >/dev/null 2>&1 || true
 for i in $(seq 1 30); do "$REPO/lab/bin/oflab" preflight && break; [ "$i" = 30 ] && exit 3; sleep 60; done
 limactl create --tty=false --name "$VM" "$REPO/lab/image/lab.yaml" >/dev/null
 limactl start --tty=false "$VM" >/dev/null
-(cd "$REPO" && COPYFILE_DISABLE=1 tar --no-xattrs --exclude='__pycache__' --exclude='.git' -czf "$RUN/framework.tgz" bin docs README.md AGENTS.md tests)
+# Pack the whole published tree, as a newcomer's `git clone` would see it: the README points to
+# INSTALL.md, FEATURES.md, CHANGELOG.md, LICENSE and herdr-plugin/, and `of init` step 3 writes the
+# structure from bench/onboarding. A hand-picked subset (bin docs README AGENTS tests) left those out,
+# so `of init` could not finish and a newcomer was stuck (lab-quickstart-v0 run of record, of_lab,
+# 2026-11-25). git archive packs exactly the tracked files, excluding .git and anything gitignored.
+git -C "$REPO" archive --format=tar.gz -o "$RUN/framework.tgz" HEAD
 limactl copy "$RUN/framework.tgz" "$VM:/tmp/framework.tgz"
 limactl copy "$REPO/lab/stubs/claude" "$VM:/tmp/stub-claude"
 limactl copy "$HERE/setup.sh" "$VM:/tmp/setup.sh"
