@@ -1109,16 +1109,33 @@ _META = " \t\n;&|()<>"   # bash's metacharacters: a word starts after one (a car
 _HERE_META = set(" \t\n;&|()<>")
 
 
-def _here_ansi(body):
-    """An ANSI-C part of a heredoc's word as bash takes it into the delimiter: decoded, cut at its first NUL (bash's
-    strings end there; the parts after it still join), and each \\x01 and \\x7f behind bash's own escape \\x01 (its
-    quote marks CTLESC and CTLNUL); a str, or (bash 5's reading, bash 3.2's) when they differ (of_review on PR 637;
-    each tried in both bashes, 3.2.57 and 5.3)."""
-    def fix(v):
-        v = v.split("\x00", 1)[0]
-        return v.replace("\x01", "\x01\x01").replace("\x7f", "\x01\x7f")
-    new, old = fix(_ansi_c_body(body)), fix(_ansi_c_body(body, big_u=False))
-    return new if new == old else (new, old)
+def _ctl(v):
+    """V as bash takes a quoted part into a heredoc's delimiter: its own escape \\x01 (CTLESC) before each \\x01 and
+    \\x7f (CTLNUL)."""
+    return v.replace("\x01", "\x01\x01").replace("\x7f", "\x01\x7f")
+
+
+def _here_readings(parts):
+    """Every delimiter a bash may take from a heredoc word's PARTS [(kind, text)], kind plain, escaped, quoted or ansi,
+    as bash 3.2.57 and 5.3 take it (each tried in both, in the C and a UTF-8 locale): a quoted part's \\x01 and \\x7f
+    behind bash's own escape, a plain part's too in bash 3.2 only, a backslash's character never; an ANSI-C part decoded, cut at its first NUL (the parts after it still join),
+    with \\u and \\U decoded or kept as written (bash 3.2, or a locale that cannot encode them)."""
+    out = []
+    for u, plain_ctl in ((True, False), (False, True), (True, True), (False, False)):
+        w = []
+        for kind, v in parts:
+            if kind == "escaped":
+                w.append(v)
+            elif kind == "plain":
+                w.append(_ctl(v) if plain_ctl else v)
+            elif kind == "quoted":
+                w.append(_ctl(v))
+            else:
+                w.append(_ctl(_ansi_c_body(v, big_u=u).split("\x00", 1)[0]))
+        r = "".join(w)
+        if r not in out:
+            out.append(r)
+    return out
 
 
 def _here_word(text, i):
@@ -1142,7 +1159,7 @@ def _here_word(text, i):
             m = _ANSI_WORD.match(text, j)
             if not m:
                 return None
-            word.append(_here_ansi(m.group(1)))
+            word.append(("ansi", m.group(1)))
             quoted, j = True, m.end()
             continue
         if c == "$" and text.startswith('$"', j):   # a locale part reads as its double-quoted text
@@ -1152,13 +1169,13 @@ def _here_word(text, i):
             if text[j + 1] == "\n":       # a backslash-newline joins the word's lines
                 j += 2
                 continue
-            word.append(text[j + 1])
+            word.append(("escaped", text[j + 1]))   # a backslash's character: never behind bash's escape (tried)
             quoted, j = True, j + 2
         elif c == "'":
             e = text.find("'", j + 1)
             if e < 0:
                 return None
-            word.append(text[j + 1:e])
+            word.append(("quoted", text[j + 1:e]))
             quoted, j = True, e + 1
         elif c == '"':
             k, part = j + 1, []
@@ -1171,24 +1188,23 @@ def _here_word(text, i):
                     k += 1
             if k >= n:
                 return None
-            word.append("".join(part))
+            word.append(("quoted", "".join(part)))
             quoted, j = True, k + 1
         else:
-            word.append(c)
+            word.append(("plain", c))
             j += 1
     if not word:
         return None
-    words = {"".join(w if isinstance(w, str) else w[0] for w in word),
-             "".join(w if isinstance(w, str) else w[1] for w in word)}
+    words = _here_readings(word)
     if len(words) == 1:
-        return dash, quoted, words.pop(), j
-    # bash 3.2 and 5.x read a \U part differently: the body ends at the first line either reads, the earlier end being
-    # the one whose following lines run as commands
+        return dash, quoted, words[0], j
+    # bashes and locales read the word differently: the body ends at the first line any of them reads, the earlier
+    # end being the one whose following lines run as commands
     start = text.find("\n", j)
     for line in (text[start + 1:].split("\n") if start >= 0 else []):
         if (line.lstrip("\t") if dash else line) in words:
             return dash, quoted, (line.lstrip("\t") if dash else line), j
-    return dash, quoted, "".join(w if isinstance(w, str) else w[0] for w in word), j
+    return dash, quoted, words[0], j
 
 
 def _comment_spans(text):
@@ -3006,8 +3022,9 @@ _ANSI_ESC = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n
 
 
 def _ansi_c_body(body, big_u=True):
-    """The value of a $'…' word's body, as bash decodes it (\\n, \\t, \\nnn, \\xHH, \\uHHHH, \\cX …). BIG_U False: bash
-    3.2's reading, which keeps \\U as written (macOS's /bin/bash; of_review on PR 637)."""
+    """The value of a $'…' word's body, as bash decodes it (\\n, \\t, \\nnn, \\xHH, \\uHHHH, \\cX …). BIG_U False: the
+    reading that keeps \\u and \\U as written, as bash 3.2 does, and as a bash does in a locale it cannot encode them in
+    (of_review and of_secrets-review on PR 637)."""
     out, i, n = [], 0, len(body)
     while i < n:
         c = body[i]
@@ -3018,8 +3035,7 @@ def _ansi_c_body(body, big_u=True):
         e = body[i + 1]
         m = (re.match(r"[0-7]{1,3}", body[i + 1:]) if e in "01234567" else
              re.match(r"[0-9A-Fa-f]{1,2}", body[i + 2:]) if e == "x" else
-             re.match(r"[0-9A-Fa-f]{1,%d}" % (4 if e == "u" else 8), body[i + 2:]) if e == "u" or (e == "U" and big_u)
-             else None)
+             re.match(r"[0-9A-Fa-f]{1,%d}" % (4 if e == "u" else 8), body[i + 2:]) if e in "uU" and big_u else None)
         if e in _ANSI_ESC:
             out.append(_ANSI_ESC[e])
             i += 2

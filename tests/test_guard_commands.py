@@ -360,13 +360,17 @@ class AnsiHereWordTest(unittest.TestCase):
         self.assertEqual(of_guard._here_word("cat <<$'A\\tB'", 4)[:3], (False, True, "A\tB"))
         self.assertEqual(of_guard._here_word('cat <<$"EOF"', 4)[:3], (False, True, "EOF"))
 
-    def test_an_ansi_c_part_is_taken_as_bash_takes_it_into_the_delimiter(self):
-        """Each tried in bash 3.2.57 and 5.3: a part ends at its first NUL, the parts after it join, and bash's own
-        escape goes before each \\x01 and \\x7f."""
-        self.assertEqual(of_guard._here_ansi("A\\0B"), "A")
-        self.assertEqual(of_guard._here_ansi("A\\x01B"), "A\x01\x01B")
-        self.assertEqual(of_guard._here_ansi("A\\177B"), "A\x01\x7fB")
-        self.assertEqual(of_guard._here_ansi("A\\U00000042"), ("AB", "A\\U00000042"))   # bash 5's, bash 3.2's
+    def test_a_word_is_taken_into_the_delimiter_as_each_bash_takes_it(self):
+        """Each tried in bash 3.2.57 and 5.3, in the C and a UTF-8 locale: an ANSI-C part ends at its first NUL and the
+        parts after it join; a quoted part's \\x01 and \\x7f go behind bash's own escape, a plain part's in bash 3.2
+        only, a backslash's character never; \\u and \\U decoded or kept as written."""
+        r = of_guard._here_readings
+        self.assertEqual(r([("ansi", "A\\0B")]), ["A"])
+        self.assertEqual(r([("quoted", "A\x01B")]), ["A\x01\x01B"])
+        self.assertEqual(r([("quoted", "A\x7fB")]), ["A\x01\x7fB"])
+        self.assertEqual(r([("escaped", "\x01")]), ["\x01"])
+        self.assertEqual(sorted(r([("plain", "\x01")])), ["\x01", "\x01\x01"])
+        self.assertEqual(sorted(r([("ansi", "A\\u00e9")])), sorted(["A\u00e9", "A\\u00e9"]))
 
     def test_of_two_readings_the_earlier_end_holds(self):
         both = "cat <<$'E\\U0000004fF'\nx\n%s\nls\n%s\n"
