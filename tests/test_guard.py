@@ -1219,6 +1219,48 @@ class LiveCheckoutTest(unittest.TestCase):
         self.assertTrue(self.deny(f"echo x > {other}/bin/x"))
 
 
+class UserSiteTest(unittest.TestCase):
+    """G42 (2026-11-24, of_review): the Python user site is code every hook runs before the guard decides."""
+
+    def setUp(self):
+        import tempfile
+        from unittest import mock
+        self.tmp = tempfile.TemporaryDirectory()
+        self.site = os.path.join(self.tmp.name, "Library/Python/3.15/lib/python/site-packages")
+        os.makedirs(os.path.join(self.site, "yaml"))
+        self.patch = mock.patch.dict(os.environ, {"HOME": self.tmp.name})
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+        self.tmp.cleanup()
+
+    def test_a_pth_a_sitecustomize_and_a_package_there_are_denied(self):
+        for tool, ti in (("Write", {"file_path": os.path.join(self.site, "zz.pth"), "content": "import os"}),
+                         ("Write", {"file_path": os.path.join(self.site, "sitecustomize.py"), "content": "x"}),
+                         ("Bash", {"command": f"echo 'import os' > '{self.site}/zz.pth'"}),
+                         ("Bash", {"command": f"cp /tmp/x.py '{self.site}/yaml/__init__.py'"}),
+                         ("Bash", {"command": f"touch {self.site}/zz.pth"}),
+                         ("Bash", {"command": f"python3 -c \"open('{self.site}/zz.pth','w').write('import os')\""})):
+            got = of_guard.critical_deny(tool, ti, "/tmp")
+            self.assertTrue(got and "user site" in got[0], (tool, ti))
+        for cmd in (f"cat {self.site}/yaml/__init__.py", "pip install --user requests"):
+            got = of_guard.critical_deny("Bash", {"command": cmd}, "/tmp")
+            self.assertFalse(got and "user site" in got[0], cmd)
+
+    def test_the_interpreters_own_folder_when_this_user_owns_it(self):
+        """of_secrets-review, 2026-11-24: Homebrew's Python and its site-packages are this user's, the same class."""
+        import site
+        import sys as _sys
+        owned = [d for d in [_sys.base_prefix] + list(site.getsitepackages())
+                 if os.path.isdir(d) and os.stat(os.path.realpath(d)).st_uid == os.getuid()]
+        if not owned:
+            self.skipTest("this interpreter's folders are not this user's (a system Python)")
+        got = of_guard.critical_deny("Write", {"file_path": os.path.join(owned[0], "sitecustomize.py"), "content": "x"},
+                                     "/tmp")
+        self.assertTrue(got and "user site" in got[0])
+
+
 class NoWaitTest(unittest.TestCase):
     """of_server, 2026-11-23: the files the guard reads for a command are read only when regular, without waiting."""
 

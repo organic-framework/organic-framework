@@ -1341,6 +1341,12 @@ def _code_deny(code, lang=None):
         # where it writes, whatever call takes it; a file mode in its place excepted (of_review on PR 629)
     if live:
         return LIVE_DENY, live
+    usite = next((l for l in lits if not re.search(r"\s", l.strip())
+                  and l.strip().lstrip("<>+|& ").startswith(("/", "~", "$"))
+                  and _in_folders(l.strip().lstrip("<>+|& "), _user_site_box())), None) \
+        if _CODE_WRITE.search(code) else None   # G42 in code
+    if usite:
+        return USER_SITE_DENY, usite
     idx = next((l for l in lits if not re.search(r"\s", l.strip())
                 and l.strip().lstrip("<>+|& ").startswith(("/", "~", "$"))
                 and (_in_session_index(l.strip().lstrip("<>+|& "))
@@ -5233,6 +5239,52 @@ def _live_git(args, cwd, env, shvars):
     return None if _git_reads(sub, rest) else hit
 
 
+# G42: the Python user site is code every hook runs (of_review, 2026-11-24, private until this lands): the hooks start
+# python3 without -s, PyYAML lives there on the laptop, and a .pth line that starts with `import`, a sitecustomize or
+# a changed package there runs in every hook of every session before the guard decides. Denied from the start: no
+# session's command writes it by name (`pip install --user` writes it as pip, which the guard does not read as a path).
+USER_SITE_DENY = ("the Python user site, code every hook runs before the guard decides (a .pth, a sitecustomize, a "
+                  "package there; docs/guard.md G42): install or change it in a plain terminal, never from a session")
+USER_SITE_GLOBS = ("~/Library/Python/*/lib/python/site-packages", "~/.local/lib/python*/site-packages")
+
+
+def _user_site_box():
+    """The real paths of the Python user sites here, case-folded: this interpreter's own (the hooks run it), and every
+    one the two patterns find, for another version the hooks may start."""
+    import glob as _glob
+    import site
+    import sys
+    out = set()
+    try:
+        out.add(os.path.realpath(site.getusersitepackages()))
+    except Exception:  # noqa: BLE001 - a Python without a user site: the patterns alone
+        pass
+    # and the interpreter's own installation, its site-packages included, when this user owns it, as Homebrew's is:
+    # the same code every hook runs (of_secrets-review, 2026-11-24)
+    try:
+        for d in [sys.base_prefix, sys.prefix] + list(site.getsitepackages()):
+            real = os.path.realpath(d)
+            if os.path.isdir(real) and os.stat(real).st_uid == os.getuid():
+                out.add(real)
+    except Exception:  # noqa: BLE001 - what cannot be read here: the user sites alone
+        pass
+    for pat in USER_SITE_GLOBS:
+        out |= {os.path.realpath(p) for p in _glob.glob(_expanduser(pat))}
+    return {p.casefold() for p in out}
+
+
+def _user_site_write(head, args, cwd, files, removal):
+    """G42 on one simple command, read as G40 reads one."""
+    if _REMOTE_BODY[0]:
+        return None
+    box = _user_site_box()
+    hit = next((t for t in _tree_targets(head, args, cwd) if _in_folders(t, box, cwd, removal=True)), None) or \
+        next((f for f in files if _in_folders(f, box, cwd, removal)), None)
+    if not hit and head in _LIVE_WRITE_HEADS:
+        hit = next((a for a in _live_operands(head, args) if _in_folders(a, box, cwd, removal=head == "rmdir")), None)
+    return (USER_SITE_DENY, hit) if hit else None
+
+
 # G36: the guard's session index is the collector's (hand-over a18341af, of_server; of_secrets-review, msg
 # 01a1f9a7-b29c): _guard_index reads ~/.local/state/of/index.json for a session's position, and with it that
 # position's credential rules, so a session that rewrites its entry takes another position's rules. Only the hook
@@ -6110,7 +6162,8 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
                                                      _asks_outbox_write(head, args, cwd, files, removal) or
                                                      _session_index_write(head, args, cwd, files, removal) or
                                                      _forward_write(head, args, cwd, files, removal) or
-                                                     _live_write(head, args, cwd, files, removal, env, shvars))
+                                                     _live_write(head, args, cwd, files, removal, env, shvars) or
+                                                     _user_site_write(head, args, cwd, files, removal))
     hit = _git_protected(args, cwd, env or {}, shvars) if head == "git" else None
     if hit:
         return PROTECTED_CODE_DENY, hit
@@ -6131,7 +6184,8 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
                                                  _asks_outbox_write(head, args, cwd, files, removal) or
                                                  _session_index_write(head, args, cwd, files, removal) or
                                                  _forward_write(head, args, cwd, files, removal) or
-                                                 _live_write(head, args, cwd, files, removal, env, shvars))
+                                                 _live_write(head, args, cwd, files, removal, env, shvars) or
+                                                 _user_site_write(head, args, cwd, files, removal))
 
 
 def _owner_config_write(head, args, cwd, files, removal):
@@ -7346,6 +7400,9 @@ def critical_deny(tool, tool_input, cwd=None, caller=None):
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and \
             _in_live(str(path), _live_box(), cwd, linked):
         return LIVE_DENY, path   # G40
+    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and \
+            _in_folders(str(path), _user_site_box(), cwd):   # G42
+        return USER_SITE_DENY, path
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _in_session_index(path, cwd):  # G36
         if SESSION_INDEX_MODE == "deny":
             return SESSION_INDEX_DENY, path
