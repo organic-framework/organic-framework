@@ -880,29 +880,46 @@ def muse_auth():
     return os.path.join(muse_login_dir(), "xdg-config", "muse", "auth.json")
 
 
-_SECRET_KEY = re.compile(r"token|secret|password|passwd|credential|cookie|session|private", re.I)
+_WORD = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+# Muse's auth.json when its token is in the keychain (read on the laptop, 2026-11-24, field names and lengths only):
+# each field it may hold and the shape its value must have; any other field, or a value of another shape, fails
+# (of_secrets-review on PR 661: a list of names that hold a secret missed key, apiKey, auth, jwt, refresh)
+AUTH_FIELDS = {
+    "mechanism": lambda v: isinstance(v, str) and bool(_WORD.fullmatch(v)),
+    "storage": lambda v: v == "keychain",
+    "obtained_via": lambda v: isinstance(v, str) and bool(_WORD.fullmatch(v)),
+    "api_base_url": lambda v: isinstance(v, str) and bool(
+        re.fullmatch(r"https://[a-z0-9.-]{1,100}(:[0-9]{1,5})?(/[A-Za-z0-9._-]{1,32}){0,4}/?", v)),
+    "subs_active": lambda v: isinstance(v, bool),
+    "user_full_name": lambda v: isinstance(v, str) and len(v) <= 100
+    and bool(re.fullmatch(r"[^\W\d_]{1,24}([ .'-][^\W\d_]{1,24}){0,7}\.?", v)),
+    "user_email": lambda v: isinstance(v, str) and len(v) <= 254
+    and bool(re.fullmatch(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,189}\.[A-Za-z]{2,24}", v)),
+}
 
 
 def secretless(path):
-    """True when the JSON login file at PATH names no field a secret would be held in (Muse's auth.json, its storage
-    "keychain": mechanism, the API's address, the account's name and email)."""
+    """True when the JSON login file at PATH is Muse's auth.json with its token kept in the keychain: only the fields
+    of AUTH_FIELDS, under providers.<name>, each value of its own shape, and a schema_version; anything else may hold a
+    secret, so it fails."""
     try:
         with open(path) as fh:
             doc = json.load(fh)
     except (OSError, ValueError):
         return False
-    keys = []
-
-    def walk(x):
-        if isinstance(x, dict):
-            for k, v in x.items():
-                keys.append(str(k))
-                walk(v)
-        elif isinstance(x, list):
-            for v in x:
-                walk(v)
-    walk(doc)
-    return not any(_SECRET_KEY.search(k) for k in keys)
+    if not isinstance(doc, dict) or set(doc) - {"schema_version", "providers"}:
+        return False
+    if "schema_version" in doc and (not isinstance(doc["schema_version"], int) or isinstance(doc["schema_version"], bool)):
+        return False
+    providers = doc.get("providers")
+    if not isinstance(providers, dict) or not providers:
+        return False
+    for name, p in providers.items():
+        if not _WORD.fullmatch(str(name)) or not isinstance(p, dict) or p.get("storage") != "keychain":
+            return False
+        if any(k not in AUTH_FIELDS or not AUTH_FIELDS[k](v) for k, v in p.items()):
+            return False
+    return True
 
 
 def muse_protected():

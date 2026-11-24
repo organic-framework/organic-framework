@@ -146,8 +146,7 @@ class GateTest(unittest.TestCase):
             json.dump(doc, fh)
 
     def test_protected_only_with_ofs_password_and_a_secretless_auth(self):
-        self.write_auth({"schema_version": 1, "providers": {"meta": {"mechanism": "oauth", "storage": "keychain",
-                                                                     "user_email": "a@b"}}})
+        self.write_auth(self.SHAPE)
         self.assertFalse(of_subagent.muse_protected()[0])                    # no password file yet
         of_keychain.new_password(of_subagent.muse_pw_file())
         self.assertEqual(of_subagent.muse_protected(), (True, "-"))
@@ -156,6 +155,35 @@ class GateTest(unittest.TestCase):
         self.write_auth({"providers": {"meta": {"storage": "keychain"}}})
         os.chmod(of_subagent.muse_pw_file(), 0o640)
         self.assertFalse(of_subagent.muse_protected()[0])
+
+    SHAPE = {"schema_version": 1, "providers": {"meta": {
+        "mechanism": "oauth", "storage": "keychain", "obtained_via": "device_code", "api_base_url": "https://api.example/v1",
+        "subs_active": True, "user_full_name": "Ada Lovelace", "user_email": "ada@example.com"}}}
+
+    def test_only_auth_jsons_own_fields_of_their_own_shape_pass(self):
+        """of_secrets-review on PR 661: names that hold a secret were listed, so a token under key, apiKey, auth, jwt or
+        refresh passed and opened the gate."""
+        import copy
+        self.write_auth(self.SHAPE)
+        self.assertTrue(of_subagent.secretless(self.auth))
+        token = "t0k" * 16   # a stand-in, no real token's shape
+        for field in ("key", "apiKey", "auth", "jwt", "refresh", "credentials"):
+            doc = copy.deepcopy(self.SHAPE)
+            doc["providers"]["meta"][field] = token
+            self.write_auth(doc)
+            self.assertFalse(of_subagent.secretless(self.auth), field)
+        for field, value in (("user_full_name", token), ("user_full_name", "a" * 40), ("mechanism", token),
+                             ("api_base_url", "https://u:" + token + "@api.example/"), ("user_email", token),
+                             ("storage", "file"), ("subs_active", "yes")):
+            doc = copy.deepcopy(self.SHAPE)
+            doc["providers"]["meta"][field] = value
+            self.write_auth(doc)
+            self.assertFalse(of_subagent.secretless(self.auth), (field, value[:12] if isinstance(value, str) else value))
+        for doc in ({"providers": {"meta": dict(self.SHAPE["providers"]["meta"])}, "token": token},
+                    {"schema_version": 1, "providers": {"meta": dict(self.SHAPE["providers"]["meta"], nested={})}},
+                    {"schema_version": 1, "providers": {}}, [], {"schema_version": "1", "providers": {}}):
+            self.write_auth(doc)
+            self.assertFalse(of_subagent.secretless(self.auth), str(doc)[:40])
 
     def test_an_outside_tool_is_a_limit_only_with_the_guard_checks_there_and_held(self):
         base = [(c, True, "-") for c in of_subagent.SANDBOX_CHECKS]
