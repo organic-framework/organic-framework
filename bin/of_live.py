@@ -38,12 +38,20 @@ def copy_pyyaml(live=LIVE, python=None, run=subprocess.run):
     if getattr(r, "returncode", 1) != 0 or not os.path.isfile(os.path.join(src, "__init__.py")):
         raise LiveError("the Python OF runs on has no PyYAML to copy")
     import shutil
+    import tempfile
     site = os.path.join(live, SITE)
-    tmp = site + ".new"
-    shutil.rmtree(tmp, ignore_errors=True)
-    shutil.copytree(src, os.path.join(tmp, "yaml"), symlinks=False, ignore=shutil.ignore_patterns("__pycache__"))
-    shutil.rmtree(site, ignore_errors=True)
-    os.replace(tmp, site)
+    if os.path.islink(site):
+        raise LiveError(f"{site} is a link; remove it and run again")
+    # a new folder of its own, never one at a fixed name, which a link there would turn into its target
+    tmp = tempfile.mkdtemp(dir=os.path.dirname(site), prefix=".of-site-")
+    try:
+        shutil.copytree(src, os.path.join(tmp, "yaml"), symlinks=False, ignore=shutil.ignore_patterns("__pycache__"))
+        os.chmod(tmp, 0o755)
+        shutil.rmtree(site, ignore_errors=True)
+        os.replace(tmp, site)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
     return site
 LABEL = "dev.organic-framework.checkout-update"
 AGENTS = os.path.expanduser("~/Library/LaunchAgents")
@@ -56,6 +64,16 @@ SAFE_GIT = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c"
 
 class LiveError(Exception):
     pass
+
+
+def write_new(path, data, mode=0o644):
+    """Replace PATH with DATA through a new file of an unguessable name beside it, made with O_EXCL and never through
+    a link, then renamed over PATH; a link at PATH itself is refused (of_review on PR 628: the plist was written
+    through whatever lay at its fixed temporary name, so a link there made launchd load a file a session rewrites)."""
+    import of_events
+    if os.path.islink(path):
+        raise LiveError(f"{path} is a link; remove it and run again")
+    of_events.write_new(path, data.decode() if isinstance(data, bytes) else data, mode=mode)
 
 
 def git_env():
@@ -139,6 +157,12 @@ def check_live(live=LIVE):
                        env=git_env())
     if r.stdout.strip() != URL:
         raise LiveError(f"{live}'s origin is not public main ({URL})")
+    # nothing but its commits: an edit or a file git does not track would run as the owner's (Codex on PR 655)
+    r = subprocess.run(["git", *SAFE_GIT, "-C", live, "status", "--porcelain", "--untracked-files=all"],
+                       capture_output=True, text=True, env=git_env())
+    if r.returncode != 0 or r.stdout.strip():
+        first = "; ".join(r.stdout.strip().splitlines()[:3]) or "git status failed"
+        raise LiveError(f"{live} holds changes beside its commits ({first}); it runs only public main as cloned")
 
 
 def checkout_org(orgs_file, checkout=None):
@@ -197,9 +221,7 @@ def setup(python=None, run=subprocess.run, live=LIVE, log=print, orgs_file=None,
     os.makedirs(os.path.dirname(REQUEST), exist_ok=True)
     os.makedirs(os.path.expanduser("~/.local/log/of"), exist_ok=True)
     path = os.path.join(AGENTS, LABEL + ".plist")
-    with open(path + ".new", "wb") as fh:
-        fh.write(agent_plist(python, live=live))
-    os.replace(path + ".new", path)
+    write_new(path, agent_plist(python, live=live))
     dom = f"gui/{os.getuid()}"
     run(["launchctl", "bootout", f"{dom}/{LABEL}"], capture_output=True)
     r = run(["launchctl", "bootstrap", dom, path], capture_output=True)
@@ -318,14 +340,24 @@ def switch(python=None, run=subprocess.run, live=LIVE, accounts=None, log=print,
     """Every hooked account's hooks, the units and ~/.local/bin/of from LIVE. The owner's, in a plain terminal."""
     python = python or sys.executable
     check_live(live)
+    units = installed_units() if units is None else units
     for cmd in switch_plan(python, hooked_accounts() if accounts is None else accounts, live, units):
         r = run(cmd)
         if getattr(r, "returncode", 1) != 0:   # the first failure stops the switch: ~/.local/bin/of stays as it was
             raise LiveError(f"{' '.join(cmd[2:])} failed; nothing after it ran. Fix it and run of live switch again")
         log(f"  {' '.join(cmd[2:5])}: done")
-    tmp = LINK + ".new"
-    if os.path.lexists(tmp):
-        os.unlink(tmp)
+    # an install may exit 0 with its agent not loaded, so launchd is asked (Codex on PR 655: switch said done after
+    # launchd refused the listener)
+    dom = f"gui/{os.getuid()}"
+    down = [u[0] for u in units
+            if getattr(run(["launchctl", "print", f"{dom}/dev.organic-framework.{u[0]}"], capture_output=True),
+                       "returncode", 1) != 0]
+    if down:
+        raise LiveError(f"launchd has not loaded {', '.join(down)} after its install; {LINK} stays as it was")
+    if os.path.lexists(LINK) and not os.path.islink(LINK):
+        raise LiveError(f"{LINK} is no link; remove it and run again")
+    import time
+    tmp = f"{LINK}.{os.getpid()}.{time.time_ns()}.new"   # os.symlink fails on anything there, never follows it
     os.symlink(os.path.join(live, "bin", "of"), tmp)
     os.replace(tmp, LINK)
     log(f"  {LINK} -> {os.path.join(live, 'bin', 'of')}")

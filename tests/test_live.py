@@ -292,6 +292,78 @@ class Agent(unittest.TestCase):
             with self.assertRaises(of_live.LiveError):
                 of_live.check_live(t)
 
+    def test_a_checkout_with_an_edit_or_an_untracked_file_is_refused(self):
+        """Codex on PR 655: check_live took a clone of the right origin with an uncommitted edit to bin/of."""
+        with tempfile.TemporaryDirectory() as t:
+            live = os.path.join(t, "live")
+            g = ["git", "-c", "init.defaultBranch=main", "-c", "commit.gpgsign=false", "-c", "user.name=t",
+                 "-c", "user.email=t@t"]
+            subprocess.run(g + ["init", "-q", live], check=True)
+            subprocess.run(["git", "-C", live, "remote", "add", "origin", of_live.URL], check=True)
+            os.makedirs(os.path.join(live, "bin"))
+            with open(os.path.join(live, "bin", "of"), "w") as fh:
+                fh.write("ok\n")
+            subprocess.run(g + ["-C", live, "add", "bin/of"], check=True)
+            subprocess.run(g + ["-C", live, "commit", "-qm", "c"], check=True)
+            of_live.check_live(live)                                   # as cloned: taken
+            with open(os.path.join(live, "bin", "of"), "a") as fh:
+                fh.write("edit\n")
+            with self.assertRaises(of_live.LiveError):
+                of_live.check_live(live)
+            subprocess.run(["git", "-C", live, "checkout", "-q", "--", "bin/of"], check=True)
+            with open(os.path.join(live, "bin", "json.py"), "w") as fh:   # untracked, imported before the stdlib
+                fh.write("x\n")
+            with self.assertRaises(of_live.LiveError):
+                of_live.check_live(live)
+
+
+class LinkSafe(unittest.TestCase):
+    """of_review on PR 628: setup wrote the updater's plist through whatever lay at its fixed temporary name."""
+
+    def test_a_link_at_the_temporary_name_is_never_followed_and_one_at_the_name_is_refused(self):
+        with tempfile.TemporaryDirectory() as t:
+            victim = os.path.join(t, "victim")
+            with open(victim, "w") as fh:
+                fh.write("mine\n")
+            path = os.path.join(t, "x.plist")
+            for tmp in (path + ".new", path + ".tmp"):
+                os.symlink(victim, tmp)
+            of_live.write_new(path, b"<plist/>")
+            with open(victim) as fh:
+                self.assertEqual(fh.read(), "mine\n")
+            self.assertFalse(os.path.islink(path))
+            with open(path) as fh:
+                self.assertEqual(fh.read(), "<plist/>")
+            os.remove(path)
+            os.symlink(victim, path)
+            with self.assertRaises(of_live.LiveError):
+                of_live.write_new(path, b"<plist/>")
+            with open(victim) as fh:
+                self.assertEqual(fh.read(), "mine\n")
+
+    def test_pyyaml_is_never_copied_through_a_link(self):
+        with tempfile.TemporaryDirectory() as t:
+            live, victim = os.path.join(t, "live"), os.path.join(t, "victim")
+            os.makedirs(os.path.join(live, ".git"))
+            os.makedirs(victim)
+            os.symlink(victim, os.path.join(live, of_live.SITE) + ".new")
+            site = of_live.copy_pyyaml(live, sys.executable)
+            self.assertEqual(os.listdir(victim), [])
+            self.assertFalse(os.path.islink(site))
+            self.assertTrue(os.path.isfile(os.path.join(site, "yaml", "__init__.py")))
+            self.assertEqual(sorted(os.listdir(os.path.join(live, ".git"))), ["of-site", "of-site.new"])
+
+    def test_a_switch_stops_when_launchd_has_not_loaded_a_unit(self):
+        """Codex on PR 655: switch said done after launchd refused the listener."""
+        def run(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 113 if cmd[:2] == ["launchctl", "print"] else 0)
+
+        with mock.patch.object(of_live, "check_live"), mock.patch.object(of_live.os, "replace") as moved:
+            with self.assertRaises(of_live.LiveError) as e:
+                of_live.switch("/py", run=run, live="/L", accounts=[], log=lambda m: 0, units=[("listen", "install")])
+        self.assertIn("listen", str(e.exception))
+        moved.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
