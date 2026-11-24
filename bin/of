@@ -7927,7 +7927,48 @@ SHOWN_EVENTS = ("of.agent_question", "of.agent_question_answered", "of.ask_amend
 _CITED_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}(?:-[0-9a-f]{4}(?:-[0-9a-f]{4}(?:-[0-9a-f]{12})?)?)?")
 
 
-def prompt_cited(conn, pid, me):
+_RELAY_HEADER = re.compile(r"^Message from (\S+) \(via relay, authority: [^\n]*?; msg ([0-9a-f]{8}-[0-9a-f-]{27})"
+                           r"(?:, [^\n]*)?\)\n", re.M)
+
+
+def _relayed_bodies(conn, me):
+    """[(sender, its message's text)] of the messages the relay typed into position ME's sessions, read where a
+    session cannot write them: the prompt as the hook recorded it, marked injected by the relay (of-relay:...), cut at
+    each frame the relay writes, its sender confirmed by of.agent_message_in for that message id to ME. A frame whose
+    id appears in more than one of ME's prompts, or more than once in one, counts for none: a message's text cannot
+    pass for another's by quoting its frame (of_architect, msg 01a20d58-b563, on PR 633)."""
+    rows = conn.execute("SELECT payload FROM event WHERE name = 'of.human_prompt' AND position = ? AND "
+                        "json_extract(payload, '$.origin') = 'injected' AND "
+                        "json_extract(payload, '$.injector') LIKE 'of-relay:%'", (me,)).fetchall()
+    texts = []
+    for (payload,) in rows:
+        try:
+            texts.append(json.loads(payload or "{}").get("text") or "")
+        except ValueError:
+            continue
+    senders = {}
+    for (payload,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_message_in' AND position = ?",
+                                   (me,)):
+        try:
+            b = json.loads(payload or "{}")
+        except ValueError:
+            continue
+        if b.get("msg_id") and b.get("from"):
+            senders.setdefault(b["msg_id"], set()).add(b["from"])
+    out = []
+    for text in texts:
+        for m in _RELAY_HEADER.finditer(text):
+            sender, mid = m.group(1), m.group(2)
+            if senders.get(mid) != {sender} or sum(t.count(f"; msg {mid}") for t in texts) != 1:
+                continue
+            end = f'\n[reply: of send {sender} --reply-to {mid} "…"]'
+            if text.count(end) != 1 or text.index(end) < m.end():
+                continue
+            out.append((sender, text[m.end():text.index(end)]))
+    return out
+
+
+def prompt_cited(conn, pid, me, messages=True):
     """Whether a record another wrote to position ME cites the person's prompt PID (of_architect, msg 01a1fa13-59a5;
     narrowed by of_secrets-review on PR 633: a record the position writes itself is text it chooses, so its own asks,
     amendments, answers, proposals, notes and results never count): the owner's answers to its asks, a hand-over it
@@ -7963,6 +8004,16 @@ def prompt_cited(conn, pid, me):
                     texts.append(json.dumps(h.get("result"), ensure_ascii=False))
     except Exception:  # noqa: BLE001 - no hand-overs to read: none cites it
         pass
+    if messages:   # a message delivered to it, from a sender that may see the prompt itself (of_architect on PR 633)
+        row = conn.execute("SELECT position, org FROM event WHERE name = 'of.human_prompt' AND event_id >= ? AND "
+                           "event_id < ?", (pid, pid + "\uffff")).fetchall()
+        for sender, body in _relayed_bodies(conn, me):
+            org, _, name = sender.rpartition(":")
+            if not any(t for t in _CITED_ID.findall(body) if len(t) >= 13 and pid.startswith(t)):
+                continue
+            own = len(row) == 1 and row[0][0] == name and (not org or row[0][1] == org)
+            if own or prompt_cited(conn, pid, name, messages=False)[0]:   # never the sender's own citations
+                texts.append(body)
     cites = {t for text in texts for t in _CITED_ID.findall(text or "") if len(t) >= 13 and pid.startswith(t)}
     if not cites:
         return False, "no answer to your asks and no hand-over or note another wrote to you cites it"

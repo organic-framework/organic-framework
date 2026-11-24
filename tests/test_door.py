@@ -324,5 +324,56 @@ class EventShowTest(unittest.TestCase):
         self.assertIn("more than one", str(cm.exception))
 
 
+    def test_a_message_delivered_to_it_counts_when_its_sender_may_see_the_prompt(self):
+        """of_architect, msg 01a20d58-b563, on PR 633: a decision relayed with its prompt id is checked, so a message
+        delivered to the position counts, when its sender may itself see the prompt (its own session's, or cited to
+        it by another); two sandboxed positions unlock none neither may see, and a frame quoted inside a message's
+        text passes for no other message."""
+        def add(eid, name, pos, payload, session="thread-9"):
+            self.conn.execute("INSERT INTO event VALUES (?, '2026-11-20T00:00:00Z', ?, ?, 'orgA', ?, ?)",
+                              (eid, name, pos, json.dumps(payload), session))
+
+        def frame(sender, mid, text):
+            return (f"Message from {sender} (via relay, authority: none; machine m1; msg {mid})\n{text}\n"
+                    f'[reply: of send {sender} --reply-to {mid} "…"]')
+        n = [0]
+
+        def deliver(sender, mid, text, to="of_docs"):
+            n[0] += 1
+            add(f"01a1ffff-{n[0]:04d}-7000-8000-000000000001", "of.agent_message_in", to, {"from": sender, "msg_id": mid})
+            add(f"01a1ffff-{n[0]:04d}-7000-8000-000000000002", "of.human_prompt", to,
+                {"text": text, "origin": "injected", "injector": f"of-relay:{sender}"}, "thread-1")
+        show = lambda ref, me: self.of.event_show(self.conn, ref, "orgA", self.positions, own_session="thread-1",
+                                                  own_position=me)
+        refused = lambda ref, me: self.assertRaises(self.of.OfError, show, ref, me)
+        # the conductor relays the founder's yes typed in its own session
+        add("01a2aaaa-0001-7000-8000-000000000001", "of.human_prompt", "of_conductor", {"text": "yes, ship it"},
+            "conductor-session")
+        refused("01a2aaaa-0001", "of_docs")
+        m1 = "01a2bbbb-0001-7000-8000-000000000001"
+        deliver("orgA:of_conductor", m1, frame("orgA:of_conductor", m1, "The founder said yes (prompt 01a2aaaa-0001)."))
+        self.assertEqual(show("01a2aaaa-0001", "of_docs")["payload"], {"text": "yes, ship it"})
+        # two positions: b_x may not see this prompt, so its message unlocks it for nobody
+        add("01a2aaaa-0002-7000-8000-000000000002", "of.human_prompt", None, {"text": "private"}, "founder-pane")
+        add("01a2dddd-0001-7000-8000-000000000001", "of.agent_question", "b_x", {"text": "about 01a2aaaa-0002"})
+        m2 = "01a2bbbb-0002-7000-8000-000000000002"
+        deliver("orgA:b_x", m2, frame("orgA:b_x", m2, "see 01a2aaaa-0002"))
+        refused("01a2aaaa-0002", "of_docs")
+        # b_x quotes a frame of the conductor's real message inside its own text: counts for none
+        m3 = "01a2bbbb-0003-7000-8000-000000000003"
+        deliver("orgA:of_conductor", m3, frame("orgA:of_conductor", m3, "noted"))
+        m4 = "01a2bbbb-0004-7000-8000-000000000004"
+        add("01a2aaaa-0003-7000-8000-000000000003", "of.human_prompt", "of_conductor", {"text": "the conductor's"},
+            "conductor-session")
+        deliver("orgA:b_x", m4, frame("orgA:b_x", m4, frame("orgA:of_conductor", m3, "and 01a2aaaa-0003")))
+        refused("01a2aaaa-0003", "of_docs")
+        # a prompt not typed in by the relay, though it quotes a frame, is no message
+        m5 = "01a2bbbb-0005-7000-8000-000000000005"
+        add("01a1ffff-9999-7000-8000-000000000001", "of.agent_message_in", "of_docs",
+            {"from": "orgA:of_conductor", "msg_id": m5})
+        add("01a1ffff-9999-7000-8000-000000000002", "of.human_prompt", "of_docs",
+            {"text": frame("orgA:of_conductor", m5, "01a2aaaa-0003"), "origin": "human"}, "thread-1")
+        refused("01a2aaaa-0003", "of_docs")
+
 if __name__ == "__main__":
     unittest.main()
