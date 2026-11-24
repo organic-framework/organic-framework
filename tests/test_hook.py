@@ -49,6 +49,30 @@ class MaskTest(unittest.TestCase):
         self.assertEqual(text, "я" * 3)
 
 
+class OrgRuleMaskTest(unittest.TestCase):
+    """An organization rule's deny names what matched, the command's own words: masked in the reason shown and in the
+    recorded mandate_check, as its subject is (of_server, 2026-11-24, from organic-framework PR 475's review)."""
+
+    def test_the_matched_words_are_masked_where_they_are_shown_and_recorded(self):
+        from unittest import mock
+        import io
+        tok = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        rule = {"id": "g-demo", "mode": "deny", "reason": "demo login is not for agents.", "cli": {"names": ["demo"]}}
+        hook = {"tool_name": "Bash", "session_id": "S", "cwd": "/tmp",
+                "tool_input": {"command": f"demo login --token {tok}"}}
+        out = io.StringIO()
+        with mock.patch.object(of_hook, "_guard_index", return_value={"sessions": {"S": ["acme_ops", "acme"]}}), \
+                mock.patch("of_grants.guard_rules", return_value=([rule], None)), \
+                mock.patch.object(of_hook.of_guard, "org_rule_hits", return_value=[(rule, f"demo login --token {tok}")]), \
+                mock.patch.object(of_hook, "write") as write, mock.patch("sys.stdout", out):
+            self.assertTrue(of_hook._org_guard(hook, {}))
+        self.assertIn("Matched: demo login --token", out.getvalue())
+        self.assertNotIn(tok, out.getvalue())
+        recorded = write.call_args[0][1]
+        self.assertNotIn(tok, recorded["reason"])
+        self.assertNotIn(tok, recorded["subject"])
+
+
 class ClassifierTest(unittest.TestCase):
     def test_question_heuristic(self):
         self.assertTrue(of_hook.asks_question("Готово. Коммитить?"))
