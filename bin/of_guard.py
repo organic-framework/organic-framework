@@ -1036,13 +1036,59 @@ _CODE_REMOVES = re.compile(r"\bos\.(?:unlink|remove|removedirs|rmdir|rename|rena
 _CODE_WRITE_RE = re.compile(r"""\.open\s*\(\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|"""
                          r"""open\s*\(.*?,\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|open\s*\([^,]*,\s*['"]\s*\+?>|\bmode\s*=\s*['"][rbt]*[wax+]|write_text|"""
                          r"""write_bytes|(?<!sys\.stdout)(?<!sys\.stderr)\.write\s*\(|\bdump\s*\(|"""
-                         r"""os\.(?:replace|rename|remove|unlink|truncate)|"""
+                         r"""os\.(?:replace|rename|remove|unlink|truncate|symlink|link)|"""
                          r"""shutil\.|\.unlink\s*\(|\.touch\s*\(|\.rename\s*\(|File\.(?:write|delete|rename)|"""
                          r"""File\.open\s*\(.*?,\s*['"][rbt]*[wa+]|"""
                          r"""FileUtils\.|fs\.(?:write|append|rename|unlink|rm|copy)|writeFile|appendFile|"""
                          r"""\bsysopen\b|\bunlink\b|\brename\b""")
 _OS_OPEN = re.compile(r"\bos\.open\s*\(")
 _OS_OPEN_FLAGS = re.compile(r"\bO_(?:WRONLY|RDWR|CREAT|TRUNC|APPEND)\b")
+
+
+_DEST_CALL = re.compile(r"\b(?:copy\w*|move|rename|renames|replace|symlink|link)\s*\(")
+
+
+def _call_args(code, start):
+    """The top-level arguments of the call whose '(' ends at START, as text: quotes and comments kept whole."""
+    args, cur, depth, k, quote = [], [], 1, start, None
+    while k < len(code) and depth:
+        ch = code[k]
+        if quote:
+            quote = None if ch == quote and code[k - 1] != "\\" else quote
+        elif ch == "#":
+            nl = code.find("\n", k)
+            k = len(code) if nl < 0 else nl
+            continue
+        elif ch in "'\"":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if not depth:
+                break
+        elif ch == "," and depth == 1:
+            args.append("".join(cur))
+            cur = []
+            k += 1
+            continue
+        cur.append(ch)
+        k += 1
+    args.append("".join(cur))
+    return [a.strip() for a in args]
+
+
+def _dest_names(code):
+    """The second argument of each copy, move, rename or link call, when it is a plain literal (of_review on PR 629:
+    shutil.copyfile(os.path.join('/tmp', 'x'), 'stamp'))."""
+    out = set()
+    for m in _DEST_CALL.finditer(code):
+        args = _call_args(code, m.end())
+        if len(args) > 1:
+            lit = re.fullmatch(r"(?:(?:dst|dest|target)\s*=\s*)?(['\"])([^'\"\n]+)\1", args[1])
+            if lit:
+                out.add(lit.group(2))
+    return out
 
 
 def _os_open_writes(code):
@@ -1054,6 +1100,10 @@ def _os_open_writes(code):
             ch = code[k]
             if quote:
                 quote = None if ch == quote and code[k - 1] != "\\" else quote
+            elif ch == "#":   # a comment runs to its line's end: its ')' ends no call (of_review on PR 629)
+                nl = code.find("\n", k)
+                k = len(code) if nl < 0 else nl
+                continue
             elif ch in "'\"":
                 quote = ch
             elif ch == "(":
@@ -1138,7 +1188,7 @@ def _code_deny(code, lang=None):
     # of_secrets-review on PR 629); any other literal only when it lies deep enough (_deep_lit)
     gone_args = {m.group(2) for m in _REMOVAL_ARG.finditer(code)} if gone else set()
     opened = {m.group(2) for m in _OPENED_ARG.finditer(code)} | {m.group(3) for m in _DEST_ARG.finditer(code)} | \
-        {m.group(2) for m in _FILE_KW.finditer(code)}
+        {m.group(2) for m in _FILE_KW.finditer(code)} | _dest_names(code)
     live = next((l for l in lits if not re.search(r"\s", l.strip()) and l.strip().lstrip("<>+|& ")
                  and (l.strip().lstrip("<>+|& ").startswith(("/", "~", "$")) or _rel_path_lit(l.strip().lstrip("<>+|& "), opened))
                  and _in_live(l.strip().lstrip("<>+|& "), _live_box(), _DENY_CWD[0], gone, gone and (l.strip().lstrip("<>+|& ") in gone_args or _deep_lit(l.strip().lstrip("<>+|& "))))), None) \
