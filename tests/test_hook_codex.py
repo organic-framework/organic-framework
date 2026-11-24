@@ -181,6 +181,30 @@ class SecondReview(unittest.TestCase):
         self.assertEqual(code, 0)
 
 
+class ThirdReview(unittest.TestCase):
+    """of_server's third verdict on PR 475."""
+
+    def test_a_prompts_block_is_the_only_answer(self):
+        """A prompt blocked for a secret mention gets no second JSON object after its block (an open ask's note)."""
+        p = {"session_id": "claude-1", "cwd": "/w", "transcript_path": "/home/alex/.claude/projects/w/claude-1.jsonl",
+             "permission_mode": "bypassPermissions", "hook_event_name": "UserPromptSubmit",
+             "prompt": "read @~/" + KEY + " please"}
+        with mock.patch.object(of_hook, "open_asks_note", return_value="an open ask"), \
+                mock.patch.object(of_hook, "prompt_origin", return_value="human"):
+            code, out, _ = run_main_in_process("UserPromptSubmit", p, ["--deny-secrets"])
+        self.assertEqual(json.loads(out)["decision"], "block")              # one object: json.loads takes it whole
+
+    def test_an_argv_shell_patch_is_read_from_its_words(self):
+        script = "apply_patch <<'EOF'\n" + patch("*** Update File: " + ENV, "@@", "-a", "+b") + "\nEOF"
+        self.assertIn("deny", fire("Bash", {"command": ["bash", "-lc", script]}))
+
+    def test_a_patch_whose_begin_marker_is_indented_is_unreadable(self):
+        script = "apply_patch <<'EOF'\n  *** Begin Patch\n*** Update File: " + ENV + "\n@@\n-a\n+b\n*** End Patch\nEOF"
+        out = fire("Bash", {"command": script})
+        self.assertIn("deny", out)
+        self.assertIn("cannot be read", out)
+
+
 class PatchCalls(unittest.TestCase):
     def test_each_kind_of_entry_is_a_write_or_an_edit(self):
         calls = of_hook.patch_calls(patch("*** Add File: a/new.txt", "+hello", "*** Update File: b.py", "@@", "-x", "+y",
