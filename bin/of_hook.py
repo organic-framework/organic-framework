@@ -1307,6 +1307,7 @@ def codex_calls(hook):
     Write and Edit calls; any other call that holds a patch (`apply_patch <<'EOF'` through the shell, which Codex runs
     as a patch) as itself plus those calls; view_image as a Read of its path. An unreadable patch is one deny."""
     tool, ti = hook.get("tool_name"), hook.get("tool_input")
+    given = ti   # an argv list's words as they came: a patch's markers read there, never inside shlex.join's quotes
     if tool == "Bash" and isinstance(ti, dict) and isinstance(ti.get("command"), list):
         import shlex   # an argv list (of_server on PR 475): one string as the shell would run it, never a TypeError
         ti = dict(ti, command=shlex.join(str(a) for a in ti["command"]))
@@ -1315,11 +1316,13 @@ def codex_calls(hook):
     # only a Codex session's patch: Codex's apply_patch, or its shell running apply_patch with the begin marker alone on
     # its line; a Claude Code call that quotes the markers (a document, a comment) is no patch (of_secrets-review on PR
     # 469 at 6c41f7b: the working copy refused its gh pr comment)
-    text = _patch_text(ti) if is_codex(hook) or tool == "apply_patch" else ""
+    text = _patch_text(given) if is_codex(hook) or tool == "apply_patch" else ""
     shell_patch = tool == "Bash" and is_codex(hook) and re.search(r"\bapply_?patch\b", text) and \
         re.search(r"(?m)^\s*\*\*\*\s*Begin Patch\s*$", text)
     if tool == "apply_patch" or shell_patch:
         bodies = _PATCH_BODY.findall(text) if tool != "apply_patch" else [text]
+        if not bodies:   # a patch found whose body cannot be cut (its begin marker not at column 0): one deny
+            return [{"deny": PATCH_UNREADABLE, "subject": "a begin marker not at the line's start"}]
         try:
             for body in bodies:
                 calls += patch_calls(body, hook.get("cwd"))
@@ -1836,6 +1839,7 @@ def _mention_guard(prompt, hook, sess, index):
     sys.stdout.write(json.dumps(OUTPUT, ensure_ascii=False))
     sys.stdout.flush()
     OUTPUT = None
+    BLOCK_SENT[0] = True   # one answer only: a later note (an open ask's) must not follow it (of_server on PR 475)
     try:
         write("mandate_check", {"verdict": "critical", "decision": "deny", "mode": "enforce",
                                 "router_version": __import__("of_router").VERSION, "tool_name": "UserPromptSubmit",
@@ -1907,6 +1911,7 @@ def open_asks_note(sid, prompt, db=None):
     return (f"Your open asks to the founder in this session: {items}. His words here close none of them. If they "
             "answered one, run `of status working --answered <id> --prompt <his prompt's event id>` (of prompts --mine); "
             "an ask they did not answer stays in his list.")
+BLOCK_SENT = [False]   # a prompt's block already written: main writes no second answer after it
 DENY_SECRETS_FLAG = False  # set from argv in main(); gates the UserPromptSubmit @mention block
 
 
@@ -2280,6 +2285,7 @@ def main(argv):
     of_events.HOOK_TIMEOUT = HOOK_DB_TIMEOUT
     event = argv[0] if argv else ""
     DENY_SECRETS_FLAG = "--deny-secrets" in argv  # gates the @mention prompt block (of_architect, 2026-11-06)
+    BLOCK_SENT[0] = False
     started = _T0
     hook = {}
     answer = None
@@ -2300,7 +2306,7 @@ def main(argv):
             answer = sys.stdout = _CodexAnswer(sys.stdout)
         _store_raw(event, hook, raw)
         handle(event, hook)
-        if OUTPUT:
+        if OUTPUT and not BLOCK_SENT[0]:
             sys.stdout.write(json.dumps(OUTPUT, ensure_ascii=False))
             sys.stdout.flush()
         if event in ("Stop", "SessionEnd", "PreCompact") and hook.get("transcript_path"):
