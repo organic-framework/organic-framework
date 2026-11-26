@@ -2411,10 +2411,12 @@ class _CodexAnswer:
         sys.stderr.write(why.rstrip() + "\n")
         sys.stderr.flush()
         self.code = 2
-        if self.exit_now:
+        if self.exit_now and not _no_detach():
             # Codex waits for the hook, and a recording that stalls past its timeout would make the deny a failure,
             # which Codex runs (of_server on PR 475): this process exits 2 now, and a child with no pipe of Codex's
-            # open records what follows
+            # open records what follows. Under OF_NO_DETACH (a smoke check, of codex selftest's probe) no child: the
+            # record is written here before the exit, so nothing writes after its caller removed the state folder
+            # (of_review on PR 640)
             try:
                 pid = os.fork()
             except OSError:
